@@ -25,21 +25,41 @@ backup() {
 pull() {
     log "Pulling latest images..."
     cd "$DEPLOY_DIR"
-    docker compose pull "$SERVICE" 2>&1 || {
-        log "ERROR: Image pull failed"
-        exit 1
-    }
+    if [ "$SERVICE" = "all" ]; then
+        # Only pull non-profiled services (traefik, postgres).
+        # Profiled services (backend, frontend, academy) are pulled
+        # individually when their images are ready.
+        docker compose pull 2>&1 || {
+            log "ERROR: Image pull failed"
+            exit 1
+        }
+    else
+        docker compose pull "$SERVICE" 2>&1 || {
+            log "ERROR: Image pull failed"
+            exit 1
+        }
+    fi
 }
 
 # Deploy
 deploy() {
     log "Deploying service: $SERVICE"
     cd "$DEPLOY_DIR"
-    docker compose up -d --remove-orphans "$SERVICE" 2>&1 || {
-        log "ERROR: Deployment failed"
-        rollback
-        exit 1
-    }
+    if [ "$SERVICE" = "all" ]; then
+        # Start only non-profiled services (traefik, postgres).
+        # Use --profile full only when backend/frontend/academy images exist.
+        docker compose up -d --remove-orphans 2>&1 || {
+            log "ERROR: Deployment failed"
+            rollback
+            exit 1
+        }
+    else
+        docker compose up -d --remove-orphans "$SERVICE" 2>&1 || {
+            log "ERROR: Deployment failed"
+            rollback
+            exit 1
+        }
+    fi
 }
 
 # Health check

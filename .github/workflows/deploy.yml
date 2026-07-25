@@ -12,14 +12,13 @@ on:
 
 env:
   VPS_HOST: ${{ secrets.VPS_HOST }}
-  VPS_USER: ubuntu
+  VPS_USER: deploy
   DEPLOY_DIR: /opt/kolonie
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,6 +52,4 @@ jobs:
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "::error::Deployment failed! Check VPS logs."
-          # TODO: Add Slack/Discord/GitHub Issue notification
+        run: echo "::error::Deployment failed! Check VPS logs."
