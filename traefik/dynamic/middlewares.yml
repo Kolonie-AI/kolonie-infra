@@ -1,0 +1,32 @@
+# Traefik Dynamic Configuration — Middlewares
+# Kolonie AI
+
+http:
+  middlewares:
+    # Rate limiting
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+
+    # Security headers
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        frameDeny: true
+
+    # Compress responses
+    compress:
+      compress: {}
+
+    # Retry on transient errors
+    retry:
+      retry:
+        attempts: 3
+        initialInterval: 100ms

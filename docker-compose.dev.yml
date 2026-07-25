@@ -1,0 +1,45 @@
+# Local development override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: "3.9"
+
+services:
+  traefik:
+    ports:
+      - "8080:8080"  # Dashboard in dev
+    labels:
+      - "traefik.enable=true"
+
+  postgres:
+    ports:
+      - "5432:5432"  # Expose for local tools
+
+  backend:
+    image: kolonie-backend:dev
+    build:
+      context: ../kolonie-backend
+      dockerfile: Dockerfile
+    volumes:
+      - ../kolonie-backend/src:/app/src
+    environment:
+      NODE_ENV: development
+
+  frontend:
+    image: kolonie-frontend:dev
+    build:
+      context: ../kolonie-frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ../kolonie-frontend/src:/app/src
+    environment:
+      NODE_ENV: development
+
+  academy:
+    image: kolonie-academy:dev
+    build:
+      context: ../kolonie-academy
+      dockerfile: Dockerfile
+    volumes:
+      - ../kolonie-academy/src:/app/src
+    environment:
+      NODE_ENV: development

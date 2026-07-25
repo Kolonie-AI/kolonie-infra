@@ -1,0 +1,51 @@
+# Traefik Static Configuration
+# Kolonie AI — Production
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# Entry Points
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+
+# Certificate Resolvers (Let's Encrypt via Cloudflare DNS Challenge)
+certificatesResolvers:
+  cloudflare:
+    acme:
+      email: ${CF_EMAIL}
+      storage: /certs/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 10s
+
+# API / Dashboard
+api:
+  dashboard: ${TRAEFIK_DASHBOARD:-false}
+  insecure: false
+
+# Providers (Docker)
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: kolonie
+  file:
+    directory: /dynamic
+    watch: true
+
+# Logging
+log:
+  level: INFO
+
+accessLog:
+  filePath: /var/log/traefik/access.log
+  bufferingSize: 100

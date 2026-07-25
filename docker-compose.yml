@@ -1,0 +1,139 @@
+version: "3.9"
+
+networks:
+  kolonie:
+    name: kolonie
+    driver: bridge
+
+volumes:
+  postgres_data:
+  traefik_certs:
+
+services:
+  # === Traefik Reverse Proxy ===
+  traefik:
+    image: traefik:v3.1
+    container_name: kolonie-traefik
+    restart: unless-stopped
+    networks:
+      - kolonie
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/dynamic:/dynamic:ro
+      - traefik_certs:/certs
+    environment:
+      - CF_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - CF_EMAIL=${CLOUDFLARE_EMAIL}
+    labels:
+      - "traefik.enable=true"
+      # Dashboard (optional, protected)
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.kolonie.ai`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=cloudflare"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # === PostgreSQL ===
+  postgres:
+    image: postgres:16-alpine
+    container_name: kolonie-postgres
+    restart: unless-stopped
+    networks:
+      - kolonie
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kolonie}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-kolonie}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kolonie}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No port exposure — internal only
+
+  # === Kolonie Backend ===
+  backend:
+    image: ghcr.io/${GHCR_ORG:-Kolonie-AI}/kolonie-backend:latest
+    container_name: kolonie-backend
+    restart: unless-stopped
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kolonie}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kolonie}
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.kolonie.ai`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=cloudflare"
+      - "traefik.http.services.backend.loadbalancer.server.port=3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # === Kolonie Frontend ===
+  frontend:
+    image: ghcr.io/${GHCR_ORG:-Kolonie-AI}/kolonie-frontend:latest
+    container_name: kolonie-frontend
+    restart: unless-stopped
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      NEXT_PUBLIC_API_URL: ${API_URL:-https://api.kolonie.ai}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`kolonie.ai`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=cloudflare"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # === Kolonie Academy ===
+  academy:
+    image: ghcr.io/${GHCR_ORG:-Kolonie-AI}/kolonie-academy:latest
+    container_name: kolonie-academy
+    restart: unless-stopped
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kolonie}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kolonie}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.academy.rule=Host(`academy.kolonie.ai`)"
+      - "traefik.http.routers.academy.entrypoints=websecure"
+      - "traefik.http.routers.academy.tls.certresolver=cloudflare"
+      - "traefik.http.services.academy.loadbalancer.server.port=3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
