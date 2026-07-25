@@ -56,6 +56,19 @@ Internet → Cloudflare → Traefik (80/443) → Docker Network
 3. Test locally before deploying
 4. Submit PR
 
+## Documentation
+
+This repo contains both code AND documentation about infrastructure decisions:
+
+- `ARCHITECTURE.md` — Decision log and reasoning
+- `docs/scaling-strategy.md` — How we grow from VPS to global
+- `docs/open-source-strategy.md` — Why and when we go public
+- `docs/security-model.md` — Threat model and defenses
+- `docs/cost-projections.md` — Infrastructure cost planning
+- `docs/disaster-recovery.md` — Backup and recovery
+
+When changing infrastructure, update the relevant docs too.
+
 ## Dependencies
 
 - Docker + Docker Compose on VPS
