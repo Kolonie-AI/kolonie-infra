@@ -17,6 +17,7 @@ entryPoints:
     address: ":443"
 
 # Let's Encrypt via Cloudflare DNS Challenge
+# Token passed as CLOUDFLARE_DNS_API_TOKEN env var from docker-compose
 certificatesResolvers:
   cloudflare:
     acme:
@@ -30,8 +31,12 @@ api:
   dashboard: false
   insecure: false
 
-# File provider for routing (Docker provider disabled due to API version issue)
+# Docker provider (Traefik v3.7 supports Docker API 1.40+)
 providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: kolonie
   file:
     directory: /dynamic
     watch: true

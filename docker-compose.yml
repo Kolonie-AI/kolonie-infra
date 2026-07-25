@@ -26,8 +26,8 @@ services:
       - ./traefik/dynamic:/dynamic:ro
       - traefik_certs:/certs
     environment:
-      - CF_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - CF_EMAIL=${CLOUDFLARE_EMAIL}
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - CLOUDFLARE_EMAIL=${CLOUDFLARE_EMAIL}
     labels:
       - "traefik.enable=true"
     healthcheck:
