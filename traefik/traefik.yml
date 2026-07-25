@@ -38,7 +38,6 @@ providers:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: kolonie
-    versionCheck: false
   file:
     directory: /dynamic
     watch: true
