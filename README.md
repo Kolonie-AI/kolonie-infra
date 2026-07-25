@@ -1,4 +1,4 @@
-# Kolonie AI — Infrastructure
+# Kolonie AI — Infrastructure as Code
 
 Infrastructure as Code for Kolonie AI. This repository contains everything needed to run, deploy, and scale the Kolonie AI platform.
 
@@ -41,18 +41,160 @@ Traefik (Reverse Proxy, Auto-SSL)
 
 **Status:** Single VPS behind Cloudflare, suitable for MVP and early growth.
 
-> **SECURITY:** The VPS IP address is never stored in this repository. All access goes through Cloudflare. The IP is only stored in Cloudflare DNS and as a GitHub Actions secret.
+> **SECURITY:** The VPS IP address is never stored in this repository. All traffic goes through Cloudflare. The IP is only stored in Cloudflare DNS and as a GitHub Actions secret.
 
-## Scaling Path
+## Setup Guide
 
-| Phase | Architecture | Users | Cost |
-|-------|-------------|-------|------|
-| **Now** | Single VPS, Docker Compose | 0-1k | ~15 EUR/month |
-| **Growth** | VPS + Managed DB + CDN | 1k-50k | ~50-100 EUR/month |
-| **Scale** | Multi-node, Kubernetes or Nomad | 50k-500k | ~500 EUR/month |
-| **Global** | Multi-region, edge caching, read replicas | 500k+ | Variable |
+### Prerequisites
+- VPS with Ubuntu 24.04+ and SSH access
+- GitHub account with access to Kolonie-AI org
+- Cloudflare account with kolonie.ai zone configured
 
-See [docs/scaling-strategy.md](docs/scaling-strategy.md) for the full scaling plan.
+### Step 1: Bootstrap VPS
+
+```bash
+# SSH into your VPS
+ssh root@<your-vps-ip>
+
+# System update
+apt update && apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+
+# Create deployment user
+useradd -m -s /bin/bash -G sudo,docker deploy
+mkdir -p /home/deploy/.ssh
+cp /root/.ssh/authorized_keys /home/deploy/.ssh/
+chown -R deploy:deploy /home/deploy/.ssh
+
+# Firewall
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+echo "y" | ufw enable
+
+# Directory structure
+mkdir -p /opt/kolonie
+chown deploy:deploy /opt/kolonie
+```
+
+### Step 2: Generate GitHub Actions SSH Key
+
+```bash
+# As deploy user on VPS
+su - deploy
+ssh-keygen -t ed25519 -f ~/.ssh/github_actions -N "" -C "kolonie-github-actions"
+cat ~/.ssh/github_actions.pub >> ~/.ssh/authorized_keys
+cat ~/.ssh/github_actions  # Copy this private key for GitHub Secret
+```
+
+### Step 3: Clone Infra Repo on VPS
+
+```bash
+# As deploy user
+cd /opt/kolonie
+git clone https://github.com/Kolonie-AI/kolonie-infra.git .
+cp .env.example .env
+# Edit .env with real values (see below)
+```
+
+### Step 4: Configure `.env`
+
+Edit `/opt/kolonie/.env` on the VPS:
+
+```bash
+# Database — choose a strong password
+POSTGRES_USER=kolonie
+POSTGRES_PASSWORD=your-strong-database-password
+POSTGRES_DB=kolonie
+
+# Cloudflare — get from https://dash.cloudflare.com/profile/api-tokens
+# Create token with Zone:DNS:Edit permission for kolonie.ai
+CLOUDFLARE_DNS_API_TOKEN=your-cloudflare-api-token
+CLOUDFLARE_EMAIL=your-cloudflare-email
+
+# Application — generate random secrets
+JWT_SECRET=$(openssl rand -hex 32)
+ENCRYPTION_KEY=$(openssl rand -hex 32)
+NODE_ENV=production
+API_URL=https://api.kolonie.ai
+FRONTEND_URL=https://kolonie.ai
+```
+
+### Step 5: Set GitHub Secrets
+
+Go to **kolonie-infra** → **Settings** → **Secrets and variables** → **Actions**:
+
+| Secret | Value | How to get it |
+|--------|-------|---------------|
+| `VPS_HOST` | Your VPS IP | From your hosting provider |
+| `VPS_SSH_KEY` | Private key | Generated in Step 2 |
+| `GH_TOKEN` | GitHub PAT | github.com → Settings → Tokens |
+
+### Step 6: Start Services
+
+```bash
+cd /opt/kolonie
+docker compose up -d traefik postgres
+```
+
+### Step 7: Verify
+
+```bash
+# Check containers
+docker ps
+
+# Check Traefik logs
+docker logs kolonie-traefik
+
+# Check PostgreSQL
+docker exec kolonie-postgres pg_isready -U kolonie
+
+# Check SSL (may take a few minutes)
+curl -sI https://kolonie.ai
+```
+
+## Deployment
+
+### Automatic (GitHub Actions)
+
+Every push to `main` triggers deployment:
+1. GitHub Actions SSHes to VPS
+2. Pulls latest infra config
+3. Restarts services
+4. Runs health check
+5. Rolls back on failure
+
+### Manual
+
+```bash
+ssh deploy@<your-vps-host>
+cd /opt/kolonie
+git pull origin main
+docker compose up -d
+```
+
+### Service Images
+
+The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (backend, frontend, academy) are built by their own repos and pushed to ghcr.io. The infra repo pulls and deploys them.
+
+Each service repo needs its own GitHub Actions workflow:
+1. Build Docker image
+2. Push to ghcr.io
+3. Trigger infra repo deployment (or use `docker compose pull && up -d`)
+
+## Services
+
+| Service | Image | Domain | Status |
+|---------|-------|--------|--------|
+| Traefik | traefik:v3.7 | - | Running |
+| PostgreSQL | postgres:16 | internal | Running |
+| Backend | kolonie-backend | api.kolonie.ai | Pending |
+| Frontend | kolonie-frontend | kolonie.ai | Pending |
+| Academy | kolonie-academy | academy.kolinie.ai | Pending |
 
 ## Repository Structure
 
@@ -80,63 +222,13 @@ kolonie-infra/
 │   ├── open-source-strategy.md     ← Why and when we go public
 │   ├── security-model.md           ← Threat model and security decisions
 │   ├── cost-projections.md         ← Infrastructure cost planning
-│   └── disaster-recovery.md        ← Backup and recovery procedures
+│   ├── disaster-recovery.md        ← Backup and recovery procedures
+│   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
 └── .github/
     └── workflows/
         └── deploy.yml              ← GitHub Actions deployment
 ```
-
-## Quick Start
-
-### Prerequisites
-- GitHub account with access to Kolonie-AI org
-- Cloudflare account with kolonie.ai zone
-- VPS with Docker installed
-
-### Setup
-```bash
-# 1. On VPS
-cd /opt/kolonie
-git clone https://github.com/Kolonie-AI/kolonie-infra.git .
-cp .env.example .env
-# Edit .env with real values (database password, Cloudflare token, etc.)
-
-# 2. Set GitHub Secrets (Settings → Secrets and variables → Actions)
-# - VPS_HOST: VPS IP address (stored in Cloudflare DNS only, never in repo)
-# - VPS_SSH_KEY: SSH private key for deployment user
-# - GH_TOKEN: GitHub personal access token (for private repo access)
-
-# 3. Start services
-docker compose up -d
-```
-
-### Security: Why No IPs in This Repo
-The VPS IP address is intentionally excluded from this repository. All traffic goes through Cloudflare, which hides the origin server. The IP is stored only in:
-- Cloudflare DNS (proxied)
-- GitHub Actions secret `VPS_HOST`
-
-This protects the server from direct attacks and DDoS.
-
-## Services
-
-| Service | Image | Domain | Status |
-|---------|-------|--------|--------|
-| Traefik | traefik:v3.7 | - | Ready |
-| PostgreSQL | postgres:16 | internal | Ready |
-| Backend | kolonie-backend | api.kolonie.ai | Pending (repo needed) |
-| Frontend | kolonie-frontend | kolonie.ai | Pending (repo needed) |
-| Academy | kolonie-academy | academy.kolonie.ai | Pending (repo needed) |
-
-## Deployment
-
-Push to `main` triggers GitHub Actions:
-1. SSH to VPS
-2. Pull latest infra config
-3. Pull new Docker images
-4. Restart services
-5. Health check
-6. Rollback on failure
 
 ## Related Repos
 
