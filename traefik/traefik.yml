@@ -1,11 +1,12 @@
 # Traefik Static Configuration
 # Kolonie AI — Production
+# NOTE: No ${VAR} interpolation here. Traefik doesn't support it in static YAML.
+# Cloudflare credentials are set via environment in docker-compose.yml.
 
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
-# Entry Points
 entryPoints:
   web:
     address: ":80"
@@ -17,22 +18,21 @@ entryPoints:
   websecure:
     address: ":443"
 
-# Certificate Resolvers (Let's Encrypt via Cloudflare DNS Challenge)
+# Let's Encrypt via Cloudflare DNS Challenge
+# Env vars CF_API_TOKEN and CF_EMAIL are set in docker-compose.yml
 certificatesResolvers:
   cloudflare:
     acme:
-      email: ${CF_EMAIL}
+      email: admin@kolonie.ai
       storage: /certs/acme.json
       dnsChallenge:
         provider: cloudflare
         delayBeforeCheck: 10s
 
-# API / Dashboard
 api:
-  dashboard: ${TRAEFIK_DASHBOARD:-false}
+  dashboard: false
   insecure: false
 
-# Providers (Docker)
 providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
@@ -42,10 +42,7 @@ providers:
     directory: /dynamic
     watch: true
 
-# Logging
 log:
   level: INFO
 
-accessLog:
-  filePath: /var/log/traefik/access.log
-  bufferingSize: 100
+accessLog: {}
