@@ -1,0 +1,48 @@
+# Traefik Dynamic Configuration — Routing
+# Kolonie AI
+# Routes are configured here instead of Docker labels (Docker provider has API version issues)
+
+http:
+  routers:
+    # Backend API
+    backend:
+      rule: "Host(`api.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      service: backend
+      tls:
+        certResolver: cloudflare
+
+    # Frontend
+    frontend:
+      rule: "Host(`kolonie.ai`)"
+      entryPoints:
+        - websecure
+      service: frontend
+      tls:
+        certResolver: cloudflare
+
+    # Academy
+    academy:
+      rule: "Host(`academy.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      service: academy
+      tls:
+        certResolver: cloudflare
+
+  services:
+    backend:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-backend:3000"
+
+    frontend:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-frontend:3000"
+
+    academy:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-academy:3000"
