@@ -23,10 +23,10 @@ The code IS the documentation. Docker Compose files describe what runs where. Tr
 Internet
     │
     ▼
-Cloudflare (CDN, DDoS, DNS)
+Cloudflare (CDN, DDoS, DNS) — hides origin IP
     │
     ▼
-<hosting-provider-redacted> VPS (<origin-ip-redacted>)
+VPS (IP stored in Cloudflare only, never in this repo)
     │
     ▼
 Traefik (Reverse Proxy, Auto-SSL)
@@ -39,7 +39,9 @@ Traefik (Reverse Proxy, Auto-SSL)
     └── Future: Redis, Workers, Queue
 ```
 
-**Status:** Single VPS, suitable for MVP and early growth.
+**Status:** Single VPS behind Cloudflare, suitable for MVP and early growth.
+
+> **SECURITY:** The VPS IP address is never stored in this repository. All access goes through Cloudflare. The IP is only stored in Cloudflare DNS and as a GitHub Actions secret.
 
 ## Scaling Path
 

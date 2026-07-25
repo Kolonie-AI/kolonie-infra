@@ -4,7 +4,7 @@
 
 | Item | Monthly Cost | Annual Cost |
 |------|-------------|-------------|
-| <hosting-provider-redacted> VPS (Cloud VPS 4) | ~15 EUR | ~180 EUR |
+| VPS | ~15 EUR | ~180 EUR |
 | Domain (kolonie.ai) | ~1 EUR | ~12 EUR |
 | Cloudflare | Free | Free |
 | GitHub (private repos) | Free | Free |
@@ -14,7 +14,7 @@
 
 | Item | Monthly Cost | Annual Cost |
 |------|-------------|-------------|
-| <hosting-provider-redacted> VPS | ~15 EUR | ~180 EUR |
+| VPS | ~15 EUR | ~180 EUR |
 | Managed PostgreSQL (Neon/Supabase) | ~20 EUR | ~240 EUR |
 | Domain | ~1 EUR | ~12 EUR |
 | Cloudflare | Free | Free |
@@ -25,7 +25,7 @@
 
 | Item | Monthly Cost | Annual Cost |
 |------|-------------|-------------|
-| 2x <hosting-provider-redacted> VPS | ~30 EUR | ~360 EUR |
+| 2x VPS | ~30 EUR | ~360 EUR |
 | Managed PostgreSQL | ~50 EUR | ~600 EUR |
 | Redis (managed or self-hosted) | ~10 EUR | ~120 EUR |
 | Domain | ~1 EUR | ~12 EUR |

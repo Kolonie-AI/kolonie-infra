@@ -6,7 +6,7 @@ This document records the infrastructure architecture decisions, the reasoning b
 
 | Date | Decision | Status |
 |------|----------|--------|
-| 2026-07-25 | Single VPS (<hosting-provider-redacted>) for MVP | Active |
+| 2026-07-25 | Single VPS for MVP | Active |
 | 2026-07-25 | Docker Compose (not Kubernetes) | Active |
 | 2026-07-25 | Traefik as reverse proxy | Active |
 | 2026-07-25 | Cloudflare for DNS/CDN/DDoS | Active |

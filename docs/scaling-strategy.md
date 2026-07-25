@@ -6,7 +6,7 @@ Kolonie AI starts on a single VPS. This is intentional, not a limitation. The ar
 
 ## Phase 1: Single VPS (Now)
 
-**Architecture:** Docker Compose on <hosting-provider-redacted> VPS
+**Architecture:** Docker Compose on VPS
 **Capacity:** ~1,000 concurrent users
 **Cost:** ~15 EUR/month
 

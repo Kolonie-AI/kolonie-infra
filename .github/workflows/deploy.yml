@@ -11,8 +11,8 @@ on:
         default: 'all'
 
 env:
-  VPS_HOST: <origin-ip-redacted>
-  VPS_USER: kolonie
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_USER: ubuntu
   DEPLOY_DIR: /opt/kolonie
 
 jobs:

@@ -79,4 +79,6 @@ When changing infrastructure, update the relevant docs too.
 ## Deployment
 
 Push to `main` triggers automatic deployment via GitHub Actions.
-Manual deployment: `ssh kolonie@<origin-ip-redacted> 'cd /opt/kolonie && ./scripts/deploy.sh'`
+Manual deployment: `ssh <user>@<vps-host> 'cd /opt/kolonie && ./scripts/deploy.sh'`
+
+> **Note:** VPS IP is never stored in this repo. All access goes through Cloudflare. Use environment variables or GitHub Secrets for the VPS host.
