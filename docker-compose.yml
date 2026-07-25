@@ -10,7 +10,7 @@ volumes:
 services:
   # === Traefik Reverse Proxy ===
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.3
     container_name: kolonie-traefik
     restart: unless-stopped
     networks:
