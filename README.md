@@ -89,20 +89,40 @@ kolonie-infra/
 
 ## Quick Start
 
+### Prerequisites
+- GitHub account with access to Kolonie-AI org
+- Cloudflare account with kolonie.ai zone
+- VPS with Docker installed
+
+### Setup
 ```bash
-# On VPS
+# 1. On VPS
 cd /opt/kolonie
 git clone https://github.com/Kolonie-AI/kolonie-infra.git .
 cp .env.example .env
-# Edit .env with real values
+# Edit .env with real values (database password, Cloudflare token, etc.)
+
+# 2. Set GitHub Secrets (Settings → Secrets and variables → Actions)
+# - VPS_HOST: VPS IP address (stored in Cloudflare DNS only, never in repo)
+# - VPS_SSH_KEY: SSH private key for deployment user
+# - GH_TOKEN: GitHub personal access token (for private repo access)
+
+# 3. Start services
 docker compose up -d
 ```
+
+### Security: Why No IPs in This Repo
+The VPS IP address is intentionally excluded from this repository. All traffic goes through Cloudflare, which hides the origin server. The IP is stored only in:
+- Cloudflare DNS (proxied)
+- GitHub Actions secret `VPS_HOST`
+
+This protects the server from direct attacks and DDoS.
 
 ## Services
 
 | Service | Image | Domain | Status |
 |---------|-------|--------|--------|
-| Traefik | traefik:v3.1 | - | Ready |
+| Traefik | traefik:v3.7 | - | Ready |
 | PostgreSQL | postgres:16 | internal | Ready |
 | Backend | kolonie-backend | api.kolonie.ai | Pending (repo needed) |
 | Frontend | kolonie-frontend | kolonie.ai | Pending (repo needed) |
