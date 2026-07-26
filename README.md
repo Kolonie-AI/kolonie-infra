@@ -1,6 +1,22 @@
 # Kolonie AI — Infrastructure as Code
 
+**Status: [STATUS.md](STATUS.md)** | **Last verified: 26.07.2026**
+
 Infrastructure as Code for Kolonie AI. This repository contains everything needed to run, deploy, and scale the Kolonie AI platform.
+
+## Current State
+
+**Traefik + PostgreSQL are running on the VPS. Deploy via GitHub Actions works.**
+
+```
+kolonie-traefik    healthy   (v3.7, Reverse Proxy, Let's Encrypt via Cloudflare DNS Challenge)
+kolonie-postgres   healthy   (PostgreSQL 16-alpine)
+backend            pending   (image not built yet)
+frontend           pending   (image not built yet)
+academy            pending   (image not built yet)
+```
+
+See [STATUS.md](STATUS.md) for detailed status, known issues, and what's still missing.
 
 ## Why This Repo Exists
 
@@ -50,45 +66,21 @@ Traefik (Reverse Proxy, Auto-SSL)
 - GitHub account with access to Kolonie-AI org
 - Cloudflare account with kolonie.ai zone configured
 
-### Step 1: Bootstrap VPS
+### Step 1: SSH into VPS
 
 ```bash
-# SSH into your VPS
-ssh root@<your-vps-ip>
-
-# System update
-apt update && apt upgrade -y
-
-# Install Docker
-curl -fsSL https://get.docker.com | sh
-
-# Create deployment user
-useradd -m -s /bin/bash -G sudo,docker deploy
-mkdir -p /home/deploy/.ssh
-cp /root/.ssh/authorized_keys /home/deploy/.ssh/
-chown -R deploy:deploy /home/deploy/.ssh
-
-# Firewall
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-echo "y" | ufw enable
-
-# Directory structure
-mkdir -p /opt/kolonie
-chown deploy:deploy /opt/kolonie
+ssh ubuntu@<your-vps-ip>
 ```
 
-### Step 2: Generate GitHub Actions SSH Key
+> **Note:** The VPS only accepts `ubuntu` as login user. `root` will be rejected.
+
+### Step 2: System setup (already done)
 
 ```bash
-# As deploy user on VPS
-su - deploy
-ssh-keygen -t ed25519 -f ~/.ssh/github_actions -N "" -C "kolonie-github-actions"
-cat ~/.ssh/github_actions.pub >> ~/.ssh/authorized_keys
-cat ~/.ssh/github_actions  # Copy this private key for GitHub Secret
+# Docker is installed (v29.6.2)
+# Docker Compose is installed (v5.3.1)
+# /opt/kolonie exists with the repo cloned
+# .env is configured
 ```
 
 ### Step 3: Clone Infra Repo on VPS
@@ -124,15 +116,14 @@ API_URL=https://api.kolonie.ai
 FRONTEND_URL=https://kolonie.ai
 ```
 
-### Step 5: Set GitHub Secrets
+### Step 3: GitHub Secrets
 
-Go to **kolonie-infra** → **Settings** → **Secrets and variables** → **Actions**:
+These are already set in kolonie-infra → Settings → Secrets:
 
-| Secret | Value | How to get it |
-|--------|-------|---------------|
-| `VPS_HOST` | Your VPS IP | From your hosting provider |
-| `VPS_SSH_KEY` | Private key | Generated in Step 2 |
-| `GH_TOKEN` | GitHub PAT | github.com → Settings → Tokens |
+| Secret | Description |
+|--------|-------------|
+| `VPS_HOST` | VPS IP (Cloudflare-proxied, never in repo) |
+| `VPS_SSH_KEY` | SSH private key for `ubuntu` user |
 
 ### Step 6: Start Services
 
@@ -168,10 +159,10 @@ Every push to `main` triggers deployment:
 4. Runs health check
 5. Rolls back on failure
 
-### Manual
+### Manual Deploy
 
 ```bash
-ssh deploy@<your-vps-host>
+ssh ubuntu@<vps-host>
 cd /opt/kolonie
 git pull origin main
 docker compose up -d
@@ -179,12 +170,19 @@ docker compose up -d
 
 ### Service Images
 
-The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (backend, frontend, academy) are built by their own repos and pushed to ghcr.io. The infra repo pulls and deploys them.
+The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (backend, frontend, academy) are built by their own repos and pushed to `ghcr.io`.
 
-Each service repo needs its own GitHub Actions workflow:
-1. Build Docker image
-2. Push to ghcr.io
-3. Trigger infra repo deployment (or use `docker compose pull && up -d`)
+**How deployment works:**
+1. Push to `main` triggers GitHub Actions
+2. Actions SSHs to VPS as `ubuntu`
+3. Runs `git pull origin main` in `/opt/kolonie`
+4. Runs `scripts/deploy.sh` which does `docker compose pull` + `docker compose up -d`
+5. Runs `scripts/healthcheck.sh` which checks container health via Docker inspect
+
+**To add a new service:**
+1. Build image in its own repo → push to `ghcr.io/kolonie-ai/<service>:latest`
+2. Add service definition to `docker-compose.yml` (with `profiles: [full]` if optional)
+3. Next infra deploy will pick it up automatically
 
 ## Services
 
@@ -194,7 +192,7 @@ Each service repo needs its own GitHub Actions workflow:
 | PostgreSQL | postgres:16 | internal | Running |
 | Backend | kolonie-backend | api.kolonie.ai | Pending |
 | Frontend | kolonie-frontend | kolonie.ai | Pending |
-| Academy | kolonie-academy | academy.kolinie.ai | Pending |
+| Academy | kolonie-academy | academy.kolonie.ai | Pending |
 
 ## Repository Structure
 
