@@ -15,6 +15,8 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+  ping:
+    address: ":8080"
 
 # Let's Encrypt via Cloudflare DNS Challenge
 # Token passed as CLOUDFLARE_DNS_API_TOKEN env var from docker-compose
@@ -30,6 +32,9 @@ certificatesResolvers:
 api:
   dashboard: false
   insecure: false
+
+ping:
+  entryPoint: ping
 
 # Docker provider (Traefik v3.7 supports Docker API 1.40+)
 providers:
