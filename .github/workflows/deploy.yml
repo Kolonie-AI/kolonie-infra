@@ -12,7 +12,7 @@ on:
 
 env:
   VPS_HOST: ${{ secrets.VPS_HOST }}
-  VPS_USER: deploy
+  VPS_USER: ubuntu
   DEPLOY_DIR: /opt/kolonie
 
 jobs:
