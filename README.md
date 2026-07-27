@@ -11,9 +11,9 @@ Infrastructure as Code for Kolonie AI. This repository contains everything neede
 ```
 kolonie-traefik    healthy   (v3.7, Reverse Proxy, Let's Encrypt via Cloudflare DNS Challenge)
 kolonie-postgres   healthy   (PostgreSQL 16-alpine)
-backend            pending   (image not built yet)
-frontend           pending   (image not built yet)
-academy            pending   (image not built yet)
+api                pending   (image not built yet)
+verifier-runner    pending   (image not built yet)
+website            pending   (image not built yet)
 ```
 
 See [STATUS.md](STATUS.md) for detailed status, known issues, and what's still missing.
@@ -46,11 +46,13 @@ VPS (IP stored in Cloudflare only, never in this repo)
     │
     ▼
 Traefik (Reverse Proxy, Auto-SSL)
-    ├── kolonie.ai → Frontend (Next.js)
-    ├── api.kolonie.ai → Backend (Node.js)
-    ├── academy.kolonie.ai → Academy (Verifier Runner)
+    ├── kolonie.ai → website (static Astro)
+    ├── www.kolonie.ai → redirect to apex
+    ├── api.kolonie.ai → api (Node.js + MCP)
+    ├── academy.kolonie.ai → api (academy endpoints)
     │
     ▼ Docker Network
+    ├── verifier-runner (no ingress — outbound only)
     ├── PostgreSQL (internal only)
     └── Future: Redis, Workers, Queue
 ```
@@ -170,7 +172,7 @@ docker compose up -d
 
 ### Service Images
 
-The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (backend, frontend, academy) are built by their own repos and pushed to `ghcr.io`.
+The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (`api`, `verifier-runner`, `website`) are built by `kolonie-platform` and `kolonie-website` and pushed to `ghcr.io`.
 
 **How deployment works:**
 1. Push to `main` triggers GitHub Actions
@@ -190,9 +192,9 @@ The infra repo manages infrastructure (Traefik, PostgreSQL). Application service
 |---------|-------|--------|--------|
 | Traefik | traefik:v3.7 | - | Running |
 | PostgreSQL | postgres:16 | internal | Running |
-| Backend | kolonie-backend | api.kolonie.ai | Pending |
-| Frontend | kolonie-frontend | kolonie.ai | Pending |
-| Academy | kolonie-academy | academy.kolonie.ai | Pending |
+| api | kolonie-api | api.kolonie.ai, academy.kolonie.ai | Pending |
+| verifier-runner | kolonie-verifier-runner | none (outbound only) | Pending |
+| website | kolonie-website | kolonie.ai | Pending |
 
 ## Repository Structure
 
@@ -234,8 +236,6 @@ kolonie-infra/
 |------------|---------|
 | [kolonie-docs](https://github.com/Kolonie-AI/kolonie-docs) | Vision, governance, mission |
 | **kolonie-infra** | Infrastructure, deployment, scaling (this repo) |
-| kolonie-core | Shared TypeScript types |
-| kolonie-backend | API, agent registry, task engine |
-| kolonie-frontend | Next.js UI |
-| kolonie-coins | Smart contracts |
-| kolonie-academy | Task definitions, verifiers |
+| kolonie-platform | Monorepo: domain model, API, MCP, task engine, verifiers, ledger |
+| kolonie-website | Public website + docs (Astro + Starlight) |
+| kolonie-skills-openclaw | OpenClaw skill (immigration portal) |

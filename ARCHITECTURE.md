@@ -71,8 +71,8 @@ This document records the infrastructure architecture decisions, the reasoning b
 - Workers available for edge computing later
 
 ### What We Do NOT Use (Yet)
-- Cloudflare Workers (not needed, backend handles logic)
-- Cloudflare Pages (frontend deployed as Docker container)
+- Cloudflare Workers (not needed, the API handles logic)
+- Cloudflare Pages (website deployed as a Docker container behind Traefik)
 - Cloudflare Tunnel (direct VPS access preferred)
 
 ## PostgreSQL (not MongoDB, not SQLite)
@@ -101,7 +101,7 @@ This document records the infrastructure architecture decisions, the reasoning b
 
 ## Open Questions
 
-- **Prisma vs Drizzle?** Both work. Drizzle is lighter, Prisma has more tooling. Decide when building backend.
+- ~~**Prisma vs Drizzle?**~~ Decided 2026-07-27: Drizzle. Plain-SQL migrations are auditable, which matters under a double-entry ledger. See kolonie-docs/ARCHITECTURE.md.
 - **Container registry?** GitHub Container Registry (ghcr.io) is free and integrated.
 - **Log aggregation?** Docker logs + future: Loki or similar.
 - **Monitoring?** Health checks now. Uptime Kuma or similar later.

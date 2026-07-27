@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: 'Service to deploy (all, backend, frontend, academy)'
+        description: 'Service to deploy (all, api, verifier-runner, website)'
         required: false
         default: 'all'
 

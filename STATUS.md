@@ -1,6 +1,15 @@
 # kolonie-infra — Status
 
-## Aktueller Stand (26.07.2026, 11:15 MEZ)
+## Aktueller Stand (27.07.2026)
+
+**DNS steht, Services fehlen.** Die drei Hosts liefern 502, weil noch kein
+Anwendungs-Image gebaut ist. Traefik und PostgreSQL laufen.
+
+Umbenannt am 27.07.2026 im Zuge der Repo-Konsolidierung:
+`backend` → `api`, `academy` → `verifier-runner`, `frontend` → `website`.
+`verifier-runner` hat bewusst keine Traefik-Route.
+
+## Vorheriger Stand (26.07.2026, 11:15 MEZ)
 
 **Deploy-Workflow funktioniert.** Traefik + PostgreSQL laufen auf der VPS.
 
@@ -30,15 +39,17 @@ kolonie-postgres   healthy   (PostgreSQL 16-alpine)
 ## Was noch fehlt
 
 ### Unmittelbar
-- [ ] Cloudflare DNS Records: `kolonie.ai`, `api.kolonie.ai`, `academy.kolonie.ai` muessen auf die VPS-IP zeigen (derzeit nur via Cloudflare Proxy erreichbar).
-- [ ] TLS-Zertifikat: Let's Encrypt DNS Challenge braucht funktionierende DNS Records. Aktuell: `acme.json` existiert, aber kein Zertifikat ausgestellt.
+- [x] Cloudflare DNS Records gesetzt: `kolonie.ai`, `www`, `api`, `academy` zeigen proxied auf den Origin (Stand 27.07.2026).
+- [x] Namecheap-Parking entfernt: der Apex hatte einen zweiten A-Record auf eine Parking-Seite, dadurch ging rund die Haelfte aller Requests auf die falsche Seite. Ausserdem zeigte `www` per CNAME auf `parkingpage.namecheap.com`, jetzt auf den Apex.
+- [ ] Cloudflare SSL-Modus auf **Full (strict)** pruefen. Der DNS-Token darf Zone-Settings nicht lesen (Fehler 9109), das geht nur im Dashboard.
+- [ ] Origin-Zertifikat: Edge-TLS laeuft ueber Cloudflare Universal SSL (Google Trust Services). Traefik hat noch kein eigenes Let's-Encrypt-Zertifikat ausgestellt — faellt erst auf, wenn der SSL-Modus auf Full (strict) steht.
 
 ### Services
-- [ ] Backend-Image (`ghcr.io/kolonie-ai/kolonie-backend:latest`) existiert nicht.
-- [ ] Frontend-Image (`ghcr.io/kolonie-ai/kolonie-frontend:latest`) existiert nicht.
-- [ ] Academy-Image (`ghcr.io/kolonie-ai/kolonie-academy:latest`) existiert nicht.
-- [ ] Build-Workflows in den jeweiligen Repos fehlen noch.
-- [ ] Ohne Images schlagen die `profiles: [full]` Services fehl - Traefik routed auf nicht erreichbare Container (502).
+- [ ] `ghcr.io/kolonie-ai/kolonie-api:latest` existiert nicht.
+- [ ] `ghcr.io/kolonie-ai/kolonie-verifier-runner:latest` existiert nicht.
+- [ ] `ghcr.io/kolonie-ai/kolonie-website:latest` existiert nicht.
+- [ ] Build-Workflows in `kolonie-platform` und `kolonie-website` fehlen noch.
+- [ ] Ohne Images antwortet Traefik mit 502 — aktuell der Zustand auf allen drei Hosts.
 
 ### Infrastruktur
 - [ ] `/opt/kolonie/backups/` ist leer (kein Backup-Prozess ausser den Skripten).
@@ -48,7 +59,8 @@ kolonie-postgres   healthy   (PostgreSQL 16-alpine)
 
 ## VPS-Zugang
 
-- **Host:** <hosting-provider-redacted> VPS, Ubuntu 24.04
+- **Host:** Cloud VPS, EU-Region, Ubuntu 24.04 (Provider und IP stehen bewusst
+  in keinem Repo — siehe ARCHITECTURE.md, Security)
 - **Login:** `ubuntu` via SSH-Key (Key liegt in GitHub Secrets als `VPS_SSH_KEY`)
 - **Root-Zugang:** `root` wird von der VPS nicht akzeptiert ("Please login as ubuntu")
 - **Docker:** v29.6.2, Compose v5.3.1

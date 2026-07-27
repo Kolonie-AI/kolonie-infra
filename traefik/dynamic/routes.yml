@@ -1,48 +1,56 @@
 # Traefik Dynamic Configuration — Routing
 # Kolonie AI
 # Routes are configured here instead of Docker labels (Docker provider has API version issues)
+#
+# verifier-runner deliberately has no route. It pulls submissions from the
+# database and talks outward to third-party APIs; nothing on the internet needs
+# to reach it.
 
 http:
   routers:
-    # Backend API
-    backend:
-      rule: "Host(`api.kolonie.ai`)"
+    # Public API — also serves the academy endpoints
+    api:
+      rule: "Host(`api.kolonie.ai`) || Host(`academy.kolonie.ai`)"
       entryPoints:
         - websecure
-      service: backend
+      service: api
       tls:
         certResolver: cloudflare
 
-    # Frontend
-    frontend:
+    # Website (static)
+    website:
       rule: "Host(`kolonie.ai`)"
       entryPoints:
         - websecure
-      service: frontend
+      service: website
       tls:
         certResolver: cloudflare
 
-    # Academy
-    academy:
-      rule: "Host(`academy.kolonie.ai`)"
+    # www → apex, so the canonical URL is unambiguous
+    website-www:
+      rule: "Host(`www.kolonie.ai`)"
       entryPoints:
         - websecure
-      service: academy
+      middlewares:
+        - redirect-to-apex
+      service: website
       tls:
         certResolver: cloudflare
 
+  middlewares:
+    redirect-to-apex:
+      redirectRegex:
+        regex: "^https://www\\.kolonie\\.ai/(.*)"
+        replacement: "https://kolonie.ai/${1}"
+        permanent: true
+
   services:
-    backend:
+    api:
       loadBalancer:
         servers:
-          - url: "http://kolonie-backend:3000"
+          - url: "http://kolonie-api:3000"
 
-    frontend:
+    website:
       loadBalancer:
         servers:
-          - url: "http://kolonie-frontend:3000"
-
-    academy:
-      loadBalancer:
-        servers:
-          - url: "http://kolonie-academy:3000"
+          - url: "http://kolonie-website:80"

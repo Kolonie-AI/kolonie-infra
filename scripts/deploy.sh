@@ -27,8 +27,8 @@ pull() {
     cd "$DEPLOY_DIR"
     if [ "$SERVICE" = "all" ]; then
         # Only pull non-profiled services (traefik, postgres).
-        # Profiled services (backend, frontend, academy) are pulled
-        # individually when their images are ready.
+        # Profiled services (api, verifier-runner, website) are pulled
+        # individually once their images exist.
         docker compose pull 2>&1 || {
             log "ERROR: Image pull failed"
             exit 1
@@ -47,7 +47,7 @@ deploy() {
     cd "$DEPLOY_DIR"
     if [ "$SERVICE" = "all" ]; then
         # Start only non-profiled services (traefik, postgres).
-        # Use --profile full only when backend/frontend/academy images exist.
+        # Use --profile full only once api/verifier-runner/website images exist.
         docker compose up -d --remove-orphans 2>&1 || {
             log "ERROR: Deployment failed"
             rollback

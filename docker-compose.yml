@@ -25,8 +25,12 @@ services:
       - ./traefik/traefik.yml:/traefik.yml:ro
       - ./traefik/dynamic:/dynamic:ro
       - traefik_certs:/certs
+    # The variable name is the same on both sides on purpose. It previously read
+    # ${CLOUDFLARE_API_TOKEN} while .env defines CLOUDFLARE_DNS_API_TOKEN, so the
+    # token resolved to an empty string and the ACME DNS challenge could never
+    # complete — which is why no Let's Encrypt certificate was ever issued.
     environment:
-      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN:?set CLOUDFLARE_DNS_API_TOKEN in .env}
       - CLOUDFLARE_EMAIL=${CLOUDFLARE_EMAIL}
     labels:
       - "traefik.enable=true"
@@ -55,10 +59,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # === Kolonie Backend (placeholder - needs image) ===
-  backend:
-    image: ghcr.io/kolonie-ai/kolonie-backend:latest
-    container_name: kolonie-backend
+  # === Public API + MCP (kolonie-platform / apps/api) ===
+  # Serves api.kolonie.ai and academy.kolonie.ai. Routing lives in
+  # traefik/dynamic/routes.yml, not in labels — see the note there.
+  api:
+    image: ghcr.io/kolonie-ai/kolonie-api:latest
+    container_name: kolonie-api
     restart: unless-stopped
     networks:
       - kolonie
@@ -70,12 +76,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`api.kolonie.ai`)"
-      - "traefik.http.routers.backend.entrypoints=websecure"
-      - "traefik.http.routers.backend.tls.certresolver=cloudflare"
-      - "traefik.http.services.backend.loadbalancer.server.port=3000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -85,55 +85,43 @@ services:
     profiles:
       - full
 
-  # === Kolonie Frontend (placeholder - needs image) ===
-  frontend:
-    image: ghcr.io/kolonie-ai/kolonie-frontend:latest
-    container_name: kolonie-frontend
-    restart: unless-stopped
-    networks:
-      - kolonie
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      NEXT_PUBLIC_API_URL: https://api.kolonie.ai
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`kolonie.ai`)"
-      - "traefik.http.routers.frontend.entrypoints=websecure"
-      - "traefik.http.routers.frontend.tls.certresolver=cloudflare"
-      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    profiles:
-      - full
-
-  # === Kolonie Academy (placeholder - needs image) ===
-  academy:
-    image: ghcr.io/kolonie-ai/kolonie-academy:latest
-    container_name: kolonie-academy
+  # === Verifier Runner (kolonie-platform / apps/verifier-runner) ===
+  # No Traefik route on purpose: it pulls submissions from the database and
+  # talks outward to third-party APIs. Nothing on the internet reaches it.
+  verifier-runner:
+    image: ghcr.io/kolonie-ai/kolonie-verifier-runner:latest
+    container_name: kolonie-verifier-runner
     restart: unless-stopped
     networks:
       - kolonie
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
+      GITHUB_VERIFIER_TOKEN: ${GITHUB_VERIFIER_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.academy.rule=Host(`academy.kolonie.ai`)"
-      - "traefik.http.routers.academy.entrypoints=websecure"
-      - "traefik.http.routers.academy.tls.certresolver=cloudflare"
-      - "traefik.http.services.academy.loadbalancer.server.port=3000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - full
+
+  # === Website (kolonie-website, static Astro build behind nginx) ===
+  website:
+    image: ghcr.io/kolonie-ai/kolonie-website:latest
+    container_name: kolonie-website
+    restart: unless-stopped
+    networks:
+      - kolonie
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 20s
     profiles:
       - full
