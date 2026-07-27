@@ -1,9 +1,28 @@
 # kolonie-infra — Status
 
-## Aktueller Stand (27.07.2026)
+## Aktueller Stand (28.07.2026)
 
-**DNS steht, Services fehlen.** Die drei Hosts liefern 502, weil noch kein
-Anwendungs-Image gebaut ist. Traefik und PostgreSQL laufen.
+**Edge-TLS ist verifiziert Ende zu Ende.** Der Cloudflare-SSL-Modus steht auf
+**Full (strict)** (vom Maintainer im Dashboard bestaetigt, 28.07.2026), und
+Traefik stellt am Origin echte Let's-Encrypt-Zertifikate vom
+Produktions-Endpunkt (`acme-v02`, nicht Staging) fuer alle fuenf Namen aus:
+Apex, `www`, `api`, `academy`, `mcp`. Alle liefern 200 auf `/health` mit
+gueltiger Kette, `www` leitet per 301 auf den Apex.
+
+Damit ist der Cloudflare-zu-Origin-Hop authentifiziert. Vorher war er es nicht:
+jeder Modus unterhalb von Full (strict) akzeptiert stillschweigend, was der
+Origin praesentiert — fuer eine Plattform, die API-Keys und spaeter ein
+Coin-Ledger traegt, war das nur bis zum ersten Deploy vertretbar.
+
+Nachgeprueft wird das mit dem Origin-Zertifikat, nicht mit dem Edge-Zertifikat.
+Am Edge sieht man immer Cloudflares eigenes Zertifikat (Google Trust Services);
+ob der Hop dahinter geprueft wird, sagt das nicht.
+
+> **Aelterer Stand weiter unten ist teilweise ueberholt.** Die 502 auf allen
+> Hosts sind seit dem 27.07.2026 weg, und mehrere Punkte unter *Was noch fehlt*
+> stimmen nicht mehr. Die Datei traegt ausserdem Checkboxen, die es laut
+> `AGENTS.md` §3 in kolonie-docs nicht geben darf — Zustand gehoert in Issues.
+> Aufgeraeumt wird das in `kolonie-infra#10`.
 
 Umbenannt am 27.07.2026 im Zuge der Repo-Konsolidierung:
 `backend` → `api`, `academy` → `verifier-runner`, `frontend` → `website`.
@@ -41,8 +60,8 @@ kolonie-postgres   healthy   (PostgreSQL 16-alpine)
 ### Unmittelbar
 - [x] Cloudflare DNS Records gesetzt: `kolonie.ai`, `www`, `api`, `academy` zeigen proxied auf den Origin (Stand 27.07.2026).
 - [x] Namecheap-Parking entfernt: der Apex hatte einen zweiten A-Record auf eine Parking-Seite, dadurch ging rund die Haelfte aller Requests auf die falsche Seite. Ausserdem zeigte `www` per CNAME auf `parkingpage.namecheap.com`, jetzt auf den Apex.
-- [ ] Cloudflare SSL-Modus auf **Full (strict)** pruefen. Der DNS-Token darf Zone-Settings nicht lesen (Fehler 9109), das geht nur im Dashboard.
-- [ ] Origin-Zertifikat: Edge-TLS laeuft ueber Cloudflare Universal SSL (Google Trust Services). Traefik hat noch kein eigenes Let's-Encrypt-Zertifikat ausgestellt — faellt erst auf, wenn der SSL-Modus auf Full (strict) steht.
+Cloudflare-SSL-Modus und Origin-Zertifikat sind erledigt und oben unter
+*Aktueller Stand* festgehalten (`kolonie-infra#2`, 28.07.2026).
 
 ### Services
 - [x] `ghcr.io/kolonie-ai/kolonie-api:latest` gebaut (27.07.2026).
