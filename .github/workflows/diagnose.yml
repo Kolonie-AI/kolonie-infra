@@ -1,0 +1,79 @@
+name: Diagnose VPS
+
+# Read-only inspection of the deploy host, run on demand.
+#
+# It exists because the host is otherwise unreachable: the SSH key lives only as
+# a repository secret, so a question like "which variables does /opt/kolonie/.env
+# actually define" cannot be answered from a workstation. Every earlier attempt
+# ended in a guess, and kolonie-infra#7 is the result of one.
+#
+# This workflow never prints a secret. It reports variable *names*, file
+# presence and container state — never a value. Keep it that way: the log of a
+# workflow run is not a private place.
+
+on:
+  workflow_dispatch:
+
+env:
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_USER: ubuntu
+  DEPLOY_DIR: /opt/kolonie
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Inspect the deploy host
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VPS_HOST }}
+          username: ${{ env.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -u
+            cd ${{ env.DEPLOY_DIR }}
+
+            echo "=== .env ==="
+            if [ -f .env ]; then
+              echo "present, $(wc -l < .env) lines"
+              echo "--- variable names only, values never printed ---"
+              grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
+              echo "--- names defined but empty ---"
+              grep -E '^[A-Za-z_][A-Za-z0-9_]*=$' .env | tr -d '=' | sort || echo "(none)"
+            else
+              echo "MISSING — this alone explains every failed deploy"
+            fi
+
+            echo
+            echo "=== compose interpolation ==="
+            if docker compose config --quiet 2>/tmp/compose.err; then
+              echo "OK — the file interpolates"
+            else
+              echo "FAILS:"
+              cat /tmp/compose.err
+            fi
+
+            echo
+            echo "=== compose interpolation, --profile full ==="
+            if docker compose --profile full config --quiet 2>/tmp/compose-full.err; then
+              echo "OK"
+            else
+              echo "FAILS:"
+              cat /tmp/compose-full.err
+            fi
+
+            echo
+            echo "=== required variables declared in docker-compose.yml ==="
+            grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:\?' docker-compose.yml | sed 's/\${//; s/:?//' | sort -u || echo "(none)"
+
+            echo
+            echo "=== containers ==="
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+
+            echo
+            echo "=== repository checkout ==="
+            git log --oneline -1
+            git status --porcelain || true
