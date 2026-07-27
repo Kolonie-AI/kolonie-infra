@@ -25,12 +25,18 @@ services:
       - ./traefik/traefik.yml:/traefik.yml:ro
       - ./traefik/dynamic:/dynamic:ro
       - traefik_certs:/certs
-    # The variable name is the same on both sides on purpose. It previously read
-    # ${CLOUDFLARE_API_TOKEN} while .env defines CLOUDFLARE_DNS_API_TOKEN, so the
-    # token resolved to an empty string and the ACME DNS challenge could never
-    # complete — which is why no Let's Encrypt certificate was ever issued.
+    # The two sides are different names on purpose, and neither is a typo.
+    #
+    # Left: what lego expects inside the Traefik container for the Cloudflare DNS
+    # challenge. Right: what /opt/kolonie/.env on the deploy host actually
+    # defines — verified by the diagnose workflow, not assumed.
+    #
+    # An earlier fix set both sides to CLOUDFLARE_DNS_API_TOKEN on the belief
+    # that .env used that name. It does not, and marking the variable required
+    # with :? turned a silent empty string into a hard failure of every deploy.
+    # See #7.
     environment:
-      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN:?set CLOUDFLARE_DNS_API_TOKEN in .env}
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN in .env}
       - CLOUDFLARE_EMAIL=${CLOUDFLARE_EMAIL}
     labels:
       - "traefik.enable=true"

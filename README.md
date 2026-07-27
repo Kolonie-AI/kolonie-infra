@@ -6,7 +6,9 @@ Infrastructure as Code for Kolonie AI. This repository contains everything neede
 
 ## Current State
 
-**Traefik + PostgreSQL are running on the VPS. Deploy via GitHub Actions works.**
+**Traefik + PostgreSQL are running on the VPS.** The deploy workflow reaches the
+host and runs, but no deploy had ever completed until #7 — see STATUS.md and the
+open issues before trusting a green badge.
 
 ```
 kolonie-traefik    healthy   (v3.7, Reverse Proxy, Let's Encrypt via Cloudflare DNS Challenge)
@@ -108,7 +110,7 @@ POSTGRES_DB=kolonie
 
 # Cloudflare — get from https://dash.cloudflare.com/profile/api-tokens
 # Create token with Zone:DNS:Edit permission for kolonie.ai
-CLOUDFLARE_DNS_API_TOKEN=your-cloudflare-api-token
+CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
 CLOUDFLARE_EMAIL=your-cloudflare-email
 
 # Application — generate random secrets
