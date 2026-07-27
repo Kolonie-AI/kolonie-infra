@@ -45,11 +45,17 @@ kolonie-postgres   healthy   (PostgreSQL 16-alpine)
 - [ ] Origin-Zertifikat: Edge-TLS laeuft ueber Cloudflare Universal SSL (Google Trust Services). Traefik hat noch kein eigenes Let's-Encrypt-Zertifikat ausgestellt — faellt erst auf, wenn der SSL-Modus auf Full (strict) steht.
 
 ### Services
-- [ ] `ghcr.io/kolonie-ai/kolonie-api:latest` existiert nicht.
-- [ ] `ghcr.io/kolonie-ai/kolonie-verifier-runner:latest` existiert nicht.
-- [ ] `ghcr.io/kolonie-ai/kolonie-website:latest` existiert nicht.
-- [ ] Build-Workflows in `kolonie-platform` und `kolonie-website` fehlen noch.
-- [ ] Ohne Images antwortet Traefik mit 502 — aktuell der Zustand auf allen drei Hosts.
+- [x] `ghcr.io/kolonie-ai/kolonie-api:latest` gebaut (27.07.2026).
+- [x] `ghcr.io/kolonie-ai/kolonie-verifier-runner:latest` gebaut (27.07.2026).
+- [x] Path-gefilterte Build-Workflows in `kolonie-platform` laufen gruen.
+- [ ] `ghcr.io/kolonie-ai/kolonie-website:latest` existiert nicht — Repo noch nicht angelegt.
+- [ ] **GHCR-Login auf der VPS fehlt.** Beide Images sind privat, weil das Repo
+      privat ist. `docker compose --profile full pull` schlaegt ohne
+      Authentifizierung mit `denied` fehl. Noetig: ein PAT mit `read:packages`
+      als GitHub-Actions-Secret, und im Deploy-Workflow ein
+      `docker login ghcr.io` vor dem Pull. Alternativ die beiden Pakete auf
+      public stellen — das geht unabhaengig von der Repo-Sichtbarkeit.
+- [ ] Ohne laufende Container antwortet Traefik mit 502 — aktueller Zustand auf allen drei Hosts.
 
 ### Infrastruktur
 - [ ] `/opt/kolonie/backups/` ist leer (kein Backup-Prozess ausser den Skripten).
