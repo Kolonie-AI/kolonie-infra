@@ -82,3 +82,34 @@ Push to `main` triggers automatic deployment via GitHub Actions.
 Manual deployment: `ssh <user>@<vps-host> 'cd /opt/kolonie && ./scripts/deploy.sh'`
 
 > **Note:** VPS IP is never stored in this repo. All access goes through Cloudflare. Use environment variables or GitHub Secrets for the VPS host.
+
+### Profiles
+
+`--profile full` deploys the application services **that exist**: `api` and
+`verifier-runner`. The website sits in its own `website` profile because its
+image has never been built, and `docker compose pull` fails the entire command
+for one missing image — taking the working images down with it. Add
+`--profile website` to `detect_profile()` in `scripts/deploy.sh` once
+`ghcr.io/kolonie-ai/kolonie-website` is published.
+
+## Looking at the deploy host
+
+**Do not reason about the host. Look at it.**
+
+Run the **Diagnose VPS** workflow — `gh workflow run diagnose.yml`, then read the
+run log. It is read-only and reports what is actually there: which variables
+`/opt/kolonie/.env` defines, whether `docker compose` interpolates, which
+containers run, which commit is checked out.
+
+It prints variable **names**, never values. Keep it that way if you extend it: a
+workflow log is not a private place.
+
+This exists because of #7. Every deploy had failed for days — `.env` defines
+`CLOUDFLARE_API_TOKEN`, `docker-compose.yml` demanded `CLOUDFLARE_DNS_API_TOKEN`
+— and each failure was attributed to the known GHCR credential problem instead of
+being read. One workflow run would have settled it at any point.
+
+Direct SSH access, where a maintainer or agent has it, is fine for reading. Use
+the workflow when the answer belongs somewhere the next agent will find it.
+**Writing to the host still needs the maintainer's confirmation** — see the
+kolonie-docs `AGENTS.md` §8.
