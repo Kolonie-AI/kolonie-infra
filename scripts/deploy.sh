@@ -9,6 +9,7 @@ BACKUP_DIR="/opt/kolonie/backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SERVICE=${1:-all}
 API_IMAGE="ghcr.io/kolonie-ai/kolonie-api:latest"
+WEBSITE_IMAGE="ghcr.io/kolonie-ai/kolonie-website:latest"
 
 # Filled in by detect_profile(). Empty means infrastructure only.
 PROFILE_ARGS=()
@@ -47,15 +48,33 @@ ghcr_logout() {
 
 # Decide what can actually be deployed, by asking the registry rather than by
 # reading a flag someone has to remember to flip.
+#
+# Each profile is probed on its own. One unreachable image must never stop the
+# others from deploying: `docker compose pull` fails the whole command for a
+# single missing image, and that is exactly how the unbuilt website image took
+# api and verifier-runner down with it (#1).
 detect_profile() {
+    PROFILE_ARGS=()
+
     if docker manifest inspect "$API_IMAGE" >/dev/null 2>&1; then
-        PROFILE_ARGS=(--profile full)
-        log "Application images reachable — deploying with --profile full"
+        PROFILE_ARGS+=(--profile full)
+        log "Application images reachable — including --profile full"
     else
-        PROFILE_ARGS=()
-        log "WARN: $API_IMAGE is not reachable. Deploying infrastructure only."
-        log "WARN: kolonie.ai, api.kolonie.ai, academy.kolonie.ai and mcp.kolonie.ai"
-        log "WARN: will answer 502 until this is resolved — see kolonie-infra#1."
+        log "WARN: $API_IMAGE is not reachable."
+        log "WARN: api.kolonie.ai, academy.kolonie.ai and mcp.kolonie.ai will answer 502."
+    fi
+
+    if docker manifest inspect "$WEBSITE_IMAGE" >/dev/null 2>&1; then
+        PROFILE_ARGS+=(--profile website)
+        log "Website image reachable — including --profile website"
+    else
+        log "WARN: $WEBSITE_IMAGE is not reachable. kolonie.ai will answer 502."
+        log "WARN: the image builds in kolonie-website; kolonie-infra may still"
+        log "WARN: need read access to the package under Manage Actions access."
+    fi
+
+    if [ ${#PROFILE_ARGS[@]} -eq 0 ]; then
+        log "WARN: no application images reachable — deploying infrastructure only."
     fi
 }
 
