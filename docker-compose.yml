@@ -83,7 +83,11 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      # 127.0.0.1 rather than localhost, for the reason spelled out on the
+      # website service below. curl happens to retry the other address family
+      # where wget does not, so this one was not failing — but relying on that
+      # difference between two tools is not a property worth depending on.
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -132,7 +136,13 @@ services:
     networks:
       - kolonie
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      # 127.0.0.1, never localhost. The image's /etc/hosts maps localhost to
+      # both 127.0.0.1 and ::1; BusyBox wget tries ::1 first and nginx listens
+      # on IPv4 only, so the check failed with "connection refused" while the
+      # site served every request correctly. The container sat unhealthy for
+      # days without anyone noticing — until a deploy read that status and
+      # rolled the whole stack back. See kolonie-infra#11.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 10s
       retries: 3

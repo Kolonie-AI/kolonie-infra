@@ -78,12 +78,16 @@ detect_profile() {
     fi
 }
 
-# Backup current state
+# Snapshot the current state.
+#
+# Must run *after* detect_profile(): `config` without the profile arguments
+# silently omits every profiled service, and a snapshot missing api,
+# verifier-runner and website is worse than no snapshot at all — see rollback().
 backup() {
     log "Creating backup..."
     mkdir -p "$BACKUP_DIR"
     docker compose -f "$DEPLOY_DIR/docker-compose.yml" ps --format json > "$BACKUP_DIR/ps_${TIMESTAMP}.json" 2>/dev/null || true
-    docker compose -f "$DEPLOY_DIR/docker-compose.yml" config > "$DEPLOY_DIR/docker-compose.last.yml" 2>/dev/null || true
+    docker compose "${PROFILE_ARGS[@]}" -f "$DEPLOY_DIR/docker-compose.yml" config > "$DEPLOY_DIR/docker-compose.last.yml" 2>/dev/null || true
 }
 
 # Pull new images
@@ -122,10 +126,24 @@ deploy() {
     fi
 }
 
-# Health check
+# Wait for every deployed service to become healthy.
+#
+# The old version slept ten seconds and judged once. That is wrong twice:
+#
+#  - Ten seconds is shorter than the `start_period` of every application
+#    service, so a perfectly good container is judged while it is still coming
+#    up. Deploys then fail for timing reasons rather than for real ones.
+#  - It counted `starting` as a pass, so a container that never becomes healthy
+#    sails through as long as it is slow enough. The two errors point in
+#    opposite directions and hid each other.
+#
+# So: poll until everything is healthy, or until the deadline. A verdict is
+# reached only at the deadline, because a container that is briefly unhealthy
+# and then recovers has not failed — it has started.
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
+
 healthcheck() {
-    log "Running health checks..."
-    sleep 10
+    log "Waiting up to ${HEALTH_TIMEOUT}s for services to become healthy..."
 
     local services
     if [ "$SERVICE" = "all" ]; then
@@ -137,44 +155,84 @@ healthcheck() {
         services="$SERVICE"
     fi
 
-    for svc in $services; do
-        local container="kolonie-${svc}"
-        local status
-        status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "no-healthcheck")
+    local deadline=$((SECONDS + HEALTH_TIMEOUT))
+    local pending status svc container
 
-        if [ "$status" = "unhealthy" ]; then
-            log "ERROR: $svc is unhealthy"
+    while :; do
+        pending=""
+        for svc in $services; do
+            container="kolonie-${svc}"
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "missing")
+
+            case "$status" in
+                healthy) ;;
+                missing)
+                    # No health check defined, or the container is not there at
+                    # all. Distinguish the two: the second is a real failure.
+                    if docker inspect --format='{{.State.Running}}' "$container" 2>/dev/null | grep -q true; then
+                        :
+                    else
+                        pending="$pending $svc(not running)"
+                    fi
+                    ;;
+                *) pending="$pending $svc($status)" ;;
+            esac
+        done
+
+        [ -z "$pending" ] && break
+
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log "ERROR: not healthy after ${HEALTH_TIMEOUT}s:$pending"
             rollback
             exit 1
-        elif [ "$status" = "no-healthcheck" ]; then
-            log "WARN: $svc has no health check"
-        else
-            log "OK: $svc ($status)"
         fi
+
+        sleep 5
+    done
+
+    for svc in $services; do
+        container="kolonie-${svc}"
+        status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "no health check")
+        log "OK: $svc ($status)"
     done
 }
 
-# Rollback
+# Rollback.
+#
+# **Never `--remove-orphans` here.** That flag deletes every container absent
+# from the file it is given, and this file is a snapshot that may be incomplete
+# or stale. On 2026-07-28 it was: `backup()` wrote it without the profile
+# arguments, so it listed only traefik and postgres, and the rollback deleted
+# api, verifier-runner and website — taking the whole site down in response to a
+# single unhealthy container that was in fact serving every request. A rollback
+# that destroys more than the deploy touched is not a safety net.
+#
+# Note what this can and cannot do. It restores the previous *configuration*.
+# It cannot restore the previous *images*, because they are tagged `:latest` and
+# the old digest is not recorded anywhere. Rolling back to a known-good build
+# needs immutable tags — filed as kolonie-infra#12.
 rollback() {
     log "Rolling back..."
     cd "$DEPLOY_DIR"
     if [ -f "docker-compose.last.yml" ]; then
-        docker compose -f docker-compose.last.yml up -d --remove-orphans 2>&1 || {
+        docker compose -f docker-compose.last.yml up -d 2>&1 || {
             log "ERROR: Rollback also failed! Manual intervention needed."
             exit 2
         }
-        log "Rollback completed"
+        log "Rollback completed — previous configuration restored, images unchanged"
     else
-        log "WARN: No previous compose config found for rollback"
+        log "WARN: No previous compose config found; leaving containers as they are"
     fi
 }
 
 # Main
 log "=== Deployment started ==="
 trap ghcr_logout EXIT
-backup
 ghcr_login
 detect_profile
+# After detect_profile, so the snapshot includes the profiled services. Before
+# pull, so it describes what is running now rather than what is about to.
+backup
 pull
 deploy
 healthcheck
