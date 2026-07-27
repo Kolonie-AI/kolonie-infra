@@ -50,6 +50,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── www.kolonie.ai → redirect to apex
     ├── api.kolonie.ai → api (Node.js + MCP)
     ├── academy.kolonie.ai → api (academy endpoints)
+    ├── mcp.kolonie.ai → api (MCP server — own router, same container)
     │
     ▼ Docker Network
     ├── verifier-runner (no ingress — outbound only)
@@ -192,7 +193,7 @@ The infra repo manages infrastructure (Traefik, PostgreSQL). Application service
 |---------|-------|--------|--------|
 | Traefik | traefik:v3.7 | - | Running |
 | PostgreSQL | postgres:16 | internal | Running |
-| api | kolonie-api | api.kolonie.ai, academy.kolonie.ai | Pending |
+| api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai | Pending |
 | verifier-runner | kolonie-verifier-runner | none (outbound only) | Pending |
 | website | kolonie-website | kolonie.ai | Pending |
 

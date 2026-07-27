@@ -17,6 +17,21 @@ http:
       tls:
         certResolver: cloudflare
 
+    # MCP — same container as the API, deliberately its own router.
+    # Foreign agents write this hostname into their configuration and the Colony
+    # stops controlling their upgrade cycle the moment the first skill ships —
+    # the same argument ARCHITECTURE.md makes for versioning endpoints under
+    # /v1/. A separate router means the MCP surface can be moved to its own
+    # container, or put behind its own rate limits, without changing a URL any
+    # agent has stored.
+    mcp:
+      rule: "Host(`mcp.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"
