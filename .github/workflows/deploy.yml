@@ -19,16 +19,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    # packages: read lets GITHUB_TOKEN pull the application images from GHCR.
+    # It only works once kolonie-infra has been granted read access to those
+    # packages in their settings — see kolonie-infra#1. The alternative, making
+    # the packages public, would publish the built source of kolonie-platform
+    # before the repositories go public at MVP (kolonie-docs#6).
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1
+        env:
+          # Expires with this job. Nothing long-lived is stored on the host.
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         with:
           host: ${{ env.VPS_HOST }}
           username: ${{ env.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USER
           script: |
             cd ${{ env.DEPLOY_DIR }}
 
