@@ -229,6 +229,34 @@ stale container instead, which is visible and fixable.
    it in `deploy.sh`, or it will be the one service nobody can roll back
 3. Next infra deploy will pick it up automatically
 
+### Only the edge reaches the origin
+
+`scripts/origin-firewall.sh` restricts ports 80 and 443 on the WAN interface to
+Cloudflare's published ranges, fetched at apply time from
+`https://www.cloudflare.com/ips-v4` and `ips-v6` — never from a list pasted into
+the repository, because Cloudflare adds ranges and a stale allowlist refuses a
+legitimate edge node with nothing in any log here to explain it. A systemd timer
+re-runs it daily; the unit re-runs it after every boot and after Docker starts.
+
+```bash
+sudo /opt/kolonie/scripts/origin-firewall.sh status
+```
+
+**The rules live in `DOCKER-USER`, and that is the whole trick.** ufw was already
+active on this host with `deny (incoming)` and only 22 open — and 80/443 answered
+the entire internet regardless, because Docker publishes a port with its own DNAT
+rule and the packet never traverses ufw's INPUT chain. `ufw deny 80` would have
+looked like a fix and changed nothing. `DOCKER-USER` is the chain Docker
+guarantees it will not overwrite, consulted before its own forwarding rules.
+
+The match is confined to the WAN interface. `DOCKER-USER` also carries
+container-to-container traffic and Traefik reaches the website container on port
+80 — an un-scoped rule would drop exactly that and 502 the site from the inside.
+
+What this proves is *a* Cloudflare edge, not *this zone's* edge: any Cloudflare
+customer can point a hostname at this address. Closing that needs authenticated
+origin pull, which needs a zone setting — see #21.
+
 ## Services
 
 | Service | Image | Domain | Status |

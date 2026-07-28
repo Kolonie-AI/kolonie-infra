@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh the Cloudflare range allowlist (kolonie-infra#21)
+# The list is authoritative and it changes. A stale allowlist fails in the
+# direction nobody notices: a new edge range is refused, a slice of the world
+# sees 522, and nothing in any log on this host explains it. The refresh is part
+# of the control rather than housekeeping.
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Catch up after downtime rather than skipping to the next day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

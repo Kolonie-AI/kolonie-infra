@@ -1,0 +1,20 @@
+[Unit]
+Description=Restrict the origin's 80/443 to Cloudflare's published ranges (kolonie-infra#21)
+# iptables rules do not survive a reboot, and Docker recreates DOCKER-USER when
+# it starts — so this has to run after Docker, every boot, or the origin comes
+# back up open to the whole internet with nothing saying so.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/kolonie/scripts/origin-firewall.sh apply
+# Never take the host off the network because Cloudflare's list endpoint was
+# briefly unreachable. The script refuses to build a chain it cannot trust, and
+# a failure here leaves whatever is already installed in place.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target
