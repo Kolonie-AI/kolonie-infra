@@ -1,19 +1,82 @@
 name: Deploy to VPS
 
+# Three ways in, and they answer three different questions.
+#
+# `workflow_call` is the one that matters: the image builds in kolonie-platform
+# call it after pushing, so a merge there ends with that exact build running here
+# (#14). Before it existed, production redeployed when the infrastructure
+# *configuration* changed and did not redeploy when the *code* changed — the
+# trigger sat on the wrong repository, and `operations/deployment.md` in
+# kolonie-docs documented a chain that was never connected.
+#
+# `push` is this repository's own changes, and since #13 it is filtered: a deploy
+# should happen when something that affects the running system changes, not when
+# a Markdown file does. `paths-ignore` rather than `paths`, deliberately — a
+# filter that lists what *does* deploy silently stops deploying anything added
+# later, and a change that is not deployed is far harder to notice than one that
+# is. So: everything deploys except what provably cannot change what a container
+# does.
+#
+# `workflow_dispatch` always deploys, whatever the paths say. It is the escape
+# hatch, and it is also how the host is brought back in line if a filter turns
+# out to have been too clever.
 on:
+  workflow_call:
+    inputs:
+      service:
+        description: 'Service to deploy (all, api, verifier-runner, website)'
+        type: string
+        required: false
+        default: 'all'
+      version:
+        description: >-
+          Image tag to deploy, applied to the service named above. A caller that
+          knows which build it just pushed passes that build, and then what runs
+          is a function of a commit rather than of whatever happens to be sitting
+          in :latest by the time the pull runs.
+        type: string
+        required: false
+        default: 'latest'
+    # Named rather than inherited. `secrets: inherit` would hand this workflow —
+    # which lives in another repository and can SSH into production — every
+    # secret the calling repository holds, for the two it actually needs. Listing
+    # them also makes the requirement readable from the caller's side: a
+    # repository that cannot supply these cannot deploy, and finds that out at
+    # the call rather than at the SSH step.
+    secrets:
+      VPS_HOST:
+        required: true
+      VPS_SSH_KEY:
+        required: true
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'state/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       service:
         description: 'Service to deploy (all, api, verifier-runner, website)'
         required: false
         default: 'all'
+      version:
+        description: 'Image tag to deploy, applied to the service named above'
+        required: false
+        default: 'latest'
 
-env:
-  VPS_HOST: ${{ secrets.VPS_HOST }}
-  VPS_USER: ubuntu
-  DEPLOY_DIR: /opt/kolonie
+# One deploy at a time, and a queued one waits rather than replacing the one in
+# flight. Two builds in kolonie-platform can finish seconds apart — api and
+# verifier-runner are separate workflows — and two SSH sessions running
+# deploy.sh against one host would interleave a pull, a migration and an `up -d`
+# with neither knowing the other exists. `cancel-in-progress: false` because
+# cancelling a deploy mid-migration is the one outcome worse than deploying
+# twice.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -21,17 +84,37 @@ jobs:
     timeout-minutes: 15
 
     # packages: read lets GITHUB_TOKEN pull the application images from GHCR.
-    # It only works once kolonie-infra has been granted read access to those
-    # packages in their settings — see kolonie-infra#1. The alternative, making
-    # the packages public, would publish the built source of kolonie-platform
-    # before the repositories go public at MVP (kolonie-docs#6).
+    # From a push here that needs this repository's grant on those packages
+    # (#1). When kolonie-platform calls this workflow the token is that
+    # repository's, and it owns the packages — so a called deploy does not
+    # depend on the grant at all.
     permissions:
       contents: read
       packages: read
 
+    env:
+      # Organisation secrets since #14, visible to this repository and to
+      # kolonie-platform. The rejected alternative was a fine-grained PAT in
+      # kolonie-platform plus `repository_dispatch`: it works anywhere, and it
+      # costs an additional long-lived token whose entire power is *deploy
+      # production*, with an expiry and a rotation nobody will remember.
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ubuntu
+      DEPLOY_DIR: /opt/kolonie
+      # `inputs` is empty on a push, so both fall back to deploying everything
+      # from the mutable tag — which is what a change to this repository means.
+      SERVICE: ${{ inputs.service || 'all' }}
+      VERSION: ${{ inputs.version || 'latest' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Say what is being deployed, before anything moves
+        run: |
+          echo "service: $SERVICE"
+          echo "version: $VERSION"
+          echo "trigger: ${{ github.event_name }} from ${{ github.repository }}@${{ github.sha }}"
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1
@@ -43,16 +126,29 @@ jobs:
           host: ${{ env.VPS_HOST }}
           username: ${{ env.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER
+          # SERVICE and VERSION travel as environment variables rather than
+          # being interpolated into the script body. An input is untrusted text,
+          # and text pasted into a shell by a templating engine is a shell
+          # injection with extra steps.
+          envs: GHCR_TOKEN,GHCR_USER,SERVICE,VERSION
           script: |
             cd ${{ env.DEPLOY_DIR }}
 
             # Pull latest infra config
             git pull origin main
 
-            # Run deployment
-            SERVICE="${{ github.event.inputs.service || 'all' }}"
             chmod +x scripts/*.sh
+
+            # The version applies to the service that was named, and to nothing
+            # else. Deploying "all" at one tag would have to assume the three
+            # images share a version, and they do not — they are built by three
+            # workflows in two repositories.
+            case "$SERVICE" in
+              api)             export API_VERSION="$VERSION" ;;
+              verifier-runner) export RUNNER_VERSION="$VERSION" ;;
+              website)         export WEBSITE_VERSION="$VERSION" ;;
+            esac
+
             ./scripts/deploy.sh "$SERVICE"
 
       - name: Health Check

@@ -38,7 +38,12 @@ cat > "$BIN/docker" <<'STUB'
 echo "docker $*" >> "$DOCKER_LOG"
 
 case "$1 ${2:-}" in
-  "manifest inspect") exit 0 ;;                       # every image reachable
+  "manifest inspect")
+      # Every image reachable, unless a case names one that is not. UNREACHABLE
+      # holds a repository, and the tag is the last argument.
+      for tag in "$@"; do :; done
+      [ "${UNREACHABLE:-}" = "${tag%%:*}" ] && exit 1
+      exit 0 ;;
   "image inspect")
       # the tag is the last argument; return the digest for its own repo, plus a
       # decoy from another repo to prove the prefix match is doing work.
@@ -61,6 +66,10 @@ case "$1 ${2:-}" in
         esac
       done
       case "$sub" in
+        # Records what compose was *told* to fetch. deploy.sh exports
+        # API_IMAGE before the pull and overwrites it with a digest after, so
+        # this is the only place the requested version is observable.
+        pull)    echo "compose pull API_IMAGE=${API_IMAGE:-unset}" >> "$DOCKER_LOG" ;;
         config)  echo "services: {}" ;;
         ps)      echo "[]" ;;
         run)     [ "${FAIL_SEED:-}" = 1 ] && { echo "Missing script: seed" >&2; exit 1; } ; exit 0 ;;
@@ -85,6 +94,15 @@ run_deploy() {
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" all 2>&1
+}
+
+# Same, for a deploy of one named service — which is what a build in
+# kolonie-platform triggers.
+run_deploy_service() {
+  local service="$1"; shift
+  DOCKER_LOG="$WORK/docker.log" \
+  PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
+  "$@" bash "$WORK/scripts/deploy.sh" "$service" 2>&1
 }
 
 pass=0; fail=0
@@ -141,6 +159,49 @@ out=$(run_deploy env FAIL_DIGEST=ghcr.io/kolonie-ai/kolonie-website)
 contains "$out" "no digest recorded for ghcr.io/kolonie-ai/kolonie-website:latest" "warned about the unpinnable image"
 contains "$out" "Deployment completed" "deploy still finished"
 contains "$(cat "$WORK/state/deployed.env")" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website:latest" "recorded the tag it actually used"
+
+echo "== 6. a caller that names a version gets that build, not :latest"
+# The point of #14: a deploy triggered by a build in kolonie-platform ships the
+# commit that triggered it. Without this, the deploy probes and pulls whatever
+# is sitting in :latest, which need not be the build that asked for the deploy.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+SHA=$(printf %040d 7)
+out=$(run_deploy env API_VERSION="$SHA")
+contains "$(cat "$WORK/docker.log")" "manifest inspect ghcr.io/kolonie-ai/kolonie-api:$SHA" "probed the requested version"
+contains "$(cat "$WORK/docker.log")" "compose pull API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:$SHA" "pulled the requested version"
+contains "$out" "Deployment completed" "deploy finished"
+# And the other two images are untouched by an api-only version.
+contains "$(cat "$WORK/docker.log")" "manifest inspect ghcr.io/kolonie-ai/kolonie-website:latest" "website stayed on latest"
+
+echo "== 7. no version named is the old behaviour, unchanged"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$(cat "$WORK/docker.log")" "manifest inspect ghcr.io/kolonie-ai/kolonie-api:latest" "defaulted to latest"
+
+echo "== 8. a single-service deploy never passes --remove-orphans"
+# A deploy of one service has no business asserting what the whole host should
+# contain, and that flag deletes everything the compose view does not list.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy_service api env API_VERSION="$SHA")
+contains "$out" "Not passing --remove-orphans" "said why it withheld the flag"
+absent "$(grep 'up -d' "$WORK/docker.log")" "--remove-orphans" "no --remove-orphans on a service deploy"
+contains "$(grep 'up -d' "$WORK/docker.log")" "up -d api" "still deployed the named service"
+
+echo "== 9. an unreachable image withholds --remove-orphans on a full deploy"
+# The deploy runs under the token of whichever repository triggered it, and that
+# token need not be able to read every package. A website container the pull
+# could not see is not an orphan — it is a running service, and removing it is
+# the 2026-07-28 outage again.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env UNREACHABLE=ghcr.io/kolonie-ai/kolonie-website)
+contains "$out" "compose view is incomplete" "named the reason"
+absent "$(grep 'up -d' "$WORK/docker.log")" "--remove-orphans" "no --remove-orphans with a missing image"
+contains "$out" "Deployment completed" "the rest of the deploy still ran"
+
+echo "== 10. a complete full deploy still passes --remove-orphans"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$(grep 'up -d' "$WORK/docker.log")" "--remove-orphans" "flag kept where the view is authoritative"
 
 echo
 echo "passed $pass, failed $fail"

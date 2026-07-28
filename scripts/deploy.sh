@@ -19,9 +19,36 @@ SERVICE=${1:-all}
 API_REPO="ghcr.io/kolonie-ai/kolonie-api"
 RUNNER_REPO="ghcr.io/kolonie-ai/kolonie-verifier-runner"
 WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
-API_IMAGE_TAG="${API_REPO}:latest"
-RUNNER_IMAGE_TAG="${RUNNER_REPO}:latest"
-WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:latest"
+
+# Which build to fetch, per image, defaulting to the mutable tag (#14).
+#
+# `latest` is the right default and the wrong thing to rely on. A deploy that
+# always pulls it ships whatever finished building most recently, which need not
+# be the commit that asked for the deploy and need not be a commit anyone
+# reviewed — the whole reason a documentation-only push here was able to deliver
+# an application build nobody chose. A caller that *knows* which build it pushed
+# passes it here, and then what runs is a function of a commit.
+#
+# Per image rather than one version for all three, because the three are built by
+# three workflows in two repositories and share no version. A caller sets the one
+# it knows about; the other two stay on `latest` and are simply re-pulled.
+API_VERSION="${API_VERSION:-latest}"
+RUNNER_VERSION="${RUNNER_VERSION:-latest}"
+WEBSITE_VERSION="${WEBSITE_VERSION:-latest}"
+
+API_IMAGE_TAG="${API_REPO}:${API_VERSION}"
+RUNNER_IMAGE_TAG="${RUNNER_REPO}:${RUNNER_VERSION}"
+WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:${WEBSITE_VERSION}"
+
+# Exported *now*, before anything runs `docker compose`, because compose reads
+# `${API_IMAGE:-…:latest}` and would otherwise pull `latest` no matter what was
+# asked for — probing one tag and pulling another is exactly the class of bug
+# this file keeps having. pin() overwrites all three with digests immediately
+# after the pull, so these values are only ever what gets *fetched*, never what
+# gets run.
+export API_IMAGE="$API_IMAGE_TAG"
+export RUNNER_IMAGE="$RUNNER_IMAGE_TAG"
+export WEBSITE_IMAGE="$WEBSITE_IMAGE_TAG"
 
 # What the last *successful* deploy shipped, as immutable digests. Written only
 # after the health check passes, which is what makes it a known-good record
@@ -31,6 +58,10 @@ DEPLOYED_STATE="${STATE_DIR}/deployed.env"
 
 # Filled in by detect_profile(). Empty means infrastructure only.
 PROFILE_ARGS=()
+# Whether every application image was reachable. False means the compose view
+# this run is working from is *incomplete*, and deploy() must not treat it as
+# authoritative — see the note on --remove-orphans there.
+PROFILES_COMPLETE=true
 # Whether the api image could be pulled. migrate() needs to know: it runs the
 # migrations *out of that image*, so "no api image" and "no migration step" are
 # the same condition, not two.
@@ -83,6 +114,7 @@ detect_profile() {
         API_AVAILABLE=true
         log "Application images reachable — including --profile full"
     else
+        PROFILES_COMPLETE=false
         log "WARN: $API_IMAGE_TAG is not reachable."
         log "WARN: api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai and challenge.kolonie.ai will answer 502."
     fi
@@ -91,9 +123,11 @@ detect_profile() {
         PROFILE_ARGS+=(--profile website)
         log "Website image reachable — including --profile website"
     else
+        PROFILES_COMPLETE=false
         log "WARN: $WEBSITE_IMAGE_TAG is not reachable. kolonie.ai will answer 502."
-        log "WARN: the image builds in kolonie-website; kolonie-infra may still"
-        log "WARN: need read access to the package under Manage Actions access."
+        log "WARN: the image builds in kolonie-website; the repository whose token"
+        log "WARN: is running this deploy may need read access to the package"
+        log "WARN: under Manage Actions access."
     fi
 
     if [ ${#PROFILE_ARGS[@]} -eq 0 ]; then
@@ -291,17 +325,48 @@ seed() {
 }
 
 # Deploy
+#
+# **`--remove-orphans` is conditional, and the condition is the lesson from
+# 2026-07-28.** That flag deletes every container absent from the compose view it
+# is given, and a profile that was dropped because its image could not be pulled
+# makes that view incomplete rather than authoritative. rollback() already
+# refuses the flag outright for this reason; deploy() earns it only when the view
+# is complete.
+#
+# Two ways the view is incomplete, and both got worse when kolonie-platform
+# started triggering deploys (#14):
+#
+#  - **A named service.** `up -d --remove-orphans api` still removes containers
+#    for services outside the profile view, so a deploy of one service could
+#    delete another. A single-service deploy has no business asserting what the
+#    whole host should contain.
+#  - **An unreachable image.** The deploy now runs under the token of whichever
+#    repository triggered it. kolonie-platform can read its own packages and need
+#    not be able to read the website's — so a perfectly good website container
+#    would look like an orphan to an api deploy, and be removed.
+#
+# When the flag is withheld, a genuinely removed service leaves a container
+# behind. That is a stale container, which is visible and fixable; the
+# alternative is an outage, which is neither.
 deploy() {
     log "Deploying service: $SERVICE"
     cd "$DEPLOY_DIR"
+
+    local orphan_args=()
+    if [ "$SERVICE" = "all" ] && [ "$PROFILES_COMPLETE" = true ]; then
+        orphan_args=(--remove-orphans)
+    else
+        log "Not passing --remove-orphans: $([ "$SERVICE" != all ] && echo "deploying $SERVICE only" || echo "an application image was unreachable, so the compose view is incomplete")"
+    fi
+
     if [ "$SERVICE" = "all" ]; then
-        docker compose "${PROFILE_ARGS[@]}" up -d --remove-orphans 2>&1 || {
+        docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
             exit 1
         }
     else
-        docker compose "${PROFILE_ARGS[@]}" up -d --remove-orphans "$SERVICE" 2>&1 || {
+        docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" "$SERVICE" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
             exit 1
