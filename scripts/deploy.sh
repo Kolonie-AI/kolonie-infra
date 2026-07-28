@@ -4,12 +4,30 @@
 
 set -euo pipefail
 
-DEPLOY_DIR="/opt/kolonie"
-BACKUP_DIR="/opt/kolonie/backups"
+# Overridable so the script can be rehearsed against a scratch directory with a
+# stub `docker` on PATH. The deploy workflow does not forward it, so on the host
+# this is always /opt/kolonie — the override exists to make the most dangerous
+# script in this repository testable at all, not to make its target configurable.
+DEPLOY_DIR="${DEPLOY_DIR:-/opt/kolonie}"
+BACKUP_DIR="${DEPLOY_DIR}/backups"
+STATE_DIR="${DEPLOY_DIR}/state"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SERVICE=${1:-all}
-API_IMAGE="ghcr.io/kolonie-ai/kolonie-api:latest"
-WEBSITE_IMAGE="ghcr.io/kolonie-ai/kolonie-website:latest"
+
+# The mutable pointers: what to probe, what to pull. Never what to run — pin()
+# turns each of these into a digest before anything is started.
+API_REPO="ghcr.io/kolonie-ai/kolonie-api"
+RUNNER_REPO="ghcr.io/kolonie-ai/kolonie-verifier-runner"
+WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
+API_IMAGE_TAG="${API_REPO}:latest"
+RUNNER_IMAGE_TAG="${RUNNER_REPO}:latest"
+WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:latest"
+
+# What the last *successful* deploy shipped, as immutable digests. Written only
+# after the health check passes, which is what makes it a known-good record
+# rather than a log of attempts — and it is therefore still the previous build
+# while a deploy is in flight, which is exactly what rollback() needs.
+DEPLOYED_STATE="${STATE_DIR}/deployed.env"
 
 # Filled in by detect_profile(). Empty means infrastructure only.
 PROFILE_ARGS=()
@@ -60,20 +78,20 @@ ghcr_logout() {
 detect_profile() {
     PROFILE_ARGS=()
 
-    if docker manifest inspect "$API_IMAGE" >/dev/null 2>&1; then
+    if docker manifest inspect "$API_IMAGE_TAG" >/dev/null 2>&1; then
         PROFILE_ARGS+=(--profile full)
         API_AVAILABLE=true
         log "Application images reachable — including --profile full"
     else
-        log "WARN: $API_IMAGE is not reachable."
+        log "WARN: $API_IMAGE_TAG is not reachable."
         log "WARN: api.kolonie.ai, academy.kolonie.ai and mcp.kolonie.ai will answer 502."
     fi
 
-    if docker manifest inspect "$WEBSITE_IMAGE" >/dev/null 2>&1; then
+    if docker manifest inspect "$WEBSITE_IMAGE_TAG" >/dev/null 2>&1; then
         PROFILE_ARGS+=(--profile website)
         log "Website image reachable — including --profile website"
     else
-        log "WARN: $WEBSITE_IMAGE is not reachable. kolonie.ai will answer 502."
+        log "WARN: $WEBSITE_IMAGE_TAG is not reachable. kolonie.ai will answer 502."
         log "WARN: the image builds in kolonie-website; kolonie-infra may still"
         log "WARN: need read access to the package under Manage Actions access."
     fi
@@ -83,11 +101,18 @@ detect_profile() {
     fi
 }
 
-# Snapshot the current state.
+# Snapshot the current state, for reading afterwards.
 #
-# Must run *after* detect_profile(): `config` without the profile arguments
-# silently omits every profiled service, and a snapshot missing api,
-# verifier-runner and website is worse than no snapshot at all — see rollback().
+# **This is diagnostic, not a recovery input.** Since #12, rollback() returns to
+# the digests in state/deployed.env; it does not restore this file. What is
+# written here is a rendering of the configuration, and a configuration is not a
+# build — restoring it while every image was `:latest` brought back the same
+# image that had just failed.
+#
+# Still runs *after* detect_profile(): `config` without the profile arguments
+# silently omits every profiled service, and a snapshot of a five-service host
+# that lists two is worse than no snapshot at all. That omission is what made the
+# 2026-07-28 rollback delete api, verifier-runner and website.
 backup() {
     log "Creating backup..."
     mkdir -p "$BACKUP_DIR"
@@ -110,6 +135,74 @@ pull() {
             exit 1
         }
     fi
+}
+
+# Turn each freshly pulled tag into the digest it resolved to, and run *that*.
+#
+# `:latest` answers a different question every time it is asked. Between the
+# pull and the `up -d` a new build can land, and then the containers that start
+# are not the ones this deploy inspected — nothing in the log would say so. Worse,
+# after the deploy nothing anywhere records which build is serving, so rollback()
+# had no previous version to return to and `up -d` after a bad deploy pulled the
+# same bad image straight back (#12).
+#
+# `RepoDigests` is filled by the pull itself, so this is the digest the registry
+# just served rather than a second question that could get a second answer.
+#
+# A tag that cannot be resolved keeps its tag and logs it. Falling back is right
+# here: the deploy is no worse than it was before pinning existed, and refusing
+# to deploy over a missing digest would turn an audit-trail gap into an outage.
+pin() {
+    log "Pinning images to the digests just pulled..."
+    API_IMAGE=$(digest_of "$API_IMAGE_TAG" "$API_REPO")
+    RUNNER_IMAGE=$(digest_of "$RUNNER_IMAGE_TAG" "$RUNNER_REPO")
+    WEBSITE_IMAGE=$(digest_of "$WEBSITE_IMAGE_TAG" "$WEBSITE_REPO")
+    export API_IMAGE RUNNER_IMAGE WEBSITE_IMAGE
+
+    log "  api:             $API_IMAGE"
+    log "  verifier-runner: $RUNNER_IMAGE"
+    log "  website:         $WEBSITE_IMAGE"
+}
+
+# The digest a local image carries for its own repository, or the tag if it has
+# none. Matched on the repository prefix: an image may carry digests for several
+# repositories, and the one from a different repository is not this one's version.
+# Note the `>&2` on the warning. This function's *stdout is its return value* —
+# the caller reads it through a command substitution — so a log line written to
+# stdout would be captured as part of the image reference and end up in both the
+# exported variable and the recorded state file. It did, until a rehearsal
+# against a stub docker showed a `WEBSITE_IMAGE=` line with a timestamped warning
+# inside it.
+digest_of() {
+    local tag="$1" repo="$2" digest
+    digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$tag" 2>/dev/null \
+        | grep "^${repo}@" | head -n 1 || true)
+
+    if [ -z "$digest" ]; then
+        log "WARN: no digest recorded for $tag — deploying the mutable tag, and it will not be rollback-able" >&2
+        echo "$tag"
+    else
+        echo "$digest"
+    fi
+}
+
+# Record what is now serving, once it has proved it serves.
+#
+# After the health check, never before: a file written at the start of a deploy
+# records an intention, and rollback() would then restore the build that had just
+# failed. Written afterwards, this file only ever names a build that answered.
+record_deployment() {
+    mkdir -p "$STATE_DIR"
+    cat > "$DEPLOYED_STATE" <<EOF
+# Written by scripts/deploy.sh after a successful health check.
+# These are the images currently serving. rollback() returns to them.
+# Do not edit by hand: a wrong digest here is a rollback into an unknown build.
+DEPLOYED_AT=${TIMESTAMP}
+API_IMAGE=${API_IMAGE}
+RUNNER_IMAGE=${RUNNER_IMAGE}
+WEBSITE_IMAGE=${WEBSITE_IMAGE}
+EOF
+    log "Recorded the deployed build in ${DEPLOYED_STATE}"
 }
 
 # Apply pending database migrations — after the pull, before the switch.
@@ -297,28 +390,55 @@ healthcheck() {
 # single unhealthy container that was in fact serving every request. A rollback
 # that destroys more than the deploy touched is not a safety net.
 #
-# Note what this can and cannot do. It restores the previous *configuration*.
-# It cannot restore the previous *images*, because they are tagged `:latest` and
-# the old digest is not recorded anywhere. Rolling back to a known-good build
-# needs immutable tags — filed as kolonie-infra#12.
+# It restores the last build that passed a health check, by digest, from
+# `state/deployed.env`. That file is written only after a successful deploy, so
+# while this deploy is in flight it still names the previous one — which is what
+# makes returning to it a rollback rather than a retry. Until #12 this function
+# could only restore the previous *configuration*, and since every image was
+# `:latest`, `up -d` pulled the same bad build straight back.
 #
-# It also cannot undo a migration. Since migrate() runs before deploy(), a
-# health check that fails is a health check failing against a schema that has
-# already moved. Whether restoring the previous configuration is safe then
-# depends on whether the migration was additive — docs/disaster-recovery.md,
-# Scenario 5, walks through both answers.
+# **With no recorded build, it does nothing at all.** That is the honest answer
+# on a host that has not completed a deploy since this was introduced: there is
+# no known-good version to return to, and tearing down containers that are
+# serving in order to look decisive is how a safety net becomes the outage. The
+# compose snapshot from backup() is kept for diagnosis and is deliberately not
+# used here — it is a rendering of the configuration, not a record of a build,
+# and it was the input that caused the harm described above.
+#
+# It cannot undo a migration. Since migrate() runs before deploy(), a health
+# check that fails is a health check failing against a schema that has already
+# moved. Whether returning to the previous build is safe then depends on whether
+# the migration was additive — docs/disaster-recovery.md, Scenario 5, walks
+# through both answers.
 rollback() {
     log "Rolling back..."
     cd "$DEPLOY_DIR"
-    if [ -f "docker-compose.last.yml" ]; then
-        docker compose -f docker-compose.last.yml up -d 2>&1 || {
-            log "ERROR: Rollback also failed! Manual intervention needed."
-            exit 2
-        }
-        log "Rollback completed — previous configuration restored, images unchanged"
-    else
-        log "WARN: No previous compose config found; leaving containers as they are"
+
+    if [ ! -f "$DEPLOYED_STATE" ]; then
+        log "WARN: no previously deployed build recorded in $DEPLOYED_STATE."
+        log "WARN: there is nothing known-good to return to, so nothing is being changed."
+        log "WARN: whatever is running stays running. Investigate before deploying again."
+        return
     fi
+
+    # shellcheck disable=SC1090
+    set -a; . "$DEPLOYED_STATE"; set +a
+
+    log "Returning to the build deployed at ${DEPLOYED_AT:-unknown}:"
+    log "  api:             ${API_IMAGE:-unset}"
+    log "  verifier-runner: ${RUNNER_IMAGE:-unset}"
+    log "  website:         ${WEBSITE_IMAGE:-unset}"
+
+    # No --remove-orphans, ever. That flag deletes every container absent from
+    # the file it is given, and on 2026-07-28 it took api, verifier-runner and
+    # website down in response to one unhealthy container that was in fact
+    # serving every request. A rollback must never destroy more than the deploy
+    # touched.
+    docker compose "${PROFILE_ARGS[@]}" up -d 2>&1 || {
+        log "ERROR: Rollback also failed! Manual intervention needed."
+        exit 2
+    }
+    log "Rollback completed — the previous build is serving again"
 }
 
 # Main
@@ -330,6 +450,10 @@ detect_profile
 # pull, so it describes what is running now rather than what is about to.
 backup
 pull
+# Immediately after the pull and before anything runs one of these images: every
+# step below — the migration, the seed, the containers — must use the build this
+# deploy inspected, not whatever `:latest` points at by the time it gets there.
+pin
 # Between the two on purpose: the images are on the host but nothing is serving
 # from them yet, which is the only window in which the schema can be moved
 # forward without a running API seeing a database it does not expect.
@@ -339,4 +463,7 @@ migrate
 seed
 deploy
 healthcheck
+# Only now. A build is known-good once it has answered, not once it has started,
+# and this file is what the next failed deploy will roll back to.
+record_deployment
 log "=== Deployment completed ==="

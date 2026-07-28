@@ -68,8 +68,15 @@ services:
   # === Public API + MCP (kolonie-platform / apps/api) ===
   # Serves api.kolonie.ai and academy.kolonie.ai. Routing lives in
   # traefik/dynamic/routes.yml, not in labels — see the note there.
+  #
+  # The three application images are variables with a `:latest` default, and the
+  # default is what makes this readable by hand — `docker compose up` on a fresh
+  # host still does the obvious thing. `deploy.sh` never uses it: it resolves the
+  # tag to an immutable digest after pulling and exports that, so the containers
+  # it starts are pinned to a build that cannot change underneath them and can be
+  # returned to later (#12).
   api:
-    image: ghcr.io/kolonie-ai/kolonie-api:latest
+    image: ${API_IMAGE:-ghcr.io/kolonie-ai/kolonie-api:latest}
     container_name: kolonie-api
     restart: unless-stopped
     networks:
@@ -99,7 +106,7 @@ services:
   # No Traefik route on purpose: it pulls submissions from the database and
   # talks outward to third-party APIs. Nothing on the internet reaches it.
   verifier-runner:
-    image: ghcr.io/kolonie-ai/kolonie-verifier-runner:latest
+    image: ${RUNNER_IMAGE:-ghcr.io/kolonie-ai/kolonie-verifier-runner:latest}
     container_name: kolonie-verifier-runner
     restart: unless-stopped
     networks:
@@ -146,7 +153,7 @@ services:
   # `full` therefore means "the application services that exist". Add
   # --profile website to deploy.sh once the image is published.
   website:
-    image: ghcr.io/kolonie-ai/kolonie-website:latest
+    image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:latest}
     container_name: kolonie-website
     restart: unless-stopped
     networks:

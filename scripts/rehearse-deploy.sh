@@ -1,0 +1,147 @@
+#!/bin/bash
+# Rehearse deploy.sh without a VPS, containers, or a registry.
+#
+# Usage: ./scripts/rehearse-deploy.sh
+#
+# `deploy.sh` is the most dangerous script in this repository — it is the one
+# that can take the Colony offline — and until 2026-07-28 nothing exercised it
+# anywhere but production. The two failures that hurt most were both discovered
+# by being deployed: a rollback that deleted three services it had not created,
+# and a deploy step calling a script the image did not have.
+#
+# So: run the real script with a stub `docker` on PATH and a scratch directory
+# in place of /opt/kolonie, and assert on what it *would have done*. This is not
+# a substitute for a real deploy — it proves the logic, never the environment —
+# but it makes the failure modes above cheap to check before they are expensive
+# to discover. Writing it immediately paid for itself: it found `digest_of`
+# logging to stdout, which put a warning line inside an image reference.
+#
+# Add a case here for every branch of deploy.sh that decides whether containers
+# live or die.
+set -uo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WORK=$(mktemp -d)
+BIN="$WORK/.bin"
+trap 'rm -rf "$WORK"' EXIT
+
+mkdir -p "$BIN"
+cp "$ROOT/docker-compose.yml" "$WORK/"
+cp -r "$ROOT/scripts" "$WORK/"
+
+# --- the stub -------------------------------------------------------------
+# Records every invocation, and answers the handful of questions deploy.sh asks.
+# The failure switches (FAIL_UP, FAIL_SEED, FAIL_DIGEST, UNHEALTHY) are how a
+# case chooses which branch of the script it is testing.
+cat > "$BIN/docker" <<'STUB'
+#!/bin/bash
+echo "docker $*" >> "$DOCKER_LOG"
+
+case "$1 ${2:-}" in
+  "manifest inspect") exit 0 ;;                       # every image reachable
+  "image inspect")
+      # the tag is the last argument; return the digest for its own repo, plus a
+      # decoy from another repo to prove the prefix match is doing work.
+      for tag in "$@"; do :; done
+      repo="${tag%%:*}"
+      if [ "${FAIL_DIGEST:-}" = "$repo" ]; then exit 1; fi
+      echo "ghcr.io/someone-else/other@sha256:$(printf %064d 0)"
+      echo "${repo}@sha256:$(echo -n "$repo" | sha256sum | cut -c1-64)"
+      exit 0 ;;
+  "compose"*)
+      # find the compose subcommand after the flags
+      shift
+      sub=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --profile) shift 2; continue ;;
+          -f) shift 2; continue ;;
+          -*) shift; continue ;;
+          *) sub="$1"; break ;;
+        esac
+      done
+      case "$sub" in
+        config)  echo "services: {}" ;;
+        ps)      echo "[]" ;;
+        run)     [ "${FAIL_SEED:-}" = 1 ] && { echo "Missing script: seed" >&2; exit 1; } ; exit 0 ;;
+        up)      # fail only the first `up`, so the rollback's own `up` can succeed
+                 if [ "${FAIL_UP:-}" = 1 ] && [ ! -f "$DOCKER_LOG.upfailed" ]; then
+                   touch "$DOCKER_LOG.upfailed"; exit 1
+                 fi
+                 exit 0 ;;
+      esac
+      exit 0 ;;
+  "inspect"*)
+      # healthcheck asks for .State.Health.Status
+      if [ "${UNHEALTHY:-}" = 1 ]; then echo "unhealthy"; else echo "healthy"; fi
+      exit 0 ;;
+  "login"*|"logout"*) exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$BIN/docker"
+
+run_deploy() {
+  DOCKER_LOG="$WORK/docker.log" \
+  PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
+  "$@" bash "$WORK/scripts/deploy.sh" all 2>&1
+}
+
+pass=0; fail=0
+check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1: expected [$3], got [$2]"; fail=$((fail+1)); fi; }
+contains() { if grep -qF -- "$2" <<<"$1"; then echo "  ok   $3"; pass=$((pass+1)); else echo "  FAIL $3"; fail=$((fail+1)); fi; }
+absent() { if grep -qF -- "$2" <<<"$1"; then echo "  FAIL $3"; fail=$((fail+1)); else echo "  ok   $3"; pass=$((pass+1)); fi; }
+
+echo "== 1. a healthy deploy pins by digest and records it"
+: > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$out" "Pinning images to the digests just pulled" "pin() ran"
+contains "$out" "ghcr.io/kolonie-ai/kolonie-api@sha256:" "api pinned to a digest"
+contains "$out" "Recorded the deployed build" "deployment recorded"
+check "state file written" "$([ -f "$WORK/state/deployed.env" ] && echo yes || echo no)" "yes"
+contains "$(cat "$WORK/state/deployed.env")" "API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:" "state file holds the digest"
+# the containers must have been started with the digest exported
+contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website up -d --remove-orphans" "up -d ran"
+
+echo "== 2. the migrate and seed containers run the pinned build, not :latest"
+grep -q 'compose .*run --rm -T api npm run migrate' "$WORK/docker.log" && echo "  ok   migrate ran" && pass=$((pass+1))
+recorded_api=$(grep '^API_IMAGE=' "$WORK/state/deployed.env" | cut -d= -f2-)
+check "pinned ref is a digest, not a tag" "$(grep -c '@sha256:' <<<"$recorded_api")" "1"
+
+echo "== 3. rollback with no recorded build changes nothing"
+rm -rf "$WORK/state"
+: > "$WORK/docker.log"
+rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env FAIL_UP=1)
+contains "$out" "no previously deployed build recorded" "said why it did nothing"
+contains "$out" "whatever is running stays running" "left the host alone"
+absent "$(grep 'compose' "$WORK/docker.log" | grep 'up -d' | tail -n +2)" "up -d" "no second up -d after the failure"
+
+echo "== 4. rollback with a recorded build returns to it"
+# seed a known-good record, then fail the deploy
+mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env FAIL_UP=1)
+contains "$out" "Returning to the build deployed at 19990101_000000" "named the build it returned to"
+contains "$out" "kolonie-api@sha256:$(printf %064d 1)" "returned to the recorded digest"
+contains "$out" "Rollback completed" "rollback completed"
+absent "$(grep 'up -d' "$WORK/docker.log" | tail -n1)" "--remove-orphans" "rollback did not pass --remove-orphans"
+# the failed build must not have overwritten the known-good record
+contains "$(cat "$WORK/state/deployed.env")" "DEPLOYED_AT=19990101_000000" "a failed deploy did not overwrite the record"
+
+echo "== 5. an unresolvable digest degrades to the tag rather than aborting"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env FAIL_DIGEST=ghcr.io/kolonie-ai/kolonie-website)
+contains "$out" "no digest recorded for ghcr.io/kolonie-ai/kolonie-website:latest" "warned about the unpinnable image"
+contains "$out" "Deployment completed" "deploy still finished"
+contains "$(cat "$WORK/state/deployed.env")" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website:latest" "recorded the tag it actually used"
+
+echo
+echo "passed $pass, failed $fail"
+[ "$fail" -eq 0 ]

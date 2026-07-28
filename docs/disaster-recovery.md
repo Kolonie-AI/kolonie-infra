@@ -63,9 +63,11 @@
 
 `deploy.sh` migrates between `pull` and `up -d`, so by the time a health check
 fails the schema has already moved forward. That asymmetry is the thing to hold
-on to: **the containers can go back and the database cannot.** `rollback()`
-restores the previous *configuration*, and the images are tagged `:latest`, so
-what it actually brings back is the old code against the new schema.
+on to: **the containers can go back and the database cannot.** Since #12,
+`rollback()` genuinely does bring back the previous *build* — it re-deploys the
+digests in `state/deployed.env`, written after the last health check that
+passed. So what you get is the old code against the new schema, on purpose and
+reliably, rather than the same failing image pulled a second time.
 
 Take it in this order, and do not start by rolling back.
 
@@ -93,10 +95,18 @@ Take it in this order, and do not start by rolling back.
    and the failure surfaces far from the cause.
 ```
 
-Note what this scenario costs, and where it is being paid down: it exists
-because `:latest` leaves no previous image to return to (kolonie-infra#12), and
-its expensive branch exists because there is no automated backup yet
-(kolonie-infra#4). With both, step 2 stops being a judgement call.
+Note what this scenario costs, and where it is being paid down. The containers
+can now be returned to a known-good build (#12, 2026-07-28), so step 2 is no
+longer *"can we roll back at all"* but the narrower question of whether the old
+code tolerates the new schema. Its expensive branch remains expensive because
+there is no automated backup yet (kolonie-infra#4); with that, step 2 stops
+being a judgement call.
+
+**A rollback with nothing recorded does nothing.** On a host that has not
+completed a deploy since #12, both `rollback()` and `scripts/rollback.sh` say so
+and exit without touching a container — there is no known-good version to return
+to, and tearing down containers that are serving would turn a failed deploy into
+an outage.
 
 Until then, the cheap insurance before a deploy carrying a destructive
 migration is a dump — one command, and it turns step 2 into a decision instead

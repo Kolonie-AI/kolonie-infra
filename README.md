@@ -181,12 +181,21 @@ The infra repo manages infrastructure (Traefik, PostgreSQL). Application service
 1. Push to `main` triggers GitHub Actions
 2. Actions SSHs to VPS as `ubuntu`
 3. Runs `git pull origin main` in `/opt/kolonie`
-4. Runs `scripts/deploy.sh` which does `docker compose pull` + `docker compose up -d`
+4. Runs `scripts/deploy.sh`: pull → **pin** → migrate → seed → `up -d` → health check
 5. Runs `scripts/healthcheck.sh` which checks container health via Docker inspect
+
+**Nothing is ever run from a mutable tag.** `deploy.sh` pulls `:latest`, resolves
+it to the digest the registry just served, and starts the containers from that
+digest — so the build that is inspected is the build that runs, and it cannot
+change underneath the deploy. After the health check passes, those digests are
+written to `state/deployed.env`; that file is what `rollback()` returns to, and
+it is the only place the host records which build is serving (#12).
 
 **To add a new service:**
 1. Build image in its own repo → push to `ghcr.io/kolonie-ai/<service>:latest`
-2. Add service definition to `docker-compose.yml` (with `profiles: [full]` if optional)
+2. Add service definition to `docker-compose.yml` (with `profiles: [full]` if optional).
+   Write the image as `${SERVICE_IMAGE:-ghcr.io/kolonie-ai/<service>:latest}` and pin
+   it in `deploy.sh`, or it will be the one service nobody can roll back
 3. Next infra deploy will pick it up automatically
 
 ## Services
@@ -218,7 +227,8 @@ kolonie-infra/
 ├── scripts/
 │   ├── deploy.sh                   ← Deployment script
 │   ├── healthcheck.sh              ← Post-deploy health check
-│   └── rollback.sh                 ← Rollback on failure
+│   ├── rollback.sh                 ← Return to the last build that passed a health check
+│   └── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
 │
 ├── docs/
 │   ├── scaling-strategy.md         ← How we scale from VPS to global
