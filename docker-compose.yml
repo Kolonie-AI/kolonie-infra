@@ -85,6 +85,8 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       JWT_SECRET: ${JWT_SECRET}
+      HCAPTCHA_SITEKEY: ${HCAPTCHA_SITEKEY}
+      HCAPTCHA_SECRET: ${HCAPTCHA_SECRET}
       PORT: 3000
     depends_on:
       postgres:
