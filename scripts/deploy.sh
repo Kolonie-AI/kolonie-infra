@@ -227,16 +227,43 @@ digest_of() {
 # failed. Written afterwards, this file only ever names a build that answered.
 record_deployment() {
     mkdir -p "$STATE_DIR"
+
+    # Only the services this deploy actually touched.
+    #
+    # This used to write all three unconditionally, which was correct while every
+    # deploy was `all`. Since #14 a build in kolonie-platform deploys one service,
+    # and the other two are then *not pulled* — so pin() resolves their digests
+    # from whatever local tag happens to be lying around, which is the previous
+    # build. Writing those would record images that are not running, and
+    # rollback() would "return" to a build this host never served.
+    #
+    # It happened on 2026-07-29: an api deploy correctly recorded the new digest,
+    # and the verifier-runner deploy queued behind it overwrote API_IMAGE with the
+    # stale local `:latest`, while the api container went on running the new one.
+    local recorded_api="${API_IMAGE}" recorded_runner="${RUNNER_IMAGE}" recorded_website="${WEBSITE_IMAGE}"
+
+    if [ "$SERVICE" != all ] && [ -f "$DEPLOYED_STATE" ]; then
+        # Read the previous record in a subshell, so sourcing it cannot clobber
+        # the variables this deploy just resolved.
+        local previous
+        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${WEBSITE_IMAGE}")
+        [ "$SERVICE" != api ]             && recorded_api="${previous%%|*}"
+        [ "$SERVICE" != verifier-runner ] && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
+        [ "$SERVICE" != website ]         && recorded_website="${previous##*|}"
+    fi
+
     cat > "$DEPLOYED_STATE" <<EOF
 # Written by scripts/deploy.sh after a successful health check.
 # These are the images currently serving. rollback() returns to them.
 # Do not edit by hand: a wrong digest here is a rollback into an unknown build.
+# A single-service deploy rewrites only its own line; the others are carried
+# over from the previous record, because it did not pull them and cannot know.
 DEPLOYED_AT=${TIMESTAMP}
-API_IMAGE=${API_IMAGE}
-RUNNER_IMAGE=${RUNNER_IMAGE}
-WEBSITE_IMAGE=${WEBSITE_IMAGE}
+API_IMAGE=${recorded_api}
+RUNNER_IMAGE=${recorded_runner}
+WEBSITE_IMAGE=${recorded_website}
 EOF
-    log "Recorded the deployed build in ${DEPLOYED_STATE}"
+    log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
 }
 
 # Apply pending database migrations — after the pull, before the switch.

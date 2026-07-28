@@ -203,6 +203,33 @@ rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(run_deploy env)
 contains "$(grep 'up -d' "$WORK/docker.log")" "--remove-orphans" "flag kept where the view is authoritative"
 
+echo "== 11. a single-service deploy does not rewrite the other services' digests"
+# The bug this guards: since #14 a deploy can name one service, and the other two
+# are never pulled — so pin() resolves their digests from stale local tags. If
+# those were recorded, rollback() would return to a build that never served.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+: > "$WORK/docker.log"
+out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA")
+recorded=$(cat "$WORK/state/deployed.env")
+contains "$recorded" "API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)" "api digest carried over untouched"
+contains "$recorded" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)" "website digest carried over untouched"
+absent "$recorded" "RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)" "runner digest was replaced"
+contains "$recorded" "RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:" "runner digest is a digest"
+
+echo "== 12. a full deploy still records all three"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+recorded=$(cat "$WORK/state/deployed.env")
+for img in kolonie-api kolonie-verifier-runner kolonie-website; do
+  contains "$recorded" "ghcr.io/kolonie-ai/${img}@sha256:" "$img recorded"
+done
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
