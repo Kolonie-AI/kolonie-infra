@@ -158,12 +158,34 @@ curl -sI https://kolonie.ai
 
 ### Automatic (GitHub Actions)
 
-Every push to `main` triggers deployment:
-1. GitHub Actions SSHes to VPS
-2. Pulls latest infra config
-3. Restarts services
-4. Runs health check
-5. Rolls back on failure
+A push to `main` triggers a deployment **unless it only touches documentation**
+(#13). The filter is a `paths-ignore` list — Markdown, `docs/`, `state/`, the
+issue templates — rather than a list of what does deploy. That direction is
+deliberate: a change that is silently *not* deployed is much harder to notice
+than one that is, so anything not provably inert still ships.
+
+1. GitHub Actions SSHes to the VPS
+2. Pulls the latest infra config
+3. `scripts/deploy.sh`: pull → pin → migrate → seed → `up -d`
+4. Runs the health check
+5. Rolls back to the last build that passed one, on failure
+
+### Deploying a specific build
+
+`deploy.yml` takes a `service` and a `version`, and the version is applied to
+that service alone — the three images are built by three workflows in two
+repositories and share no version.
+
+```bash
+gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra \
+  -f service=api -f version=<sha>
+```
+
+`version` defaults to `latest`, which is what a push to this repository means:
+re-deploy whatever is current. Naming a tag is how a deploy becomes a function
+of a commit rather than of whatever finished building most recently.
+
+A `workflow_dispatch` always deploys, whatever the path filter says.
 
 ### Manual Deploy
 
@@ -191,6 +213,14 @@ digest — so the build that is inspected is the build that runs, and it cannot
 change underneath the deploy. After the health check passes, those digests are
 written to `state/deployed.env`; that file is what `rollback()` returns to, and
 it is the only place the host records which build is serving (#12).
+
+**`--remove-orphans` is conditional.** It is passed only on a full deploy where
+every application image was reachable. That flag deletes every container absent
+from the compose view it is given, and two things make that view incomplete: a
+single-service deploy, and an image the deploying token could not read. On
+2026-07-28 an incomplete view took three healthy services down in response to one
+container that was in fact serving every request; withholding the flag leaves a
+stale container instead, which is visible and fixable.
 
 **To add a new service:**
 1. Build image in its own repo → push to `ghcr.io/kolonie-ai/<service>:latest`
