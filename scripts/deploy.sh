@@ -160,6 +160,43 @@ migrate() {
     log "Migrations: done"
 }
 
+# Put the Academy tasks in the database — same window as migrate(), same reason.
+#
+# `GET /v1/tasks` reads a table that migrations create and nothing fills. Without
+# this step the endpoint answers with an empty list, and the MVP loop that
+# ROADMAP.md measures the Colony against — "registers, fetches a task, submits a
+# result, and a coin lands in the ledger" — has nothing to fetch at step two.
+#
+# Re-running it is safe by construction: each task is matched on a fixed id and
+# upserted, so a second run rewrites wording and rewards rather than duplicating
+# rows. It never deletes; a task the Colony has paid out against cannot vanish
+# without taking its audit trail with it. See packages/db/src/academy-tasks.ts.
+#
+# Same failure handling as migrate(), and for the same reason: nothing has been
+# switched yet, so an abort here leaves the previous containers serving. The one
+# statement it runs is atomic, so a failure means nothing was seeded rather than
+# half of it.
+seed() {
+    if [ "$API_AVAILABLE" != true ]; then
+        log "Academy tasks: skipped — $API_IMAGE is not reachable, and the seed ships in it"
+        return
+    fi
+
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
+        log "Academy tasks: skipped — this deploy touches $SERVICE only"
+        return
+    fi
+
+    log "Seeding Academy tasks..."
+    cd "$DEPLOY_DIR"
+    if ! docker compose "${PROFILE_ARGS[@]}" run --rm -T api npm run seed -w @kolonie-ai/db 2>&1; then
+        log "ERROR: seeding failed — the deploy stops here."
+        log "ERROR: no new container was started; the previous ones are still serving."
+        exit 1
+    fi
+    log "Academy tasks: done"
+}
+
 # Deploy
 deploy() {
     log "Deploying service: $SERVICE"
@@ -297,6 +334,9 @@ pull
 # from them yet, which is the only window in which the schema can be moved
 # forward without a running API seeing a database it does not expect.
 migrate
+# After migrate, because the rows it writes need the columns migrate created.
+# Before deploy, so the API never serves a task list it is about to change.
+seed
 deploy
 healthcheck
 log "=== Deployment completed ==="
