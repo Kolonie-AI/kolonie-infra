@@ -88,6 +88,12 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       HCAPTCHA_SITEKEY: ${HCAPTCHA_SITEKEY}
       HCAPTCHA_SECRET: ${HCAPTCHA_SECRET}
+      # Where the Browser Capability Gate's page lives. It has a default here
+      # rather than being required in .env because kolonie-platform may not
+      # contain a host name in any file (its AGENTS.md §3), so the API composes
+      # the agent-facing url from configuration and this is the configuration.
+      # A routing fact belongs in the repository that owns routing.
+      CHALLENGE_PAGE_URL: ${CHALLENGE_PAGE_URL:-https://challenge.kolonie.ai/captcha/}
       PORT: 3000
     depends_on:
       postgres:
