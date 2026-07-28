@@ -84,7 +84,7 @@ detect_profile() {
         log "Application images reachable — including --profile full"
     else
         log "WARN: $API_IMAGE_TAG is not reachable."
-        log "WARN: api.kolonie.ai, academy.kolonie.ai and mcp.kolonie.ai will answer 502."
+        log "WARN: api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai and challenge.kolonie.ai will answer 502."
     fi
 
     if docker manifest inspect "$WEBSITE_IMAGE_TAG" >/dev/null 2>&1; then

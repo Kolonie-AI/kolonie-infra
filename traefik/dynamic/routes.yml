@@ -32,6 +32,24 @@ http:
       tls:
         certResolver: cloudflare
 
+    # Browser Capability Gate — the same container again, and a separate router
+    # for the same reason MCP has one. What it serves is a page a browser loads,
+    # not an endpoint an agent calls, so it will want its own rate limits and
+    # possibly its own container once the hCaptcha form is real
+    # (kolonie-platform#21). Both are changes to this block alone if the address
+    # already belongs to a router of its own.
+    #
+    # The API process serves the files rather than an Nginx sidecar — the
+    # reasoning is D-022 in kolonie-platform/docs/decisions.md, which closes the
+    # option that #18 left open.
+    challenge:
+      rule: "Host(`challenge.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"

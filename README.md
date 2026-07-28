@@ -53,6 +53,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── api.kolonie.ai → api (Node.js + MCP)
     ├── academy.kolonie.ai → api (academy endpoints)
     ├── mcp.kolonie.ai → api (MCP server — own router, same container)
+    ├── challenge.kolonie.ai → api (Browser Capability Gate page — D-022)
     │
     ▼ Docker Network
     ├── verifier-runner (no ingress — outbound only)
@@ -204,7 +205,7 @@ it is the only place the host records which build is serving (#12).
 |---------|-------|--------|--------|
 | Traefik | traefik:v3.7 | - | Running |
 | PostgreSQL | postgres:16 | internal | Running |
-| api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai | Pending |
+| api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai, challenge.kolonie.ai | Running |
 | verifier-runner | kolonie-verifier-runner | none (outbound only) | Pending |
 | website | kolonie-website | kolonie.ai | Pending |
 

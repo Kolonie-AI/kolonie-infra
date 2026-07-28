@@ -17,7 +17,7 @@ This is the Infrastructure as Code repository for Kolonie AI. It contains Docker
 
 ```
 Internet → Cloudflare → Traefik (80/443) → Docker Network
-                                            ├── kolonie-api (api + academy.kolonie.ai)
+                                            ├── kolonie-api (api + academy + mcp + challenge)
                                             ├── kolonie-website (kolonie.ai)
                                             ├── kolonie-verifier-runner (no ingress)
                                             └── postgres (internal only)
