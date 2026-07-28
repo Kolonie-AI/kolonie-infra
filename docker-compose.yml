@@ -108,11 +108,27 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       GITHUB_VERIFIER_TOKEN: ${GITHUB_VERIFIER_TOKEN:-}
+      POLL_INTERVAL_MS: ${VERIFIER_POLL_INTERVAL_MS:-5000}
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "process.exit(0)"]
+      # Was `node -e "process.exit(0)"`, which asked whether the process exists
+      # and reported healthy for a process wrapped around a dead polling loop —
+      # exactly the class of lie in #11. The endpoint answers whether a poll has
+      # completed recently, and 503 when it has not; `r.ok` turns that into the
+      # exit code Compose actually reads.
+      #
+      # 127.0.0.1 rather than localhost, for the reason spelled out on the
+      # website service below. No curl in this image, and none is added for one
+      # request that Node can make itself.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 60s
       timeout: 10s
       retries: 3
