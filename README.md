@@ -229,6 +229,19 @@ stale container instead, which is visible and fixable.
    it in `deploy.sh`, or it will be the one service nobody can roll back
 3. Next infra deploy will pick it up automatically
 
+### The host mirrors origin — it does not merge
+
+The deploy runs `git fetch` + `git reset --hard origin/main` in `/opt/kolonie`,
+and the SSH script runs under `set -euo pipefail`. Both are the fix for one
+incident on 2026-07-29: after this repository's history was rewritten, `git pull`
+failed with *"Need to specify how to reconcile divergent branches"*, the script
+carried on regardless, and three deploys ran against infrastructure config frozen
+at the pre-rewrite commit while reporting success.
+
+A deploy target has no commits of its own to preserve, so merging is never the
+right answer. Fetch-and-reset cannot diverge — a history rewrite, a force-push or
+accidental local drift all resolve the same way.
+
 ### Only the edge reaches the origin
 
 `scripts/origin-firewall.sh` restricts ports 80 and 443 on the WAN interface to

@@ -132,10 +132,27 @@ jobs:
           # injection with extra steps.
           envs: GHCR_TOKEN,GHCR_USER,SERVICE,VERSION
           script: |
+            # Without this the script runs on: a failing command is logged and
+            # the next one runs anyway, and the step's status is whatever the
+            # *last* command returned. That is how a deploy shipped stale
+            # infrastructure config and reported success — see the git step
+            # below for the failure that exposed it.
+            set -euo pipefail
+
             cd ${{ env.DEPLOY_DIR }}
 
-            # Pull latest infra config
-            git pull origin main
+            # `reset --hard`, not `git pull`. The host is a mirror of origin, not
+            # a working copy with opinions: it has no commits of its own to
+            # preserve, and merging is never the right answer here.
+            #
+            # `git pull` failed outright once the history of this repository was
+            # rewritten — "fatal: Need to specify how to reconcile divergent
+            # branches" — and because the script did not stop on error, three
+            # deploys ran against config frozen at the pre-rewrite commit and
+            # reported green. Fetch-and-reset cannot diverge, so a rewrite, a
+            # force-push or accidental local drift all resolve the same way.
+            git fetch origin main
+            git reset --hard origin/main
 
             chmod +x scripts/*.sh
 
