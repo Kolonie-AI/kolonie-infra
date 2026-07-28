@@ -59,6 +59,53 @@
 5. docker compose up -d
 ```
 
+### Scenario 5: The migration succeeded and the health check then failed
+
+`deploy.sh` migrates between `pull` and `up -d`, so by the time a health check
+fails the schema has already moved forward. That asymmetry is the thing to hold
+on to: **the containers can go back and the database cannot.** `rollback()`
+restores the previous *configuration*, and the images are tagged `:latest`, so
+what it actually brings back is the old code against the new schema.
+
+Take it in this order, and do not start by rolling back.
+
+```
+1. Read why. The migration is not the suspect until it is:
+   docker compose logs --tail 100 api
+   Deploys fail for the reasons they have always failed — a missing variable,
+   an unreachable image — and those are unrelated to the schema.
+
+2. Ask whether the old code can live with the new schema.
+   Additive migrations (a new table, a new nullable column) it can: the old
+   code simply does not use them. A rename, a NOT NULL on an existing column
+   or a dropped column it cannot.
+
+   Additive  -> `./scripts/rollback.sh`, then fix forward. The stack is serving
+                again within minutes and the extra schema is inert.
+   Otherwise -> do NOT roll back the containers. A rollback here produces the
+                one state worse than being down: the site up and writing wrong
+                rows. Fix forward, or restore per Scenario 2 and accept the
+                data loss between the backup and now.
+
+3. Whichever path: the fix goes through a migration in kolonie-platform's
+   packages/db. Never `psql` against the live database by hand — the next
+   deploy would migrate from bookkeeping that no longer matches the schema,
+   and the failure surfaces far from the cause.
+```
+
+Note what this scenario costs, and where it is being paid down: it exists
+because `:latest` leaves no previous image to return to (kolonie-infra#12), and
+its expensive branch exists because there is no automated backup yet
+(kolonie-infra#4). With both, step 2 stops being a judgement call.
+
+Until then, the cheap insurance before a deploy carrying a destructive
+migration is a dump — one command, and it turns step 2 into a decision instead
+of a gamble:
+
+```bash
+ssh <host> 'docker exec kolonie-postgres pg_dump -U kolonie kolonie' > pre-deploy.sql
+```
+
 ## Recovery Time Objectives
 
 | Scenario | Target Recovery Time |

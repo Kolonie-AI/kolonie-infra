@@ -13,6 +13,10 @@ WEBSITE_IMAGE="ghcr.io/kolonie-ai/kolonie-website:latest"
 
 # Filled in by detect_profile(). Empty means infrastructure only.
 PROFILE_ARGS=()
+# Whether the api image could be pulled. migrate() needs to know: it runs the
+# migrations *out of that image*, so "no api image" and "no migration step" are
+# the same condition, not two.
+API_AVAILABLE=false
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -58,6 +62,7 @@ detect_profile() {
 
     if docker manifest inspect "$API_IMAGE" >/dev/null 2>&1; then
         PROFILE_ARGS+=(--profile full)
+        API_AVAILABLE=true
         log "Application images reachable — including --profile full"
     else
         log "WARN: $API_IMAGE is not reachable."
@@ -105,6 +110,54 @@ pull() {
             exit 1
         }
     fi
+}
+
+# Apply pending database migrations — after the pull, before the switch.
+#
+# The order is the whole point. An API answering against a schema one migration
+# behind is worse than an API that is briefly down: it fails per request, only
+# on the paths that touch the new columns, and only for some callers. So the
+# database is brought to the schema the new image expects *before* that image
+# starts serving.
+#
+# It is a one-shot container from the api image, which carries packages/db and
+# its SQL for exactly this (kolonie-platform's apps/api/Dockerfile says so).
+# A separate kolonie-migrate image is the tidier idea and a third image to
+# build, push, version and keep in step for a step that runs for two seconds —
+# worth revisiting when migrations need a toolchain the API does not have.
+#
+# Not --no-deps: `run` then honours the api service's `depends_on postgres:
+# service_healthy`, and a migration that waits for the database to be ready
+# beats one that races it. Postgres carries no profile and is already up, so in
+# the normal case this waits for nothing.
+#
+# A failure here exits without rollback(), and that is deliberate. Nothing has
+# been switched yet: the previous containers are still running and still
+# serving. rollback() restores a *configuration*, which is precisely what has
+# not changed — calling it would replace a clean abort with an unnecessary
+# `up -d` against containers that are already correct.
+migrate() {
+    if [ "$API_AVAILABLE" != true ]; then
+        log "Migrations: skipped — $API_IMAGE is not reachable, and the migrator ships in it"
+        return
+    fi
+
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
+        log "Migrations: skipped — this deploy touches $SERVICE only"
+        return
+    fi
+
+    log "Applying database migrations..."
+    cd "$DEPLOY_DIR"
+    # -T: there is no terminal on the far end of the deploy workflow's SSH
+    # session, and compose only allocates one when asked.
+    if ! docker compose "${PROFILE_ARGS[@]}" run --rm -T api npm run migrate -w @kolonie-ai/db 2>&1; then
+        log "ERROR: migration failed — the deploy stops here."
+        log "ERROR: no new container was started; the previous ones are still serving."
+        log "ERROR: the database may be partly migrated. See docs/disaster-recovery.md, Scenario 5."
+        exit 1
+    fi
+    log "Migrations: done"
 }
 
 # Deploy
@@ -211,6 +264,12 @@ healthcheck() {
 # It cannot restore the previous *images*, because they are tagged `:latest` and
 # the old digest is not recorded anywhere. Rolling back to a known-good build
 # needs immutable tags — filed as kolonie-infra#12.
+#
+# It also cannot undo a migration. Since migrate() runs before deploy(), a
+# health check that fails is a health check failing against a schema that has
+# already moved. Whether restoring the previous configuration is safe then
+# depends on whether the migration was additive — docs/disaster-recovery.md,
+# Scenario 5, walks through both answers.
 rollback() {
     log "Rolling back..."
     cd "$DEPLOY_DIR"
@@ -234,6 +293,10 @@ detect_profile
 # pull, so it describes what is running now rather than what is about to.
 backup
 pull
+# Between the two on purpose: the images are on the host but nothing is serving
+# from them yet, which is the only window in which the schema can be moved
+# forward without a running API seeing a database it does not expect.
+migrate
 deploy
 healthcheck
 log "=== Deployment completed ==="
