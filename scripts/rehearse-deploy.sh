@@ -70,7 +70,13 @@ case "$1 ${2:-}" in
         # API_IMAGE before the pull and overwrites it with a digest after, so
         # this is the only place the requested version is observable.
         pull)    echo "compose pull API_IMAGE=${API_IMAGE:-unset}" >> "$DOCKER_LOG" ;;
-        config)  echo "services: {}" ;;
+        config)
+          if echo "$*" | grep -q -- "--services"; then
+            echo -e "api\nverifier-runner\nwebsite"
+          else
+            echo "services: {}"
+          fi
+          ;;
         ps)      echo "[]" ;;
         run)     [ "${FAIL_SEED:-}" = 1 ] && { echo "Missing script: seed" >&2; exit 1; } ; exit 0 ;;
         up)      # fail only the first `up`, so the rollback's own `up` can succeed
@@ -82,7 +88,10 @@ case "$1 ${2:-}" in
       exit 0 ;;
   "inspect"*)
       # healthcheck asks for .State.Health.Status
-      if [ "${UNHEALTHY:-}" = 1 ]; then echo "unhealthy"; else echo "healthy"; fi
+      if [ "${UNHEALTHY:-}" = 1 ]; then echo "unhealthy"
+      elif [ -n "${UNHEALTHY_SERVICE:-}" ] && echo "$*" | grep -q "${UNHEALTHY_SERVICE}"; then echo "unhealthy"
+      else echo "healthy"
+      fi
       exit 0 ;;
   "login"*|"logout"*) exit 0 ;;
 esac
@@ -229,6 +238,23 @@ recorded=$(cat "$WORK/state/deployed.env")
 for img in kolonie-api kolonie-verifier-runner kolonie-website; do
   contains "$recorded" "ghcr.io/kolonie-ai/${img}@sha256:" "$img recorded"
 done
+
+echo "== 13. a verifier-runner deploy runs migrations before deploying"
+# This prevents the race where a schema-changing merge deploys the runner before
+# the api has migrated the database.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA")
+contains "$(cat "$WORK/docker.log")" "npm run migrate" "runner deploy ran migrations"
+
+echo "== 14. a single-service deploy asserts the health of all profiled services"
+# This prevents silent divergence: if a migration breaks an existing service
+# (e.g., dropping a column the old build reads), the deploy must fail and roll
+# back, rather than succeeding because its own container started.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA" UNHEALTHY_SERVICE=kolonie-api || true)
+contains "$out" "ERROR: not healthy after 5s" "failed because another service was unhealthy"
+contains "$out" "api(unhealthy)" "named the service that failed"
+contains "$out" "there is nothing known-good to return to" "triggered rollback (which safely did nothing since there was no state)"
 
 echo
 echo "passed $pass, failed $fail"

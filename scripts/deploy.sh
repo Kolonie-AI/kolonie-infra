@@ -14,6 +14,14 @@ STATE_DIR="${DEPLOY_DIR}/state"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SERVICE=${1:-all}
 
+# Serialize deploys to prevent concurrent migrations and race conditions (#29)
+mkdir -p "$STATE_DIR"
+exec 9>>"${STATE_DIR}/deploy.lock"
+if ! flock -n 9; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for another deploy to finish..."
+    flock -w 600 9 || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Timeout waiting for deploy lock"; exit 1; }
+fi
+
 # The mutable pointers: what to probe, what to pull. Never what to run — pin()
 # turns each of these into a digest before anything is started.
 API_REPO="ghcr.io/kolonie-ai/kolonie-api"
@@ -326,7 +334,7 @@ migrate() {
         return
     fi
 
-    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ] && [ "$SERVICE" != "verifier-runner" ] && [ "$SERVICE" != "moderation-runner" ]; then
         log "Migrations: skipped — this deploy touches $SERVICE only"
         return
     fi
@@ -366,7 +374,7 @@ seed() {
         return
     fi
 
-    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ] && [ "$SERVICE" != "verifier-runner" ] && [ "$SERVICE" != "moderation-runner" ]; then
         log "Academy tasks: skipped — this deploy touches $SERVICE only"
         return
     fi
@@ -450,15 +458,10 @@ HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
 healthcheck() {
     log "Waiting up to ${HEALTH_TIMEOUT}s for services to become healthy..."
 
-    local services
-    if [ "$SERVICE" = "all" ]; then
-        # Only the services that were actually deployed. Listing every service
-        # in the file would warn about profiled containers that were never
-        # started, which reads like a fault and is not one.
-        services=$(cd "$DEPLOY_DIR" && docker compose "${PROFILE_ARGS[@]}" config --services)
-    else
-        services="$SERVICE"
-    fi
+    # Always check all profiled services, even on a single-service deploy.
+    # If a migration broke another service, we must fail and roll back rather
+    # than leaving the host silently diverged.
+    services=$(cd "$DEPLOY_DIR" && docker compose "${PROFILE_ARGS[@]}" config --services)
 
     local deadline=$((SECONDS + HEALTH_TIMEOUT))
     local pending status svc container
