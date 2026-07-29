@@ -66,8 +66,14 @@ jobs:
             fi
 
             echo
-            echo "=== required variables declared in docker-compose.yml ==="
-            grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:\?' docker-compose.yml | sed 's/\${//; s/:?//' | sort -u || echo "(none)"
+            # Replaces the hand comparison this workflow used to invite: it
+            # printed the host's names and left whoever read the log to diff them
+            # against .env.example by eye. That is how #8 sat open with a table
+            # that was already stale by the time anyone acted on it. The script
+            # prints names only, same rule as everything above it.
+            echo "=== environment drift (names only, never values) ==="
+            chmod +x scripts/env-drift.sh
+            ./scripts/env-drift.sh . || echo "(drift reported above — this step does not fail the run)"
 
             echo
             echo "=== containers ==="

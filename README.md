@@ -119,8 +119,13 @@ JWT_SECRET=$(openssl rand -hex 32)
 ENCRYPTION_KEY=$(openssl rand -hex 32)
 NODE_ENV=production
 API_URL=https://api.kolonie.ai
-FRONTEND_URL=https://kolonie.ai
+WEBSITE_URL=https://kolonie.ai
 ```
+
+This block is an excerpt and goes stale. `.env.example` is the list, and
+`./scripts/env-drift.sh /opt/kolonie` is how you find out whether the host still
+matches it — run it rather than reading two files side by side, which is how
+`FRONTEND_URL` and `WEBSITE_URL` came to be two names for one address (#8).
 
 ### Step 3: GitHub Secrets
 

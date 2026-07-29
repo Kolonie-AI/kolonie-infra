@@ -1,0 +1,189 @@
+name: Health Watch
+
+# Notices a container that is unhealthy but still serving (#11).
+#
+# On 2026-07-28 kolonie-website was unhealthy for an unknown number of days while
+# answering every request correctly. Nothing reported it. It surfaced when a
+# docs-only push triggered a deploy, the deploy read the health status, and the
+# rollback took the site down for half an hour. The wrong status was cheap to fix
+# — 127.0.0.1 instead of localhost — and expensive to discover late, because
+# everything downstream treats it as truth.
+#
+# The gap was not that the stack had no health checks. It was that the only
+# reader of them ran at deploy time. This workflow is a second reader that runs
+# whether or not anyone deploys.
+#
+# **Where the notification goes: a GitHub issue.** AGENTS.md §3 in kolonie-docs
+# says every open task is an issue and no task lives anywhere else, so that is
+# where this project actually looks. A Slack webhook or an emailed alert would be
+# a second place to look that nobody has agreed to look at, and it would not
+# survive the maintainer being replaced by another agent — which is the property
+# the whole process is built around.
+
+on:
+  schedule:
+    # Every fifteen minutes. GitHub delays scheduled runs under load and drops
+    # them outright sometimes, so this is a floor on latency and not a promise:
+    # the thing being caught sat broken for days, and catching it within the hour
+    # is the whole win. Do not tighten this in the hope of precision it cannot
+    # give.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# A second run starting while one is mid-way through filing an issue would
+# duplicate it. Queue rather than cancel — a cancelled run reports nothing, and
+# silence is the failure mode this workflow exists to end.
+concurrency:
+  group: health-watch
+  cancel-in-progress: false
+
+env:
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_USER: ubuntu
+  DEPLOY_DIR: /opt/kolonie
+  ISSUE_TITLE: 'Containers on the deploy host are unhealthy'
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read what each container thinks of itself
+        id: probe
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VPS_HOST }}
+          username: ${{ env.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -uo pipefail
+            cd ${{ env.DEPLOY_DIR }}
+            chmod +x scripts/health-report.sh
+            # Markers rather than trusting the action's stdout to be exactly the
+            # command's. Whatever banner or connection noise wraps it, the report
+            # is what lies between these two lines.
+            echo "---BEGIN REPORT---"
+            ./scripts/health-report.sh
+            echo "---END REPORT---"
+
+      - name: Triage the report
+        id: triage
+        env:
+          # Through the environment, never interpolated into the script body.
+          # `${{ }}` pasted into a shell is a shell injection with extra steps —
+          # deploy.yml makes the same point about its inputs, and this one is
+          # further from trusted: it is whatever a remote command printed.
+          PROBE_STDOUT: ${{ steps.probe.outputs.stdout }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$PROBE_STDOUT" \
+            | sed -n '/---BEGIN REPORT---/,/---END REPORT---/p' \
+            | grep -v -e '---BEGIN REPORT---' -e '---END REPORT---' \
+            > report.tsv || true
+
+          if [ ! -s report.tsv ]; then
+            # The probe produced nothing between the markers. That is not a
+            # healthy stack — it is a broken watcher, and reporting it as "ok"
+            # is precisely how this failure hides. Fail the run so it is visible
+            # in the Actions tab rather than filing a reassuring issue comment.
+            echo "::error::The health probe returned no rows. SSH reachable but the report is empty?"
+            exit 1
+          fi
+
+          chmod +x scripts/health-triage.sh
+          ./scripts/health-triage.sh < report.tsv > summary.md 2> verdict.env || true
+          cat verdict.env >> "$GITHUB_OUTPUT"
+
+          {
+            echo 'summary<<KOLONIE_EOF'
+            cat summary.md
+            echo 'KOLONIE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          cat summary.md
+
+      - name: File, update or close the report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT: ${{ steps.triage.outputs.VERDICT }}
+          FINGERPRINT: ${{ steps.triage.outputs.FINGERPRINT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$ISSUE_TITLE\"" --json number,body --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          if [ "$VERDICT" = "ok" ]; then
+            # Nothing wrong. The only thing that may happen is closing a report
+            # that is no longer true — and if there is none, this job says
+            # nothing at all. A healthy stack producing a comment every fifteen
+            # minutes is how an alert channel gets muted.
+            if [ -n "$number" ]; then
+              printf '%s\n\n%s\n' \
+                'Recovered. Every container is running and none reports itself unhealthy.' \
+                "$RUN_URL" > recovered.md
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file recovered.md
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+                --reason completed --comment "Closed automatically by Health Watch."
+              echo "closed #$number"
+            else
+              echo "healthy, nothing open — saying nothing"
+            fi
+            exit 0
+          fi
+
+          # Written to a file rather than built as a shell string. A multi-line
+          # literal inside a `run: |` block has to stay indented or it ends the
+          # YAML scalar, and the failure is a parse error in a workflow nobody
+          # can run — the fingerprint marker below is exactly the kind of line
+          # that starts at column zero.
+          {
+            cat summary.md
+            printf '\n<!-- health-watch-fingerprint: %s -->\n\n' "$FINGERPRINT"
+            printf 'Filed automatically by [Health Watch](%s). It closes itself when the host\n' "$RUN_URL"
+            printf 'reports every container healthy again — do not close it by hand while the\n'
+            printf 'condition holds, or the next run will simply file it again.\n\n'
+            printf 'Read this as a task with the cause open: a health check is as likely to be\n'
+            printf 'wrong as the service is to be down. In #11 the service was entirely fine and\n'
+            printf 'the check was looking at the wrong address family.\n'
+          } > body.md
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$ISSUE_TITLE" \
+              --label bug --label p1 --label area:infra \
+              --body-file body.md
+            echo "filed a new report"
+            exit 0
+          fi
+
+          previous="$(echo "$existing" | jq -r '.[0].body // ""' \
+            | sed -n 's/.*health-watch-fingerprint: \(.*\) -->.*/\1/p')"
+
+          if [ "$previous" = "$FINGERPRINT" ]; then
+            # Same containers broken the same way as last run. The open issue
+            # already says so, and repeating it every fifteen minutes would bury
+            # the change that matters under a hundred identical comments.
+            echo "unchanged since the last run — #$number already says this"
+            exit 0
+          fi
+
+          {
+            printf 'What is wrong has changed.\n\n'
+            cat summary.md
+            printf '\n%s\n' "$RUN_URL"
+          } > changed.md
+
+          gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file changed.md
+          echo "updated #$number"

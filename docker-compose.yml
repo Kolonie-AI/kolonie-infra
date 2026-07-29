@@ -167,13 +167,21 @@ services:
 
   # === Website (kolonie-website, static Astro build behind nginx) ===
   #
-  # Its own profile, not `full`. The kolonie-website repository does not exist
-  # yet, so this image has never been built — and `docker compose pull` fails
-  # the whole command when any one image is missing, taking api and
-  # verifier-runner down with it even though both pull fine.
+  # Its own profile, not `full`. The reason has changed and the arrangement has
+  # not: the kolonie-website repository now exists and this image is published
+  # and running, so the original argument — `docker compose pull` fails the whole
+  # command when any one image is missing, taking api and verifier-runner down
+  # with it — no longer applies.
   #
-  # `full` therefore means "the application services that exist". Add
-  # --profile website to deploy.sh once the image is published.
+  # What keeps it separate now is blast radius. The website is the one service
+  # whose failure costs nothing operational, and it is also the one that took the
+  # whole stack down once (#11): it sat unhealthy for days while serving
+  # perfectly, a deploy read that status, and the rollback stopped everything for
+  # half an hour. A service that can be deployed on its own can also be left
+  # alone on its own.
+  #
+  # `full` therefore means "the API and what verifies for it". Deploy this one
+  # with --profile website.
   website:
     image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:latest}
     container_name: kolonie-website
