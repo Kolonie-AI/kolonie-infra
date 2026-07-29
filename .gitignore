@@ -1,7 +1,15 @@
 # Environment
+#
+# `.env` matches that name and nothing else — not `.env.bak`, not
+# `.env.bak.20260728_030003`. A hand-made backup beside it was therefore an
+# untracked, *unignored* copy of every production secret sitting in a checkout
+# of a public repository (#27). The glob below is deliberately wide: anything
+# whose name starts with `.env` is assumed to hold what `.env` holds.
 .env
+.env.*
 .env.local
 .env.*.local
+*.env.bak
 
 # Traefik
 traefik/acme.json
@@ -9,6 +17,19 @@ traefik/acme-staging.json
 
 # Docker
 docker-compose.override.yml
+
+# Written on the deploy host by scripts/deploy.sh, never committed.
+#
+# `docker-compose.last.yml` is the one that matters: `docker compose config`
+# interpolates, so before #27 it rendered JWT_SECRET, POSTGRES_PASSWORD,
+# CLOUDFLARE_API_TOKEN, HCAPTCHA_SECRET and GITHUB_VERIFIER_TOKEN in cleartext
+# into the checkout on every deploy. It is written with --no-interpolate now, so
+# this is defence in depth rather than the fix — but the fix and the ignore both
+# belong here, because the next person to add a snapshot will reach for `config`
+# without the flag.
+docker-compose.last.yml
+backups/
+state/
 
 # OS
 .DS_Store

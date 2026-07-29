@@ -151,7 +151,25 @@ backup() {
     log "Creating backup..."
     mkdir -p "$BACKUP_DIR"
     docker compose -f "$DEPLOY_DIR/docker-compose.yml" ps --format json > "$BACKUP_DIR/ps_${TIMESTAMP}.json" 2>/dev/null || true
-    docker compose "${PROFILE_ARGS[@]}" -f "$DEPLOY_DIR/docker-compose.yml" config > "$DEPLOY_DIR/docker-compose.last.yml" 2>/dev/null || true
+    # `--no-interpolate` is the whole point of this line, not a detail.
+    #
+    # Without it `config` resolves every ${VAR} against .env — so this wrote
+    # JWT_SECRET, POSTGRES_PASSWORD, CLOUDFLARE_API_TOKEN, HCAPTCHA_SECRET and
+    # GITHUB_VERIFIER_TOKEN in cleartext, mode 664, into a git checkout of a
+    # public repository, on every single deploy (#27). Nothing published it —
+    # deploy.sh uses fetch and reset --hard, which do not stage untracked files —
+    # but it sat one `git add -A` away from being published, in a directory
+    # agents are expected to work in.
+    #
+    # Nothing reads this file. rollback.sh mentions it only to say it
+    # deliberately does not use it, so leaving the values unresolved costs a
+    # diagnostic nicety and removes a standing exposure. The placeholders are
+    # still there, and .env is still on the host if you need to resolve one.
+    umask 077
+    docker compose "${PROFILE_ARGS[@]}" -f "$DEPLOY_DIR/docker-compose.yml" config --no-interpolate \
+        > "$DEPLOY_DIR/docker-compose.last.yml" 2>/dev/null || true
+    chmod 600 "$DEPLOY_DIR/docker-compose.last.yml" 2>/dev/null || true
+    umask 022
 }
 
 # Pull new images
