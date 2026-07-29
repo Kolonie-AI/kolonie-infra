@@ -180,6 +180,57 @@ services:
     profiles:
       - full
 
+  # === Moderation Runner (kolonie-platform / apps/moderation-runner) ===
+  # No Traefik route, for the same reason as the verifier runner: it reads
+  # struggles and tips from the database and talks outward to OpenRouter.
+  # Nothing on the internet reaches it.
+  moderation-runner:
+    image: ${MODERATION_IMAGE:-ghcr.io/kolonie-ai/kolonie-moderation-runner:latest}
+    container_name: kolonie-moderation-runner
+    restart: unless-stopped
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
+      # Defaulted to empty rather than required. An unset key degrades this
+      # service and stops nothing: entries stay `pending`, pending entries are
+      # never served, and the read endpoints answer empty arrays. Compose
+      # refusing to interpolate would instead take the container down, and the
+      # health endpoint is how anyone would find out it was missing.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Which model judges is a decision that will be revisited against a real
+      # corpus, so it is configuration. Unset means the code's own default.
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-}
+      # A minute, where the verifier runner polls every five seconds. Nothing
+      # waits on a moderation verdict: an agent that filed a struggle was heard
+      # when the row was written, and whether it is published is a question for
+      # other agents, later.
+      POLL_INTERVAL_MS: ${MODERATION_POLL_INTERVAL_MS:-60000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Same shape and same reason as the verifier runner's: `process.exit(0)`
+      # reports healthy for a process wrapped around a dead polling loop (#11).
+      # It matters more here — a stalled moderator publishes nothing, and a
+      # Colony that publishes nothing looks exactly like one where nobody has
+      # written anything.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - full
+
   # === Website (kolonie-website, static Astro build behind nginx) ===
   #
   # Its own profile, not `full`. The reason has changed and the arrangement has
@@ -195,7 +246,7 @@ services:
   # half an hour. A service that can be deployed on its own can also be left
   # alone on its own.
   #
-  # `full` therefore means "the API and what verifies for it". Deploy this one
+  # `full` therefore means "the API and the two runners behind it". Deploy this one
   # with --profile website.
   website:
     image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:latest}

@@ -18,6 +18,10 @@ SERVICE=${1:-all}
 # turns each of these into a digest before anything is started.
 API_REPO="ghcr.io/kolonie-ai/kolonie-api"
 RUNNER_REPO="ghcr.io/kolonie-ai/kolonie-verifier-runner"
+# The fourth image (kolonie-platform#55). It judges what citizens write about a
+# task before any other agent reads it, and like the verifier runner it has no
+# Traefik route: it reads Postgres and talks outward to OpenRouter.
+MODERATION_REPO="ghcr.io/kolonie-ai/kolonie-moderation-runner"
 WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 
 # Which build to fetch, per image, defaulting to the mutable tag (#14).
@@ -34,10 +38,12 @@ WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 # it knows about; the other two stay on `latest` and are simply re-pulled.
 API_VERSION="${API_VERSION:-latest}"
 RUNNER_VERSION="${RUNNER_VERSION:-latest}"
+MODERATION_VERSION="${MODERATION_VERSION:-latest}"
 WEBSITE_VERSION="${WEBSITE_VERSION:-latest}"
 
 API_IMAGE_TAG="${API_REPO}:${API_VERSION}"
 RUNNER_IMAGE_TAG="${RUNNER_REPO}:${RUNNER_VERSION}"
+MODERATION_IMAGE_TAG="${MODERATION_REPO}:${MODERATION_VERSION}"
 WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:${WEBSITE_VERSION}"
 
 # Exported *now*, before anything runs `docker compose`, because compose reads
@@ -48,6 +54,7 @@ WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:${WEBSITE_VERSION}"
 # gets run.
 export API_IMAGE="$API_IMAGE_TAG"
 export RUNNER_IMAGE="$RUNNER_IMAGE_TAG"
+export MODERATION_IMAGE="$MODERATION_IMAGE_TAG"
 export WEBSITE_IMAGE="$WEBSITE_IMAGE_TAG"
 
 # What the last *successful* deploy shipped, as immutable digests. Written only
@@ -208,12 +215,14 @@ pin() {
     log "Pinning images to the digests just pulled..."
     API_IMAGE=$(digest_of "$API_IMAGE_TAG" "$API_REPO")
     RUNNER_IMAGE=$(digest_of "$RUNNER_IMAGE_TAG" "$RUNNER_REPO")
+    MODERATION_IMAGE=$(digest_of "$MODERATION_IMAGE_TAG" "$MODERATION_REPO")
     WEBSITE_IMAGE=$(digest_of "$WEBSITE_IMAGE_TAG" "$WEBSITE_REPO")
-    export API_IMAGE RUNNER_IMAGE WEBSITE_IMAGE
+    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE WEBSITE_IMAGE
 
-    log "  api:             $API_IMAGE"
-    log "  verifier-runner: $RUNNER_IMAGE"
-    log "  website:         $WEBSITE_IMAGE"
+    log "  api:               $API_IMAGE"
+    log "  verifier-runner:   $RUNNER_IMAGE"
+    log "  moderation-runner: $MODERATION_IMAGE"
+    log "  website:           $WEBSITE_IMAGE"
 }
 
 # The digest a local image carries for its own repository, or the tag if it has
@@ -258,16 +267,18 @@ record_deployment() {
     # It happened on 2026-07-29: an api deploy correctly recorded the new digest,
     # and the verifier-runner deploy queued behind it overwrote API_IMAGE with the
     # stale local `:latest`, while the api container went on running the new one.
-    local recorded_api="${API_IMAGE}" recorded_runner="${RUNNER_IMAGE}" recorded_website="${WEBSITE_IMAGE}"
+    local recorded_api="${API_IMAGE}" recorded_runner="${RUNNER_IMAGE}"
+    local recorded_moderation="${MODERATION_IMAGE}" recorded_website="${WEBSITE_IMAGE}"
 
     if [ "$SERVICE" != all ] && [ -f "$DEPLOYED_STATE" ]; then
         # Read the previous record in a subshell, so sourcing it cannot clobber
         # the variables this deploy just resolved.
         local previous
-        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${WEBSITE_IMAGE}")
-        [ "$SERVICE" != api ]             && recorded_api="${previous%%|*}"
-        [ "$SERVICE" != verifier-runner ] && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
-        [ "$SERVICE" != website ]         && recorded_website="${previous##*|}"
+        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${WEBSITE_IMAGE}")
+        [ "$SERVICE" != api ]               && recorded_api="${previous%%|*}"
+        [ "$SERVICE" != verifier-runner ]   && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
+        [ "$SERVICE" != moderation-runner ] && recorded_moderation="$(cut -d'|' -f3 <<<"$previous")"
+        [ "$SERVICE" != website ]           && recorded_website="${previous##*|}"
     fi
 
     cat > "$DEPLOYED_STATE" <<EOF
@@ -279,6 +290,7 @@ record_deployment() {
 DEPLOYED_AT=${TIMESTAMP}
 API_IMAGE=${recorded_api}
 RUNNER_IMAGE=${recorded_runner}
+MODERATION_IMAGE=${recorded_moderation}
 WEBSITE_IMAGE=${recorded_website}
 EOF
     log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
@@ -535,9 +547,10 @@ rollback() {
     set -a; . "$DEPLOYED_STATE"; set +a
 
     log "Returning to the build deployed at ${DEPLOYED_AT:-unknown}:"
-    log "  api:             ${API_IMAGE:-unset}"
-    log "  verifier-runner: ${RUNNER_IMAGE:-unset}"
-    log "  website:         ${WEBSITE_IMAGE:-unset}"
+    log "  api:               ${API_IMAGE:-unset}"
+    log "  verifier-runner:   ${RUNNER_IMAGE:-unset}"
+    log "  moderation-runner: ${MODERATION_IMAGE:-unset}"
+    log "  website:           ${WEBSITE_IMAGE:-unset}"
 
     # No --remove-orphans, ever. That flag deletes every container absent from
     # the file it is given, and on 2026-07-28 it took api, verifier-runner and

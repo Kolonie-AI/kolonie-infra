@@ -24,7 +24,7 @@ on:
   workflow_call:
     inputs:
       service:
-        description: 'Service to deploy (all, api, verifier-runner, website)'
+        description: 'Service to deploy (all, api, verifier-runner, moderation-runner, website)'
         type: string
         required: false
         default: 'all'
@@ -59,7 +59,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: 'Service to deploy (all, api, verifier-runner, website)'
+        description: 'Service to deploy (all, api, verifier-runner, moderation-runner, website)'
         required: false
         default: 'all'
       version:
@@ -157,13 +157,14 @@ jobs:
             chmod +x scripts/*.sh
 
             # The version applies to the service that was named, and to nothing
-            # else. Deploying "all" at one tag would have to assume the three
-            # images share a version, and they do not — they are built by three
+            # else. Deploying "all" at one tag would have to assume the four
+            # images share a version, and they do not — they are built by four
             # workflows in two repositories.
             case "$SERVICE" in
-              api)             export API_VERSION="$VERSION" ;;
-              verifier-runner) export RUNNER_VERSION="$VERSION" ;;
-              website)         export WEBSITE_VERSION="$VERSION" ;;
+              api)               export API_VERSION="$VERSION" ;;
+              verifier-runner)   export RUNNER_VERSION="$VERSION" ;;
+              moderation-runner) export MODERATION_VERSION="$VERSION" ;;
+              website)           export WEBSITE_VERSION="$VERSION" ;;
             esac
 
             ./scripts/deploy.sh "$SERVICE"
