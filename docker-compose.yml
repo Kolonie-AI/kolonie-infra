@@ -88,12 +88,25 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       HCAPTCHA_SITEKEY: ${HCAPTCHA_SITEKEY}
       HCAPTCHA_SECRET: ${HCAPTCHA_SECRET}
-      # Where the Browser Capability Gate's page lives. It has a default here
-      # rather than being required in .env because kolonie-platform may not
-      # contain a host name in any file (its AGENTS.md §3), so the API composes
-      # the agent-facing url from configuration and this is the configuration.
-      # A routing fact belongs in the repository that owns routing.
+      # Where the hCaptcha badge's page lives. It has a default here rather than
+      # being required in .env because kolonie-platform may not contain a host
+      # name in any file (its AGENTS.md §3), so the API composes the agent-facing
+      # url from configuration and this is the configuration. A routing fact
+      # belongs in the repository that owns routing.
       CHALLENGE_PAGE_URL: ${CHALLENGE_PAGE_URL:-https://challenge.kolonie.ai/captcha/}
+      # Where Academy Level 1 lives — the rung that promotes (kolonie-platform
+      # D-029). Same arrangement as the line above, and deliberately **not**
+      # grouped with the HCAPTCHA_ variables.
+      #
+      # The whole point of the Level 1 rebuild is that a promoting rung depends
+      # on nothing an outside party controls. Until 2026-07-29 one condition
+      # covered the entire Academy surface, so an unset hCaptcha sitekey — a
+      # third party's value, for a task that is now optional — disabled Level 1
+      # and stalled every arriving agent. kolonie-platform has a test that fails
+      # if that coupling comes back in its code; this comment is the same
+      # guard one layer down, where no test can see it. Do not make this
+      # conditional on the hCaptcha values.
+      CAPABILITY_PAGE_URL: ${CAPABILITY_PAGE_URL:-https://challenge.kolonie.ai/browser/}
       PORT: 3000
     depends_on:
       postgres:
