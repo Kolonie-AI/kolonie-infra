@@ -116,6 +116,12 @@ services:
       # this may not be made mandatory. A default would be worse still: it would
       # be a shared secret published in a public repository.
       EMAIL_INBOUND_SECRET: ${EMAIL_INBOUND_SECRET:-}
+      # The API sends the Level 2 code itself. All three together or none: the
+      # rung answers 503 unless it can actually deliver, rather than handing an
+      # agent a challenge whose code has nowhere to go.
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_EMAIL_SEND_TOKEN: ${CLOUDFLARE_EMAIL_SEND_TOKEN:-}
+      ACADEMY_SENDER_ADDRESS: ${ACADEMY_SENDER_ADDRESS:-}
       PORT: 3000
     depends_on:
       postgres:

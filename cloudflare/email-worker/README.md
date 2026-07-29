@@ -18,29 +18,43 @@ distinction is the point of this file.
 
 | Secret | Lives in | Used by | Never goes |
 |---|---|---|---|
-| **Cloudflare provisioning token** — `Workers Scripts:Edit` + `Email Routing:Edit`, account-scoped | the maintainer's workstation, and a GitHub Actions secret if the deploy is ever automated | `wrangler deploy`, the Email Routing API | **on the VPS** |
+| **Cloudflare provisioning token** — `Workers Scripts:Edit`, account-scoped | the maintainer's workstation, and a GitHub Actions secret if the deploy is ever automated | `wrangler deploy` | **on the VPS** |
+| **`CLOUDFLARE_EMAIL_SEND_TOKEN`** — Email Sending and nothing else | `/opt/kolonie/.env` | the API, to mail the Level 2 code | in any repository |
 | **`EMAIL_INBOUND_SECRET`** | `/opt/kolonie/.env` **and** as a Worker secret | the Worker presents it; the API checks it | in any repository |
 | **`CLOUDFLARE_API_TOKEN`** — DNS-scoped, already on the host | `/opt/kolonie/.env` | Traefik, for the DNS-01 ACME challenge | anywhere else |
 
-### Why the provisioning token must not land on the host
+### Why the *provisioning* token must not land on the host — and why a send-only one may
 
-Nothing running on the VPS talks to Cloudflare's Workers or Email Routing APIs.
-The API container receives an HTTP request from the Worker and authenticates it
-with `EMAIL_INBOUND_SECRET`; it never calls Cloudflare back. So the token would
-be an unused credential sitting on the most exposed machine the Colony owns.
+This file previously said that **no** Cloudflare token belongs on the VPS. That
+was written when the only candidate was the provisioning token, and it is too
+strong: the API does have to call Cloudflare, because it sends the Level 2 code
+itself.
 
-Unused is the smaller half. **Account-scoped Workers access is a much larger
-grant than anything else on that host holds.** An attacker who reached the origin
-today gets a DNS-edit token and the application secrets — bad, and bounded. Add a
-Workers token and they can deploy arbitrary code onto the zone's edge, in front
-of every hostname, including the one that serves the Academy. That converts an
-origin compromise into an edge compromise, which is precisely the direction
-`kolonie-infra#21` spent effort closing.
+What separates the two is what each can do if the origin is compromised.
 
-**Do not widen the existing `CLOUDFLARE_API_TOKEN` instead.** Adding Workers
-permissions to the token Traefik already holds achieves the same escalation by a
-quieter route — it is one token in one file, so it looks like a smaller change
-than creating a second one. It is a larger one.
+`CLOUDFLARE_EMAIL_SEND_TOKEN` can send mail from the sending domain. That is bad
+— an attacker could phish agents as the Colony — and it is *bounded*, and no
+worse than the application secrets already sitting beside it. Any transactional
+mail provider would put an equivalent key there; the capability is the price of
+the API being able to send at all.
+
+The provisioning token is a different order of thing. **Account-scoped Workers
+access is a much larger grant than anything else that host holds.** An attacker
+who reached the origin today gets a DNS-edit token, a send-only mail token and
+the application secrets. Add a Workers token and they can deploy arbitrary code
+onto the zone's edge, in front of every hostname, including the one that serves
+the Academy. That converts an origin compromise into an edge compromise, which is
+precisely the direction `kolonie-infra#21` spent effort closing.
+
+The rule this leaves is not "no Cloudflare tokens on the host" but the narrower
+and more useful one: **the host holds only capabilities it exercises, at the
+smallest scope that works.**
+
+**Do not widen an existing token instead of creating a new one.** Adding Workers
+permissions to the token Traefik already holds, or adding sending to the
+provisioning token, achieves the same escalation by a quieter route — one token
+in one file looks like a smaller change than a second token. It is a larger one.
+Three narrow tokens beat one broad one every time.
 
 ## Deploying
 
