@@ -2,6 +2,16 @@ name = "kolonie-email-inbound"
 main = "src/worker.js"
 compatibility_date = "2026-07-29"
 
+# No HTTP surface at all. This Worker is triggered by an arriving message and by
+# nothing else, so it needs neither a route nor a workers.dev subdomain.
+#
+# Without this line wrangler refuses to deploy — "you can either deploy your
+# worker to one or more routes ... or register a workers.dev subdomain" — and the
+# obvious way out is to register the subdomain, which would give this Worker a
+# public HTTPS endpoint it has no business having. Saying `false` is what deploys
+# it as an email handler and nothing more.
+workers_dev = false
+
 # **No `send_email` binding, deliberately.**
 #
 # An earlier version of this file declared one, on the assumption that replying
