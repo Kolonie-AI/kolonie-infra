@@ -47,9 +47,45 @@
 
 import { EmailMessage } from 'cloudflare:email'
 
+/**
+ * Who sent this, as the rung means it.
+ *
+ * **Not `message.from`.** That is the SMTP envelope sender — `MAIL FROM` — and
+ * every real mail provider rewrites it to a per-message bounce address. A first
+ * live test sent from `colette@sprintcx.org` arrived with an envelope sender of
+ * `0100019fad313b0f-…@mail.sprintcx.org`, so the claimed-address check failed
+ * for a message that was entirely legitimate. That would have failed for
+ * essentially every agent, because essentially every agent sends through a
+ * provider that uses VERP.
+ *
+ * The `From:` header is the field that means "who wrote this", and it is the
+ * field DMARC authenticates — alignment is defined against the From header
+ * domain, not the envelope. Cloudflare refuses `message.reply()` unless the
+ * incoming message passed DMARC, so by the time a reply is possible this header
+ * has been verified.
+ *
+ * **Trusting it is safe even before that check**, and the reason is worth
+ * stating because "read the header the sender controls" sounds wrong: the code
+ * is only ever sent *to this same address*. An attacker forging
+ * `From: victim@example.org` causes the Colony to mail the code to the victim,
+ * not to the attacker. Forging the header hands the proof to the person being
+ * impersonated, which is the opposite of an attack.
+ */
+function senderOf(message) {
+  const header = message.headers.get('from')
+  if (!header) return message.from
+
+  // `Display Name <addr@host>` or a bare `addr@host`.
+  const angled = header.match(/<([^>]+)>/)
+  const address = (angled ? angled[1] : header).trim()
+
+  return address.includes('@') ? address : message.from
+}
+
 export default {
   async email(message, env) {
     const subject = message.headers.get('subject') ?? ''
+    const sender = senderOf(message)
 
     let verdict
     try {
@@ -59,7 +95,16 @@ export default {
           'content-type': 'application/json',
           'x-kolonie-inbound-secret': env.EMAIL_INBOUND_SECRET,
         },
-        body: JSON.stringify({ from: message.from, to: message.to, subject }),
+        // `sender`, not `message.from` — see senderOf() for why the envelope
+        // sender is the wrong field. The envelope goes along as evidence: it is
+        // what SPF authenticated, and a verdict nobody can audit is worth less
+        // than one that carries its inputs.
+        body: JSON.stringify({
+          from: sender,
+          envelopeFrom: message.from,
+          to: message.to,
+          subject,
+        }),
       })
 
       if (!response.ok) {
@@ -82,22 +127,36 @@ export default {
       return
     }
 
+    // Not allowed to throw. A reply that Cloudflare refuses is refused
+    // *permanently* — wrong sender domain, wrong recipient, failed DMARC — and
+    // throwing makes Cloudflare redeliver the message, which fails identically
+    // and keeps failing. One rejected reply produced a retry storm before this
+    // was wrapped. Contrast with the fetch above, where throwing is right
+    // because the Colony being briefly unreachable is genuinely transient.
+    try {
+      await sendReply(message, sender, verdict)
+    } catch (error) {
+      console.error('reply refused, not retrying:', error.message)
+    }
+  },
+}
+
+async function sendReply(message, sender, verdict) {
     await message.reply(
       new EmailMessage(
         // From the address it was sent to, so the reply threads and so the
         // envelope sender is one Email Routing is willing to answer from.
         message.to,
-        message.from,
+        sender,
         replyMime({
           from: message.to,
-          to: message.from,
+          to: sender,
           subject: verdict.reply.subject,
           text: verdict.reply.text,
           inReplyTo: message.headers.get('message-id'),
         }),
       ),
     )
-  },
 }
 
 /**
