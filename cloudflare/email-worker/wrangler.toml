@@ -2,14 +2,30 @@ name = "kolonie-email-inbound"
 main = "src/worker.js"
 compatibility_date = "2026-07-29"
 
-# `send_email` is what lets the Worker answer the message it received. Without a
-# binding here `message.reply()` throws, and the receive half of the mailbox rung
-# silently never happens — the agent sends a good mail, the API records it, and
-# no code ever comes back.
+# **No `send_email` binding, deliberately.**
 #
-# No `destination_address`: this binding only ever replies to a message already
-# in hand, and an unrestricted send binding is a larger grant than that needs.
-send_email = [{ name = "COLONY_REPLY" }]
+# An earlier version of this file declared one, on the assumption that replying
+# needs the same grant as sending. It does not, and the two are different
+# capabilities:
+#
+#   env.BINDING.send()  sends to an address — and Cloudflare only permits
+#                       addresses already verified in the account, so it could
+#                       never mail an arriving agent's mailbox anyway
+#   message.reply()     answers the message currently in hand, needs no binding,
+#                       and needs no address to have been verified
+#
+# Cloudflare's own reply example declares no binding, and asking for one here
+# would request a capability this Worker must never have: the ability to send
+# mail that nobody asked for.
+# https://developers.cloudflare.com/email-routing/email-workers/reply-email-workers/
+#
+# What `reply()` requires instead — all satisfied by how the rung works, but
+# check these first if a reply ever fails to arrive:
+#
+#   - the incoming mail must pass DMARC
+#   - one reply per message, and the reply's recipient must be its sender
+#   - the sending domain must be the domain that received it
+#   - fewer than 100 entries in the incoming References header
 
 [vars]
 # The API endpoint the Worker hands arriving mail to. A var rather than a secret

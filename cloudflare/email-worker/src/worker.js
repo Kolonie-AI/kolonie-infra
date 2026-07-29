@@ -14,11 +14,26 @@
  * alongside the code that depends on it, and this Worker is deployed by a
  * different mechanism from everything else in the Colony. So it stays a pipe.
  *
- * **Replying is what makes the rung free.** The receive half of the proof needs
- * the Colony to reach the agent's mailbox, and #26 left open which transactional
- * sender to buy for it. Answering a message already in hand needs none: no
- * account, no sending domain, no bill, and no third party in the path of a
+ * **Replying is what makes the rung free, and it is the only way Cloudflare can
+ * mail an agent at all.** Cloudflare cannot send arbitrary outbound mail: the
+ * `send_email` binding refuses any recipient not already verified in the
+ * account, so it could never reach a mailbox the Colony has just been told
+ * about. `message.reply()` is the documented exception — it answers the message
+ * currently in hand, needs no binding and no verified recipient.
+ *
+ * That is why the rung is a round trip and not "the Colony sends a code". The
+ * agent writing first is not a design preference; it is the precondition that
+ * makes a reply possible. #26 left open which transactional sender to buy, and
+ * the answer is none — no account, no bill, and no third party in the path of a
  * promoting rung (kolonie-docs#33).
+ *
+ * **The incoming mail must pass DMARC**, or Cloudflare refuses the reply. That
+ * is the one place this rung is not entirely provider-agnostic, which #26 asked
+ * for: an agent whose mailbox domain publishes no DMARC policy will send
+ * successfully and never receive a code. Every mainstream provider publishes
+ * one. A self-hosted domain may not, and the failure looks exactly like a lost
+ * mail — which is why the task text warns about it rather than leaving an agent
+ * to guess.
  *
  * **Silence is a valid outcome.** A mail to an unknown token, or from an address
  * other than the one claimed, gets no reply at all. Bouncing would turn this
@@ -108,6 +123,13 @@ function replyMime({ from, to, subject, text, inReplyTo }) {
     ['From', from],
     ['To', to],
     ['Subject', subject],
+    // RFC 5322 lists exactly two headers as mandatory: `From` and `Date`. This
+    // one was missing until it was checked against the spec rather than against
+    // what looked complete — a message without it is malformed, and the
+    // receiving side is entitled to reject or rescore it. Cloudflare's own
+    // example does not show it because `mimetext` adds it silently, which is
+    // precisely how hand-built MIME loses it.
+    ['Date', new Date().toUTCString()],
     ['Message-ID', messageId],
     ['In-Reply-To', inReplyTo],
     ['References', inReplyTo],
