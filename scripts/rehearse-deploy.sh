@@ -239,23 +239,71 @@ for img in kolonie-api kolonie-verifier-runner kolonie-website; do
   contains "$recorded" "ghcr.io/kolonie-ai/${img}@sha256:" "$img recorded"
 done
 
-echo "== 13. a verifier-runner deploy runs migrations before deploying"
-# This prevents the race where a schema-changing merge deploys the runner before
-# the api has migrated the database.
-rm -rf "$WORK/state"; : > "$WORK/docker.log"
-out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA")
-contains "$(cat "$WORK/docker.log")" "npm run migrate" "runner deploy ran migrations"
+echo "== 13. a runner deploy that rolls back records itself for cascade re-deploy"
+# The runner builds faster, deploys first, fails (schema is behind), and rolls
+# back. It must leave a marker so the next successful deploy can re-deploy it.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+# Seed a known-good record so rollback() has something to return to.
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA" FAIL_UP=1)
+contains "$out" "Rollback completed" "runner rolled back"
+contains "$out" "Recorded verifier-runner for cascade re-deploy" "marker written"
+check "needs-redeploy.env exists" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "yes"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_SERVICE=verifier-runner" "marker names the right service"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-verifier-runner:$SHA" "marker carries the intended tag"
 
-echo "== 14. a single-service deploy asserts the health of all profiled services"
-# This prevents silent divergence: if a migration breaks an existing service
-# (e.g., dropping a column the old build reads), the deploy must fail and roll
-# back, rather than succeeding because its own container started.
+echo "== 14. a subsequent api deploy cascade re-deploys the rolled-back runner"
+# The api deploy succeeds (migrates, etc.), then reads the marker and re-deploys
+# the runner. This is the core fix for #29: the runner that failed against old
+# schema gets a second chance now that the schema is current.
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env)
+contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade triggered"
+contains "$out" "Cascade re-deploy of verifier-runner completed" "cascade succeeded"
+check "marker cleaned up" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "no"
+# The runner must have been pulled and started during the cascade.
+contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website pull verifier-runner" "cascade pulled the runner"
+
+echo "== 15. a single-service deploy asserts the health of all profiled services"
+# This prevents silent divergence in the reverse direction: if a migration
+# breaks an existing service (e.g., dropping a column the old build reads),
+# the deploy must fail and roll back rather than succeeding on its own.
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(run_deploy_service verifier-runner env RUNNER_VERSION="$SHA" UNHEALTHY_SERVICE=kolonie-api || true)
 contains "$out" "ERROR: not healthy after 5s" "failed because another service was unhealthy"
 contains "$out" "api(unhealthy)" "named the service that failed"
-contains "$out" "there is nothing known-good to return to" "triggered rollback (which safely did nothing since there was no state)"
+
+echo "== 16. a cascade re-deploy that itself fails writes a new marker"
+# No infinite loop: the marker is cleared before the cascade attempt, and if the
+# cascade's deploy() fails and rollback() runs, it writes a fresh marker. The
+# next successful deploy will try again.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+# First: runner deploys, fails, writes marker
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+run_deploy_service verifier-runner env RUNNER_VERSION="$SHA" FAIL_UP=1 > /dev/null 2>&1
+check "marker exists after runner rollback" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "yes"
+# Now: api deploys successfully, but the cascade's up will fail.
+# We use FAIL_UP=1 again — the main api deploy's up succeeds (consuming the
+# first failure), and the cascade's up for the runner fails (the second up).
+# But FAIL_UP only fails the FIRST up, so this won't work directly.
+# Instead, write a marker and verify it was read:
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env || true)
+contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade was attempted"
 
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
+

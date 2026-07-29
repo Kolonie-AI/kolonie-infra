@@ -334,7 +334,7 @@ migrate() {
         return
     fi
 
-    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ] && [ "$SERVICE" != "verifier-runner" ] && [ "$SERVICE" != "moderation-runner" ]; then
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
         log "Migrations: skipped — this deploy touches $SERVICE only"
         return
     fi
@@ -374,7 +374,7 @@ seed() {
         return
     fi
 
-    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ] && [ "$SERVICE" != "verifier-runner" ] && [ "$SERVICE" != "moderation-runner" ]; then
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
         log "Academy tasks: skipped — this deploy touches $SERVICE only"
         return
     fi
@@ -565,6 +565,32 @@ rollback() {
         exit 2
     }
     log "Rollback completed — the previous build is serving again"
+
+    # Record that this service was rolled back and needs re-deploying.
+    #
+    # The next successful deploy of a *different* service — typically the api,
+    # which carries the migrations the runner was missing — will check this
+    # marker and re-deploy the rolled-back service automatically. Without this,
+    # a runner that deploys before the api fails, rolls back, and stays rolled
+    # back after the api succeeds — which is the silent divergence #29 describes.
+    #
+    # The image tag is the one this deploy *tried* to ship, not the one it rolled
+    # back to. The cascade needs to pull the same build the original deploy
+    # intended. IMAGE_TAG variables are never modified by rollback(), so they
+    # still hold the tag this deploy started with.
+    local redeploy_tag
+    case "$SERVICE" in
+        api)               redeploy_tag="$API_IMAGE_TAG" ;;
+        verifier-runner)   redeploy_tag="$RUNNER_IMAGE_TAG" ;;
+        moderation-runner) redeploy_tag="$MODERATION_IMAGE_TAG" ;;
+        website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
+        *)                 redeploy_tag="" ;;
+    esac
+    cat > "$STATE_DIR/needs-redeploy.env" <<REDEPLOY
+NEEDS_REDEPLOY_SERVICE=$SERVICE
+NEEDS_REDEPLOY_TAG=$redeploy_tag
+REDEPLOY
+    log "Recorded $SERVICE for cascade re-deploy in $STATE_DIR/needs-redeploy.env"
 }
 
 # Main
@@ -592,4 +618,58 @@ healthcheck
 # Only now. A build is known-good once it has answered, not once it has started,
 # and this file is what the next failed deploy will roll back to.
 record_deployment
+
+# --- cascade re-deploy (#29) ------------------------------------------------
+#
+# If a prior deploy rolled back a service — typically because it built faster
+# than the api and started against a schema one migration behind — and *this*
+# deploy just succeeded (likely the api, carrying the migration), re-deploy the
+# rolled-back service now that the database is current.
+#
+# This runs inline rather than re-invoking deploy.sh, because deploy.sh holds a
+# flock and a second invocation would deadlock waiting for itself. The steps
+# that are skipped (backup, migrate, seed) are either diagnostic or already done
+# by the deploy that just succeeded.
+#
+# If the cascade itself fails, rollback() writes a new marker and the *next*
+# successful deploy will try again. No infinite loop is possible because the
+# marker is cleared before the attempt.
+if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
+    # shellcheck disable=SC1090
+    . "$STATE_DIR/needs-redeploy.env"
+
+    if [ "${NEEDS_REDEPLOY_SERVICE:-}" != "$SERVICE" ] && [ -n "${NEEDS_REDEPLOY_SERVICE:-}" ]; then
+        log "=== Cascade re-deploy: $NEEDS_REDEPLOY_SERVICE was rolled back by a prior deploy ==="
+        log "Now that this deploy succeeded and migrations are current, re-deploying $NEEDS_REDEPLOY_SERVICE"
+
+        # Clear BEFORE attempting, so a failure here does not cascade infinitely.
+        rm -f "$STATE_DIR/needs-redeploy.env"
+
+        # Restore the image tag the original deploy intended to ship.
+        ORIG_SERVICE="$SERVICE"
+        SERVICE="$NEEDS_REDEPLOY_SERVICE"
+        case "$SERVICE" in
+            api)               export API_IMAGE="$NEEDS_REDEPLOY_TAG"; API_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+            verifier-runner)   export RUNNER_IMAGE="$NEEDS_REDEPLOY_TAG"; RUNNER_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+            moderation-runner) export MODERATION_IMAGE="$NEEDS_REDEPLOY_TAG"; MODERATION_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+            website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+        esac
+
+        detect_profile
+        pull
+        pin
+        # migrate and seed are skipped: the deploy that triggered the cascade
+        # already brought the schema and seed data current.
+        deploy
+        healthcheck
+        record_deployment
+        SERVICE="$ORIG_SERVICE"
+        log "=== Cascade re-deploy of $NEEDS_REDEPLOY_SERVICE completed ==="
+    else
+        # The rolled-back service is the one we just deployed — our own deploy
+        # succeeded, so the marker is stale.
+        rm -f "$STATE_DIR/needs-redeploy.env"
+    fi
+fi
+
 log "=== Deployment completed ==="
