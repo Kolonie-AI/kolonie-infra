@@ -56,38 +56,51 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Plain ssh rather than appleboy/ssh-action, which the rest of this
+      # repository uses.
+      #
+      # That action runs a command perfectly well and **does not hand back what
+      # it printed**: `steps.<id>.outputs.stdout` came through empty, so the
+      # report never reached the triage step. Every other workflow here only
+      # needs the remote command's *exit status*, which is why nothing had
+      # noticed. This one needs its output, so it does the connection itself.
+      #
+      # Worth keeping as the reason not to "simplify" this back later.
       - name: Read what each container thinks of itself
         id: probe
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ env.VPS_HOST }}
-          username: ${{ env.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            set -uo pipefail
-            cd ${{ env.DEPLOY_DIR }}
-            chmod +x scripts/health-report.sh
-            # Markers rather than trusting the action's stdout to be exactly the
-            # command's. Whatever banner or connection noise wraps it, the report
-            # is what lies between these two lines.
-            echo "---BEGIN REPORT---"
-            ./scripts/health-report.sh
-            echo "---END REPORT---"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # The host is a secret, so it cannot be pinned in a known_hosts file
+          # committed here. Accepting the key on first use is what every other
+          # workflow in this repository already does through the action; making
+          # it explicit does not weaken anything, and the runner is fresh each
+          # time so there is no key to have changed under us.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd ${DEPLOY_DIR} && chmod +x scripts/health-report.sh && ./scripts/health-report.sh" \
+              > probe.out
+
+          # Never leave a production key on the filesystem past the step that
+          # needed it, even on a runner that is about to be destroyed.
+          shred -u ~/.ssh/deploy_key
+
+          echo "rows: $(wc -l < probe.out)"
 
       - name: Triage the report
         id: triage
-        env:
-          # Through the environment, never interpolated into the script body.
-          # `${{ }}` pasted into a shell is a shell injection with extra steps —
-          # deploy.yml makes the same point about its inputs, and this one is
-          # further from trusted: it is whatever a remote command printed.
-          PROBE_STDOUT: ${{ steps.probe.outputs.stdout }}
         run: |
           set -uo pipefail
-          printf '%s\n' "$PROBE_STDOUT" \
-            | sed -n '/---BEGIN REPORT---/,/---END REPORT---/p' \
-            | grep -v -e '---BEGIN REPORT---' -e '---END REPORT---' \
-            > report.tsv || true
+          cp probe.out report.tsv
 
           if [ ! -s report.tsv ]; then
             # The probe produced nothing between the markers. That is not a
