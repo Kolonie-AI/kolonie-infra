@@ -124,7 +124,7 @@ ghcr_logout() {
 detect_profile() {
     PROFILE_ARGS=()
 
-    if docker manifest inspect "$API_IMAGE_TAG" >/dev/null 2>&1; then
+    if docker pull -q "$API_IMAGE_TAG" >/dev/null 2>&1; then
         PROFILE_ARGS+=(--profile full)
         API_AVAILABLE=true
         log "Application images reachable — including --profile full"
@@ -134,7 +134,7 @@ detect_profile() {
         log "WARN: api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai and challenge.kolonie.ai will answer 502."
     fi
 
-    if docker manifest inspect "$WEBSITE_IMAGE_TAG" >/dev/null 2>&1; then
+    if docker pull -q "$WEBSITE_IMAGE_TAG" >/dev/null 2>&1; then
         PROFILE_ARGS+=(--profile website)
         log "Website image reachable — including --profile website"
     else
@@ -192,10 +192,13 @@ pull() {
     log "Pulling latest images..."
     cd "$DEPLOY_DIR"
     if [ "$SERVICE" = "all" ]; then
-        docker compose "${PROFILE_ARGS[@]}" pull 2>&1 || {
-            log "ERROR: Image pull failed"
-            exit 1
-        }
+        local services
+        services=$(docker compose "${PROFILE_ARGS[@]}" config --services 2>/dev/null)
+        for svc in $services; do
+            docker compose "${PROFILE_ARGS[@]}" pull "$svc" 2>&1 || {
+                log "WARN: Failed to pull $svc (will continue with existing image if any)"
+            }
+        done
     else
         docker compose "${PROFILE_ARGS[@]}" pull "$SERVICE" 2>&1 || {
             log "ERROR: Image pull failed"
