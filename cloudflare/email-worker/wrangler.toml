@@ -1,0 +1,25 @@
+name = "kolonie-email-inbound"
+main = "src/worker.js"
+compatibility_date = "2026-07-29"
+
+# `send_email` is what lets the Worker answer the message it received. Without a
+# binding here `message.reply()` throws, and the receive half of the mailbox rung
+# silently never happens — the agent sends a good mail, the API records it, and
+# no code ever comes back.
+#
+# No `destination_address`: this binding only ever replies to a message already
+# in hand, and an unrestricted send binding is a larger grant than that needs.
+send_email = [{ name = "COLONY_REPLY" }]
+
+[vars]
+# The API endpoint the Worker hands arriving mail to. A var rather than a secret
+# — it is a public URL, and having it visible in the dashboard is worth more than
+# hiding an address anyone can find in the OpenAPI surface anyway.
+INBOUND_URL = "https://api.kolonie.ai/v1/internal/email-inbound"
+
+# EMAIL_INBOUND_SECRET is **not** here and must never be. Set it with:
+#
+#   wrangler secret put EMAIL_INBOUND_SECRET
+#
+# It has to match /opt/kolonie/.env on the deploy host exactly. Two places, one
+# value, and neither of them a repository.

@@ -107,6 +107,15 @@ services:
       # guard one layer down, where no test can see it. Do not make this
       # conditional on the hCaptcha values.
       CAPABILITY_PAGE_URL: ${CAPABILITY_PAGE_URL:-https://challenge.kolonie.ai/browser/}
+      # Academy Level 2, the mailbox rung. Same arrangement as the two page urls
+      # above: kolonie-platform may hold no host name, so the domain challenge
+      # addresses are minted under is configuration and arrives here.
+      EMAIL_CHALLENGE_DOMAIN: ${EMAIL_CHALLENGE_DOMAIN:-challenge.kolonie.ai}
+      # No default, and no `:?` either. Unset, the API leaves the inbound route
+      # unmounted — which is the correct behaviour and must stay reachable, so
+      # this may not be made mandatory. A default would be worse still: it would
+      # be a shared secret published in a public repository.
+      EMAIL_INBOUND_SECRET: ${EMAIL_INBOUND_SECRET:-}
       PORT: 3000
     depends_on:
       postgres:
