@@ -38,14 +38,27 @@ workers_dev = false
 #   - fewer than 100 entries in the incoming References header
 
 [vars]
+# The domain whose mail this Worker is allowed to act on. Everything else that
+# reaches it via the zone catch-all is forwarded untouched — see the first check
+# in src/worker.js for why that ordering is the safety property.
+CHALLENGE_DOMAIN = "challenge.kolonie.ai"
+
 # The API endpoint the Worker hands arriving mail to. A var rather than a secret
 # — it is a public URL, and having it visible in the dashboard is worth more than
 # hiding an address anyone can find in the OpenAPI surface anyway.
 INBOUND_URL = "https://api.kolonie.ai/v1/internal/email-inbound"
 
-# EMAIL_INBOUND_SECRET is **not** here and must never be. Set it with:
+# Two values are secrets and are **not** here:
 #
 #   wrangler secret put EMAIL_INBOUND_SECRET
+#   wrangler secret put FORWARD_TO
 #
-# It has to match /opt/kolonie/.env on the deploy host exactly. Two places, one
-# value, and neither of them a repository.
+# EMAIL_INBOUND_SECRET has to match /opt/kolonie/.env on the deploy host exactly.
+# Two places, one value, and neither of them a repository.
+#
+# FORWARD_TO is where mail that is not the Colony's gets forwarded. It is a
+# secret rather than a var because it is a **person's mailbox** — the one piece
+# of personal data this component touches, and `AGENTS.md` §9 keeps that class of
+# thing out of repositories as firmly as it keeps out credentials. It must be a
+# verified destination address in the Cloudflare account or the forward is
+# refused.

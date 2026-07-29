@@ -66,8 +66,43 @@ function senderOf(message) {
   return address.includes('@') ? address : message.from
 }
 
+/** The domain part of a recipient, lowercased. `''` if there isn't one. */
+function domainOf(recipient) {
+  const at = String(recipient).lastIndexOf('@')
+  return at === -1 ? '' : String(recipient).slice(at + 1).trim().toLowerCase()
+}
+
 export default {
   async email(message, env) {
+    /**
+     * **This check runs first, and that placement is the whole safety argument.**
+     *
+     * The zone catch-all points here, so this Worker now sees every message to
+     * the zone that no literal rule claimed — including the maintainer's
+     * personal mail. Anything not addressed to the challenge domain is handed
+     * straight back to Email Routing and forwarded, without the API being
+     * consulted, without the inbound secret being used, and without this
+     * Worker's own logic being able to lose it.
+     *
+     * The ordering matters more than the code: if the API call came first, an
+     * outage in the Colony would delay or bounce mail that has nothing to do
+     * with the Colony. Someone's inbox must not depend on our uptime.
+     *
+     * The catch-all is here because per-token routing rules cannot work.
+     * Cloudflare allows exactly one catch-all per zone — a second `all` rule is
+     * refused with `2020 Invalid rule operation` — and rules do not take effect
+     * immediately: a literal rule created two seconds before a message arrived
+     * lost to the catch-all despite a far better priority. A challenge is minted
+     * and written to seconds later, so a rule per challenge is not merely
+     * awkward, it is a race the Colony would lose.
+     */
+    if (domainOf(message.to) !== env.CHALLENGE_DOMAIN) {
+      // Letting a failure throw is right here: Cloudflare retries, and a
+      // retried personal mail is far better than a silently swallowed one.
+      await message.forward(env.FORWARD_TO)
+      return
+    }
+
     const sender = senderOf(message)
 
     const response = await fetch(env.INBOUND_URL, {
