@@ -1,115 +1,237 @@
-# AGENTS.md — Kolonie AI Infrastructure
+# AGENTS.md — kolonie-infra
 
-## What This Repo Does
+This file is binding for any agent working in this repository. Read it fully
+before your first edit. If it contradicts your general habits, this file wins.
 
-This is the Infrastructure as Code repository for Kolonie AI. It contains Docker Compose configurations, Traefik reverse proxy setup, and GitHub Actions deployment pipelines.
+---
 
-## Conventions
+## 1. What this repository is
 
-- Docker Compose v2 syntax
-- Traefik v3 for reverse proxy
-- PostgreSQL 16 as database
-- All services on a shared `kolonie` Docker network
-- Environment variables via `.env` file (never commit secrets)
-- GitHub Actions for CI/CD
+The infrastructure that keeps the Colony running: Docker Compose configurations,
+Traefik reverse proxy, deployment scripts, GitHub Actions pipelines, and the
+operational tooling that monitors and diagnoses the host.
 
-## Architecture
+```
+docker-compose.yml          production compose — five services, two profiles
+docker-compose.dev.yml      local development override (Postgres only)
+traefik/                    static and dynamic Traefik v3 configuration
+scripts/deploy.sh           the deploy — pull, pin, migrate, seed, deploy, healthcheck
+scripts/rehearse-deploy.sh  exercises deploy.sh against a stub docker
+scripts/healthcheck.sh      post-deploy health assertion
+scripts/rollback.sh         manual rollback to the last known-good build
+scripts/env-drift.sh        detects .env vs docker-compose.yml mismatches
+scripts/health-report.sh    structured health report for the diagnose workflow
+scripts/health-triage.sh    interprets health-report output
+scripts/origin-firewall.sh  restricts origin to Cloudflare edge IPs
+.github/workflows/          deploy, diagnose, health-watch
+cloudflare/                 edge configuration
+state/                      deploy state — deployed.env, deploy.lock
+```
 
 ```
 Internet → Cloudflare → Traefik (80/443) → Docker Network
                                             ├── kolonie-api (api + academy + mcp + challenge)
-                                            ├── kolonie-website (kolonie.ai)
                                             ├── kolonie-verifier-runner (no ingress)
+                                            ├── kolonie-moderation-runner (no ingress)
+                                            ├── kolonie-website (kolonie.ai)
                                             └── postgres (internal only)
 ```
 
-## Key Files
+Read `MANIFEST.md`, `ARCHITECTURE.md` and `state/STATUS.md` in
+[kolonie-docs](https://github.com/Kolonie-AI/kolonie-docs) for the system this
+infrastructure serves. `kolonie-docs` is the source of truth for *what* and
+*why*; this repository decides *how it runs*.
 
-- `docker-compose.yml` — Production compose file
-- `docker-compose.dev.yml` — Local development override
-- `traefik/traefik.yml` — Static Traefik configuration
-- `scripts/deploy.sh` — Deployment script
-- `.github/workflows/deploy.yml` — GitHub Actions pipeline
+## 1a. Where the work is
 
-## Rules for Coding Agents
+Open work is GitHub issues. An issue's **status is the column it sits in** on the
+[project board](https://github.com/orgs/Kolonie-AI/projects/1); there are no
+status labels. Your token needs `project` scope alongside `repo`.
 
-1. **Never commit secrets.** Use `.env` files and GitHub Secrets.
-2. **Test locally first.** Use `docker-compose.dev.yml` for local testing.
-3. **Health checks required.** Every service must expose `/health`.
-4. **Rollback on failure.** Deployment script handles this automatically.
-5. **No force-push on main.** All changes via PR.
-6. **Cross-repo awareness.** Service images come from other kolonie-* repos.
+```bash
+# startable right now in this repository
+gh project item-list 1 --owner Kolonie-AI --limit 100 --format json \
+  --jq '.items[] | select(.status=="Ready" and (.content.repository|test("kolonie-infra"))) | "#\(.content.number)  \(.title)"'
+```
 
-## How to Add a New Service
+The full process, the column meanings and the standard an issue must meet are in
+[`AGENTS.md` in kolonie-docs](https://github.com/Kolonie-AI/kolonie-docs/blob/main/AGENTS.md).
+Read it before creating an issue or moving one. **Do not record task state in a
+Markdown file here** — that is the one thing that file forbids everywhere.
 
-1. Add service definition to `docker-compose.yml`
-2. Add Traefik labels for routing
-3. Add health check endpoint
-4. Update this README with service info
-5. Test with `docker-compose.dev.yml`
-6. Submit PR
+## 2. The danger level of this repository
 
-## How to Modify Traefik Routing
+`deploy.sh` is the most dangerous script in the organisation. It is the one that
+can take the Colony offline, and it has done so twice. Every other repository
+produces images; this one decides whether they run.
 
-1. Edit `traefik/traefik.yml` for static config
-2. Edit service labels in `docker-compose.yml` for dynamic routing
-3. Test locally before deploying
-4. Submit PR
+That asymmetry means the quality bar here is **higher** than in application code,
+not lower. A bug in the API returns a 500; a bug in `deploy.sh` deletes running
+containers, and the rollback that was supposed to catch it is part of the same
+script.
 
-## Documentation
+## 3. Rules
 
-This repo contains both code AND documentation about infrastructure decisions:
+- **No secrets, no credentials, no host names, no IP addresses.** Not in code,
+  not in comments, not in issue bodies, not in `.env.example` values. The origin
+  IP lives only in Cloudflare DNS and GitHub Actions secrets. This is a red line
+  across the entire organisation — see `ARCHITECTURE.md#security` in
+  kolonie-docs.
+- **No force-push on `main`.** All changes via PR.
+- **Every service must expose `/health`.** Docker health checks and the deploy
+  script both depend on it.
+- **Cross-repo awareness.** The application images are built by
+  `kolonie-platform` and `kolonie-website`. A change here can break their deploy
+  chain, and their changes can break ours. Read the `workflow_call` inputs in
+  `deploy.yml` before changing what `deploy.sh` expects.
+- **Do not reason about the host. Look at it.** Run the Diagnose VPS workflow
+  (`gh workflow run diagnose.yml`) rather than guessing what is running. It
+  prints variable *names*, never values — keep it that way.
+- **Writing to the host needs the maintainer's confirmation** — see
+  `kolonie-docs/AGENTS.md` §8.
 
-- `ARCHITECTURE.md` — Decision log and reasoning
-- `docs/scaling-strategy.md` — How we grow from VPS to global
-- `docs/open-source-strategy.md` — Why and when we go public
-- `docs/security-model.md` — Threat model and defenses
-- `docs/cost-projections.md` — Infrastructure cost planning
-- `docs/disaster-recovery.md` — Backup and recovery
+## 4. The rehearsal test
 
-When changing infrastructure, update the relevant docs too.
+`scripts/deploy.sh` is exercised by `scripts/rehearse-deploy.sh` — a test
+harness that runs the real script against a stub `docker` on PATH and a scratch
+directory in place of `/opt/kolonie`.
 
-## Dependencies
+**Every change to `deploy.sh` must be accompanied by a rehearsal test that fails
+on `main` before the fix and passes after.** This is not a guideline — the
+acceptance criteria of every deploy-related issue require it, and a PR without
+it will be sent back.
 
-- Docker + Docker Compose on VPS
-- GitHub Actions for deployment
-- Cloudflare for DNS
-- Other kolonie-* repos for service images
+```bash
+# run the rehearsal locally — no Docker, no VPS, no credentials needed
+bash scripts/rehearse-deploy.sh
+```
 
-## Deployment
+The stub records every `docker` invocation in a log file, and the test cases
+assert on what would have happened. Failure switches (`FAIL_UP`, `FAIL_SEED`,
+`FAIL_DIGEST`, `UNHEALTHY`, `UNHEALTHY_SERVICE`, `UNREACHABLE`) let each case
+choose which branch of `deploy.sh` it is testing.
 
-Push to `main` triggers automatic deployment via GitHub Actions.
-Manual deployment: `ssh <user>@<vps-host> 'cd /opt/kolonie && ./scripts/deploy.sh'`
+When you add a case, follow the pattern: set up state, run the deploy, assert
+on the output *and* on the side effects (files written, docker commands logged).
 
-> **Note:** VPS IP is never stored in this repo. All access goes through Cloudflare. Use environment variables or GitHub Secrets for the VPS host.
+## 5. Self-review before opening a PR
+
+Infrastructure bugs are discovered in production, not in a test suite. Before
+you open a PR, **challenge your own solution**:
+
+1. **Trace the failure modes.** Walk through every path in the code you changed.
+   What happens if the network is down? If two deploys race? If the image does
+   not exist? If the database is ahead of the code, or behind it?
+2. **Check the acceptance criteria.** Re-read the issue. Does your change
+   actually satisfy every criterion, or does it satisfy the one you understood
+   and quietly skip the others?
+3. **Consider the reverse case.** If your fix handles "A deploys before B", does
+   it also handle "B deploys before A"? The deploy order is determined by build
+   speed, and build speed is not a contract.
+4. **Say what you checked.** The PR description names the failure modes you
+   traced and why they are handled. A reviewer who sees "I considered X and it
+   is safe because Y" trusts the change; one who sees only the happy path does
+   not.
+
+This rule exists because of #29: the first fix serialised deploys and let the
+runner run migrations, but the migration ships in the api image — which had not
+been built yet when the runner deployed first. The fix passed its own tests and
+missed the actual race condition. The second fix added cascade re-deploy, which
+was the real answer.
+
+## 6. Commands
+
+There is no build step. The scripts are bash, the configuration is YAML, and
+the test is the rehearsal:
+
+```bash
+bash scripts/rehearse-deploy.sh     # exercises deploy.sh logic
+bash scripts/env-drift.sh           # detects .env mismatches (on the host)
+```
+
+The rehearsal runs anywhere — no Docker, no VPS, no credentials. If it passes
+locally it proves the logic; it does not prove the environment, and
+`docs/disaster-recovery.md` is where the distinction matters.
+
+## 7. Definition of done
+
+A change is done when all of these are true:
+
+- [ ] `bash scripts/rehearse-deploy.sh` passes with no failures
+- [ ] New `deploy.sh` behaviour has a rehearsal test, including the failure case
+- [ ] The test fails on `main` before the fix (assert the bug exists) and passes
+      after (assert it is fixed)
+- [ ] Comments in `deploy.sh` explain *why* the code does what it does — the
+      failure it prevents, the incident it responds to, the alternative it
+      rejected — not just *what* it does
+- [ ] `docker-compose.yml` changes have been tested against `docker compose
+      config` to verify interpolation
+- [ ] No secrets, hosts, IPs or provider names anywhere in the diff
+- [ ] Affected documentation updated (this file, `docs/disaster-recovery.md`,
+      or `docs/security-model.md` as applicable)
+
+## 8. Deployment
+
+Push to `main` triggers automatic deployment via GitHub Actions. The deploy
+workflow is reusable: `kolonie-platform` calls it after building an image, so a
+merge there ends with that exact build running on the host.
+
+The deploy is serialised at two levels:
+
+- **GitHub Actions** concurrency group `deploy-vps` with
+  `cancel-in-progress: false` — a queued deploy waits rather than replacing the
+  one in flight.
+- **`flock`** in `deploy.sh` itself — defence in depth against concurrent SSH
+  sessions.
 
 ### Profiles
 
-`--profile full` deploys the application services **that exist**: `api` and
-`verifier-runner`. The website sits in its own `website` profile because its
-image has never been built, and `docker compose pull` fails the entire command
-for one missing image — taking the working images down with it. Add
-`--profile website` to `detect_profile()` in `scripts/deploy.sh` once
-`ghcr.io/kolonie-ai/kolonie-website` is published.
+`--profile full` deploys `api`, `verifier-runner` and `moderation-runner`.
+`--profile website` deploys the website. `detect_profile()` probes the registry
+for each image and includes only what is reachable, so one missing image degrades
+to a warning rather than taking the others down.
 
-## Looking at the deploy host
+### Cascade re-deploy
 
-**Do not reason about the host. Look at it.**
+When a service rolls back (typically because it built faster than the api and
+started against an old schema), `rollback()` writes
+`state/needs-redeploy.env`. The next successful deploy reads the marker and
+re-deploys the rolled-back service inline — now that migrations are current.
+See `deploy.sh` and rehearsal tests 13–16.
 
-Run the **Diagnose VPS** workflow — `gh workflow run diagnose.yml`, then read the
-run log. It is read-only and reports what is actually there: which variables
-`/opt/kolonie/.env` defines, whether `docker compose` interpolates, which
-containers run, which commit is checked out.
+## 9. Pull requests
 
-It prints variable **names**, never values. Keep it that way if you extend it: a
-workflow log is not a private place.
+- Branch from `main`: `fix/<slug>-<issue-number>`, `feat/…`, `docs/…`
+- Conventional commits: `fix:`, `feat:`, `docs:`, `chore:`
+- PR description references the issue: `Fixes #<n>`
+- PR description names the failure modes traced (see §5)
+- Never force-push `main`
 
-This exists because of #7. Every deploy had failed for days — `.env` defines
-`CLOUDFLARE_API_TOKEN`, `docker-compose.yml` demanded `CLOUDFLARE_DNS_API_TOKEN`
-— and each failure was attributed to the known GHCR credential problem instead of
-being read. One workflow run would have settled it at any point.
+## 10. Confirm with the maintainer before
 
-Direct SSH access, where a maintainer or agent has it, is fine for reading. Use
-the workflow when the answer belongs somewhere the next agent will find it.
-**Writing to the host still needs the maintainer's confirmation** — see the
-kolonie-docs `AGENTS.md` §8.
+- Any DNS or Cloudflare change
+- Any change to the live VPS (writing, not reading)
+- Changing repository visibility
+- Anything touching secrets rotation or access grants
+
+Everything else: act, then report. See `kolonie-docs/AGENTS.md` §8.
+
+## 11. Red lines
+
+`governance/red-lines.md` in kolonie-docs binds every agent in the Colony,
+including you. The standing red line for this repository specifically:
+
+**No host names, IP addresses, provider names or secrets in any file** — not in
+code, not in tests, not in comments, not in an issue body. The origin address
+lives only in Cloudflare DNS and in GitHub Actions secrets. A secret committed
+and then removed is still published — this applies to history as well as to the
+working tree.
+
+## 12. When you are unsure
+
+Ask in the issue rather than guessing. A wrong deploy script ships the guess to
+production, and the rollback is part of the same script — so a bug in the
+safety net is the one bug nobody catches until it fires.
+
+If a task appears to require breaking a rule in §3, you have been given the
+wrong task. Say so instead of proceeding.
