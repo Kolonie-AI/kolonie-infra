@@ -267,12 +267,11 @@ the packet never traverses ufw's INPUT chain. `ufw deny 80` would have looked
 like a fix and changed nothing. `DOCKER-USER` is the chain Docker guarantees it
 will not overwrite, consulted before its own forwarding rules.
 
-> Earlier revisions of this paragraph said ufw had *"only 22 open"*. It did not
-> — `22`, `80` and `443` have all been ALLOW rules since the host was built, and
-> `/etc/ufw/user.rules` has not been touched since. The claim was wrong and the
-> conclusion was right anyway, which is the uncomfortable part: the ufw rules for
-> 80 and 443 are inert either way, so nothing about this firewall depended on
-> getting that detail right and nothing caught it for two days. Corrected in #3.
+ufw does carry ALLOW rules for 80 and 443, and they are inert. They have been
+there since the host was built and deleting them would change nothing, because
+no packet bound for a published port ever reaches the chain they sit in. Read
+`ufw status` accordingly: the ports it genuinely governs are 22 and the inbound
+default-deny.
 
 The match is confined to the WAN interface. `DOCKER-USER` also carries
 container-to-container traffic and Traefik reaches the website container on port
