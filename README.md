@@ -261,11 +261,17 @@ sudo /opt/kolonie/scripts/origin-firewall.sh status
 ```
 
 **The rules live in `DOCKER-USER`, and that is the whole trick.** ufw was already
-active on this host with `deny (incoming)` and only 22 open — and 80/443 answered
-the entire internet regardless, because Docker publishes a port with its own DNAT
-rule and the packet never traverses ufw's INPUT chain. `ufw deny 80` would have
-looked like a fix and changed nothing. `DOCKER-USER` is the chain Docker
-guarantees it will not overwrite, consulted before its own forwarding rules.
+active on this host with `deny (incoming)` — and 80/443 answered the entire
+internet regardless, because Docker publishes a port with its own DNAT rule and
+the packet never traverses ufw's INPUT chain. `ufw deny 80` would have looked
+like a fix and changed nothing. `DOCKER-USER` is the chain Docker guarantees it
+will not overwrite, consulted before its own forwarding rules.
+
+ufw does carry ALLOW rules for 80 and 443, and they are inert. They have been
+there since the host was built and deleting them would change nothing, because
+no packet bound for a published port ever reaches the chain they sit in. Read
+`ufw status` accordingly: the ports it genuinely governs are 22 and the inbound
+default-deny.
 
 The match is confined to the WAN interface. `DOCKER-USER` also carries
 container-to-container traffic and Traefik reaches the website container on port
@@ -274,6 +280,46 @@ container-to-container traffic and Traefik reaches the website container on port
 What this proves is *a* Cloudflare edge, not *this zone's* edge: any Cloudflare
 customer can point a hostname at this address. Closing that needs authenticated
 origin pull, which needs a zone setting — see #21.
+
+### What the operating system enforces
+
+`scripts/host-hardening.sh` owns the SSH authentication policy and the fail2ban
+jail, and it checks ufw and `unattended-upgrades` without owning them.
+
+```bash
+sudo /opt/kolonie/scripts/host-hardening.sh verify   # non-zero on drift
+sudo /opt/kolonie/scripts/host-hardening.sh apply
+```
+
+`verify` runs on every deploy as a `continue-on-error` step — drift is worth
+seeing every time and never worth blocking a deploy for, not least because a
+deploy is how a drifted host gets repaired.
+
+**Why the SSH policy needs two files, and why they are numbered.** sshd uses the
+**first** value it obtains for a keyword, so among the drop-ins in
+`/etc/ssh/sshd_config.d/` the lowest-numbered file wins — and cloud-init writes
+`50-cloud-init.conf` on its own schedule. The global `PasswordAuthentication no`
+therefore sits in `10-kolonie-auth.conf`, ahead of anything cloud-init has to
+say.
+
+The `Match` block sits at the other end, in `99-kolonie-breakglass.conf`. A
+`Match` runs until the next `Match` or the end of the file, and `Include` splices
+files inline, so a `Match` left open at the end of a low-numbered file would
+swallow whatever is included after it into a conditional block. At the true end
+of the parse there is nothing left to capture.
+
+**One account keeps password login on purpose.** It holds nothing, has no keys,
+and exists so that a lost or corrupted deploy key does not leave the provider's
+console as the only way back in. What makes that safe is the fail2ban policy
+rather than the account, which is why the jail's numbers are pinned in
+`/etc/fail2ban/jail.d/kolonie.conf` rather than inherited from the package. The
+deploy account is `L` in `/etc/shadow` and has no password to offer; `verify`
+fails if it ever acquires one.
+
+The argument for both — why a claim here has to be executable, and what the
+break-glass account does and does not defend against — is in `state/decisions.md`
+in kolonie-docs, under *"Why a security claim has to be executable"* and *"Why
+one account still has a password"*.
 
 ## Services
 
@@ -305,7 +351,9 @@ kolonie-infra/
 │   ├── deploy.sh                   ← Deployment script
 │   ├── healthcheck.sh              ← Post-deploy health check
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
-│   └── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
+│   ├── backup.sh                   ← Daily pg_dump into an off-host restic repository
+│   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
+│   └── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
 │
 ├── docs/
 │   ├── scaling-strategy.md         ← How we scale from VPS to global
@@ -314,6 +362,8 @@ kolonie-infra/
 │   ├── cost-projections.md         ← Infrastructure cost planning
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
+│
+├── systemd/                        ← Host units: origin firewall, backup timer
 │
 └── .github/
     └── workflows/

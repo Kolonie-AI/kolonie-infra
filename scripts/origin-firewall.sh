@@ -17,8 +17,8 @@
 #
 # ## Why the rules go in DOCKER-USER and not in ufw
 #
-# **ufw was already active on this host, with `deny (incoming)` and only 22 open
-# — and 80/443 answered the whole internet anyway.** Docker publishes a port by
+# **ufw was already active on this host with `deny (incoming)` — and 80/443
+# answered the whole internet anyway.** Docker publishes a port by
 # writing its own DNAT rule into the `nat` table, so the packet is forwarded to
 # the container and never traverses ufw's INPUT chain. `ufw deny 80` would have
 # looked like a fix and changed nothing.

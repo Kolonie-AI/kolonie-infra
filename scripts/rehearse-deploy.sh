@@ -38,7 +38,14 @@ cat > "$BIN/docker" <<'STUB'
 echo "docker $*" >> "$DOCKER_LOG"
 
 case "$1 ${2:-}" in
-  "manifest inspect")
+  "pull"*)
+      # How detect_profile() probes reachability. It used `docker manifest
+      # inspect` until f624063 and this stub answered that instead — so from
+      # then until #38 the probe fell through to the catch-all `exit 0`, the
+      # UNREACHABLE switch reached nothing, and three cases asserted on a
+      # command the deploy no longer ran. The deploy itself was fine the whole
+      # time; only its rehearsal had stopped watching.
+      #
       # Every image reachable, unless a case names one that is not. UNREACHABLE
       # holds a repository, and the tag is the last argument.
       for tag in "$@"; do :; done
@@ -182,15 +189,16 @@ echo "== 6. a caller that names a version gets that build, not :latest"
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 SHA=$(printf %040d 7)
 out=$(run_deploy env API_VERSION="$SHA")
-contains "$(cat "$WORK/docker.log")" "manifest inspect ghcr.io/kolonie-ai/kolonie-api:$SHA" "probed the requested version"
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-api:$SHA" "probed the requested version"
 contains "$(cat "$WORK/docker.log")" "compose pull API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:$SHA" "pulled the requested version"
 contains "$out" "Deployment completed" "deploy finished"
 # And the other two images are untouched by an api-only version.
-contains "$(cat "$WORK/docker.log")" "manifest inspect ghcr.io/kolonie-ai/kolonie-website:latest" "website stayed on latest"
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-website:latest" "website stayed on latest"
 
 echo "== 7. no version named is rejected, preventing :latest"
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(run_deploy env)
+
 
 echo "== 8. a single-service deploy never passes --remove-orphans"
 # A deploy of one service has no business asserting what the whole host should

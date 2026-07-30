@@ -1,0 +1,59 @@
+name: Rehearse
+
+# The rehearsals stand in for a test suite that `deploy.sh` and `backup.sh`
+# cannot otherwise have — both are scripts whose interesting branches only run
+# when something has gone wrong in production. AGENTS.md §7 requires them green
+# before a change is done.
+#
+# **This workflow exists because nothing ran them.** `rehearse-deploy.sh` was red
+# on `main` for an unknown number of days and it took writing an unrelated second
+# rehearsal to notice (#38). Five assertions had stopped watching the deploy
+# after `detect_profile()` switched from `docker manifest inspect` to
+# `docker pull -q` in f624063 — the deploy was correct throughout, but nothing
+# would have said so if it had not been. A suite nobody runs is a suite that is
+# red and does not know it.
+#
+# It deliberately does **not** gate `deploy.yml`. That workflow is reusable and
+# `kolonie-platform` calls it after building an image; a rehearsal failure would
+# then block a deploy from another repository over a stale assertion in this one.
+# The signal is a red check on the commit, which is enough to be noticed and
+# cannot take the Colony offline.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/rehearse.yml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/rehearse.yml'
+  workflow_dispatch:
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Neither rehearsal needs Docker, a VPS, a registry or a credential: each
+      # runs the real script against stubs on PATH and a scratch directory in
+      # place of /opt/kolonie. That is the whole reason they can run here.
+      - name: deploy.sh
+        run: bash scripts/rehearse-deploy.sh
+
+      - name: backup.sh
+        run: bash scripts/rehearse-backup.sh
+
+      # Syntax alone would not have caught anything above, but it is free and it
+      # catches the class of mistake that never reaches a test case.
+      - name: shell syntax
+        run: |
+          fail=0
+          for f in scripts/*.sh; do
+            bash -n "$f" || { echo "syntax error in $f"; fail=1; }
+          done
+          exit "$fail"

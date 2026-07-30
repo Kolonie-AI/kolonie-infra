@@ -179,6 +179,26 @@ jobs:
             cd ${{ env.DEPLOY_DIR }}
             ./scripts/healthcheck.sh
 
+      # Reports whether the host still matches the Security section of
+      # ARCHITECTURE.md (#3). It is `continue-on-error` on purpose: hardening
+      # drift is worth seeing on every deploy, and it is never worth blocking
+      # one. The deploy is also how an operator fixes a broken host, so a step
+      # that failed the run on a drifted firewall would take the repair path
+      # away at exactly the moment it is needed.
+      #
+      # It prints usernames and service states and no addresses, so it is safe
+      # in a public workflow log — see AGENTS.md §11.
+      - name: Verify host hardening
+        continue-on-error: true
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VPS_HOST }}
+          username: ${{ env.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_DIR }}
+            sudo ./scripts/host-hardening.sh verify
+
       - name: Notify on failure
         if: failure()
         run: echo "::error::Deployment failed! Check VPS logs."

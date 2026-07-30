@@ -1,27 +1,203 @@
 # Disaster Recovery
 
-## Backup Strategy
+## Backups
 
-### Database (PostgreSQL)
-- **Frequency:** Daily automated backup
-- **Retention:** 7 daily, 4 weekly, 3 monthly
-- **Location:** External storage (S3-compatible or another VPS)
-- **Method:** `pg_dump` via cron job
+### What exists
 
-### Docker Volumes
-- **Frequency:** Weekly
-- **Retention:** 4 weekly
-- **Location:** Same as database backups
-- **Method:** `tar` of Docker volume directories
+A daily `pg_dump` of the Colony's database, stored in a [restic](https://restic.net)
+repository on an S3-compatible object store off this host (#4, 2026-07-30).
 
-### Configuration
-- **Source of truth:** This GitHub repository
-- **Secrets:** Stored in `.env` on VPS (backup separately)
-- **Recovery:** Clone repo, copy .env, docker compose up
+| | |
+|---|---|
+| **Schedule** | `kolonie-backup.timer`, daily at 03:00, `Persistent=true` |
+| **Runs** | `scripts/backup.sh backup`, on the host — not in Compose |
+| **Working directory** | `/var/backups/kolonie` |
+| **Retention** | every snapshot is kept; nothing prunes |
+| **Encryption** | restic, client-side, before anything leaves the host |
+| **Configuration** | `/opt/kolonie/backup.env`, root-only, `0600` |
+
+`backup.sh` documents *why* it is built this way — why on the host rather than in
+a container, why the dump is written to a file before restic sees it, and why it
+is not compressed first. That reasoning is not repeated here; read the header of
+the script before changing it.
+
+### Retention: everything, on purpose
+
+restic deduplicates and then compresses, so consecutive dumps of a database that
+changes slowly cost very little after the first. Three snapshots on the day this
+was set up held 425 KiB of dumps in 106 KiB of repository. Keeping every snapshot
+is therefore affordable, and it removes a whole class of mistake: there is no
+retention policy to get wrong, and no `forget` that can delete the snapshot
+someone needed.
+
+When that stops being true, one line in `do_backup` starts a retention policy,
+and the numbers below are the ones this document used to promise:
+
+```bash
+restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+```
+
+Adding it has a consequence at the object store, not only here: restic then
+deletes files, and a bucket configured to keep every version will retain those
+deletions as hidden versions forever. Set the bucket to keep only the current
+version at the same time, or the pruning saves nothing.
+
+### The two passwords
+
+The repository is encrypted with a key that is not recoverable from the backup
+itself. There are **two** repository passwords, and either one opens it:
+
+| Key | User | Where it lives |
+|---|---|---|
+| `eb806547` | `backup` | `/opt/kolonie/backup.env` on the host |
+| `6f48c96b` | `maintainer` | the maintainer's password manager, off this host |
+
+Two rather than one, because a single key stored on the machine being backed up
+is not a key at all — the scenario where the backup is needed is often the
+scenario where that host is gone. Neither password appears in this repository.
+
+Adding a third, if someone else needs independent access:
+
+```bash
+restic key add --user <name> --host offline
+restic key list
+```
+
+### Restoring
+
+Everything below assumes the credentials are loaded:
+
+```bash
+sudo -i
+set -a; . /opt/kolonie/backup.env; set +a
+export RESTIC_CACHE_DIR=/var/cache/restic
+```
+
+```bash
+restic snapshots                      # what is available
+./scripts/backup.sh verify            # newest snapshots plus repository size
+restic dump latest /var/backups/kolonie/kolonie.sql > /tmp/restore.sql
+```
+
+The dump is plain SQL. It restores into an **empty** database — it carries no
+`DROP` statements, so loading it over existing data produces duplicate-key errors
+rather than a clean overwrite. That is deliberate: a dump that silently replaces
+a live database is a loaded gun.
+
+```bash
+# into a scratch database, to look before committing to anything
+docker exec kolonie-postgres psql -U kolonie -d postgres -c "CREATE DATABASE restore_check"
+restic dump latest /var/backups/kolonie/kolonie.sql \
+  | docker exec -i kolonie-postgres psql -U kolonie -d restore_check -v ON_ERROR_STOP=1
+```
+
+`docker exec -i`. Without the `-i`, stdin is not forwarded: `psql` receives
+nothing, exits 0, and prints nothing — indistinguishable from a restore that
+worked.
+
+### Verifying that the backups still happen
+
+The failure mode of a backup system is not corruption, it is silence. Three
+places answer it, cheapest first:
+
+```bash
+./scripts/health-report.sh | ./scripts/health-triage.sh   # `backup` row; degraded after 36h
+systemctl list-timers kolonie-backup.timer
+journalctl -u kolonie-backup.service -n 50
+```
+
+The `backup` row reads `/var/backups/kolonie/.last-success`, which is written
+only after a snapshot has been confirmed *by the repository* and the repository
+has passed `restic check`. A run that fails leaves the previous timestamp alone,
+so a backup that has stopped shows its true age rather than resetting each night.
+
+### Restore tests
+
+An untested backup is a hypothesis. `scripts/backup.sh restore-test` restores the
+newest snapshot into a throwaway database inside the running Postgres container,
+compares exact row counts per table against the live database, and drops the
+throwaway again. It never writes to the live database.
+
+Differences are not automatically failures — the live database keeps taking
+writes while a snapshot does not — but every differing line has to be explainable
+by that.
+
+| Date | Snapshot | Result |
+|---|---|---|
+| 2026-07-30 | `78befaa7` | **Pass.** 20 tables, 338 rows, identical to live. |
+
+An earlier run the same day differed by one row in four tables
+(`email_challenges`, `pow_challenges`, `submissions`, `verifications`) — one
+registration completing between the snapshot and the comparison, which is the
+expected shape of a benign difference.
+
+Re-run it after any change to the schema, to `backup.sh`, or to the Postgres
+version, and add a row above.
+
+### Rebuilding this on a new host
+
+The scripts and units arrive with the checkout; three things do not.
+
+```bash
+sudo apt-get install -y restic
+
+# 1. credentials — repository URL, restic password, object-store key
+sudo install -m 600 /dev/stdin /opt/kolonie/backup.env <<'EOF'
+RESTIC_REPOSITORY=...
+RESTIC_PASSWORD=...
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+EOF
+
+# 2. the units, copied rather than symlinked — the same convention as
+#    kolonie-origin-firewall. A change to the unit in this repository does NOT
+#    reach the host on deploy; re-run this install and daemon-reload.
+#
+#    Copy *out of* the checkout, never create files in it as root. /opt/kolonie
+#    is a git checkout the deploy resets as the `ubuntu` user, and a root-owned
+#    file or directory inside it makes `git reset --hard` fail with "Permission
+#    denied" — which breaks every deploy, not just this one. That is exactly how
+#    adding these two units broke the deploy on 2026-07-30: `systemd/` had been
+#    left owned by root. Check with `ls -ld /opt/kolonie/*` if a deploy ever
+#    fails at the git step.
+sudo install -m 644 systemd/kolonie-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-backup.timer
+
+# 3. prove it
+sudo systemctl start kolonie-backup.service
+journalctl -u kolonie-backup.service -n 20
+```
+
+On a host that is restoring rather than starting fresh, do not run `restic init`
+— the repository already exists, and initialising over it is how you get an empty
+one.
+
+### What is not backed up
+
+- **Docker volumes other than the database.** Traefik's `acme.json` is the only
+  one holding state that is not reproducible, and it re-issues on demand.
+- **`/opt/kolonie/.env`.** It holds every production secret and it is not in this
+  repository by design. It is not in the restic repository either — back it up
+  where secrets belong, not where the database goes. `.env.example` lists what it
+  must contain.
+- **The repository password.** Obviously, but it is the mistake that turns a
+  complete backup into nothing. See "The two passwords".
+
+### One accepted leak
+
+restic writes the machine's hostname into the lock files it creates during a run,
+in cleartext, alongside the encrypted data. Snapshots and repository keys do not
+carry it — those are set to a fixed logical name on purpose — but lock files are
+not configurable. Anyone able to read that is someone holding the object-store
+credentials, and they can already read the encrypted repository; the marginal
+disclosure is judged acceptable rather than worth the machinery of running restic
+in a separate UTS namespace.
 
 ## Recovery Procedures
 
 ### Scenario 1: Service Crash
+
 ```
 1. docker compose logs <service> — check error
 2. docker compose restart <service> — try restart
@@ -30,34 +206,66 @@
 ```
 
 ### Scenario 2: Database Corruption
+
+The database is the one thing here that cannot be rebuilt from a registry or a
+git remote, and `governance/treasury.md` in kolonie-docs makes the coin ledger
+the single source of truth for every balance in the Colony. Take the time to look
+before overwriting anything.
+
 ```
-1. Stop all services: docker compose down
-2. Restore from latest backup:
-   docker compose up -d postgres
-   docker exec -i kolonie-postgres psql -U kolonie < backup.sql
-3. Restart services: docker compose up -d
-4. Verify data integrity
+1. Stop what writes, not the database itself:
+     docker compose stop api verifier-runner moderation-runner
+
+2. Restore into a scratch database first and look at it. Restoring straight over
+   the live one destroys the evidence of what went wrong, and does it before you
+   know whether the snapshot is better than what you have.
+     (see "Restoring" above)
+
+3. Compare. `backup.sh restore-test` prints per-table row counts of the snapshot
+   against the live database — read the difference before deciding.
+
+4. Promote the restored copy, rather than loading SQL over live tables:
+     docker exec kolonie-postgres psql -U kolonie -d postgres \
+       -c "ALTER DATABASE kolonie RENAME TO kolonie_broken" \
+       -c "ALTER DATABASE restore_check RENAME TO kolonie"
+
+5. docker compose up -d, then ./scripts/healthcheck.sh
+
+6. Keep `kolonie_broken` until the incident is written up. It is the only record
+   of what happened.
 ```
 
 ### Scenario 3: VPS Compromise
+
 ```
-1. Immediately: Change all passwords and API keys
+1. Immediately: rotate all passwords and API keys, including the object-store
+   application key — a compromised host had it in /opt/kolonie/backup.env
 2. Provision new VPS
 3. Clone kolonie-infra repo
 4. Restore .env from secure backup
-5. Restore database from backup
+5. Restore database from backup (see "Rebuilding this on a new host")
 6. docker compose up -d
 7. Investigate breach, update security model
 ```
 
+The restic password does **not** need rotating for confidentiality — an attacker
+who had the host had the plaintext database anyway. It needs rotating only if you
+want the old snapshots to become unreadable to them, and that costs you the
+snapshots too. Rotate the object-store key first; that removes their access to
+the repository without destroying it.
+
 ### Scenario 4: VPS Provider Outage
+
 ```
-1. Provision VPS at alternative provider (Hetzner, DigitalOcean)
+1. Provision VPS at an alternative provider
 2. Clone kolonie-infra repo
-3. Restore .env and database backup
+3. Restore .env and the database (see "Rebuilding this on a new host")
 4. Update DNS (Cloudflare) to new IP
 5. docker compose up -d
 ```
+
+The restic repository is reachable from anywhere with the credentials, so the
+replacement host does not depend on the old one being alive.
 
 ### Scenario 5: The migration succeeded and the health check then failed
 
@@ -98,9 +306,9 @@ Take it in this order, and do not start by rolling back.
 Note what this scenario costs, and where it is being paid down. The containers
 can now be returned to a known-good build (#12, 2026-07-28), so step 2 is no
 longer *"can we roll back at all"* but the narrower question of whether the old
-code tolerates the new schema. Its expensive branch remains expensive because
-there is no automated backup yet (kolonie-infra#4); with that, step 2 stops
-being a judgement call.
+code tolerates the new schema. Its expensive branch is now bounded too: since #4
+there is a nightly snapshot, so "restore and accept the data loss" means losing
+hours rather than everything.
 
 **A rollback with nothing recorded does nothing.** On a host that has not
 completed a deploy since #12, both `rollback()` and `scripts/rollback.sh` say so
@@ -108,12 +316,11 @@ and exit without touching a container — there is no known-good version to retu
 to, and tearing down containers that are serving would turn a failed deploy into
 an outage.
 
-Until then, the cheap insurance before a deploy carrying a destructive
-migration is a dump — one command, and it turns step 2 into a decision instead
-of a gamble:
+The cheap insurance before a deploy carrying a destructive migration is still a
+dump taken *now* rather than at 03:00, and it is one command:
 
 ```bash
-ssh <host> 'docker exec kolonie-postgres pg_dump -U kolonie kolonie' > pre-deploy.sql
+sudo /opt/kolonie/scripts/backup.sh backup
 ```
 
 ## Recovery Time Objectives
@@ -125,21 +332,9 @@ ssh <host> 'docker exec kolonie-postgres pg_dump -U kolonie kolonie' > pre-deplo
 | Full VPS rebuild | < 1 hour |
 | Provider migration | < 4 hours |
 
-## Automated Backups (TODO)
+## Configuration
 
-Set up cron job on VPS:
-```bash
-# /etc/cron.d/kolonie-backup
-0 3 * * * root /opt/kolonie/scripts/backup.sh
-```
-
-Backup script uploads to external storage (S3, Hetzner Storage Box, or similar).
-
-## Testing Backups
-
-Backups that are not tested are not backups. Schedule quarterly restore drills:
-1. Spin up temporary VPS
-2. Restore from backup
-3. Verify all services work
-4. Document any issues
-5. Tear down temporary VPS
+- **Source of truth:** this GitHub repository
+- **Secrets:** `/opt/kolonie/.env` on the host, backed up separately — see
+  "What is not backed up"
+- **Recovery:** clone repo, restore `.env`, `docker compose up -d`

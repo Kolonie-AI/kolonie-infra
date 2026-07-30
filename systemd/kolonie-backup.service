@@ -1,0 +1,39 @@
+[Unit]
+Description=Dump the Colony's database into the restic repository (kolonie-infra#4)
+# The dump is taken out of the running container, so there has to be one. On a
+# boot where Docker is slow to come up this orders the run after it rather than
+# racing it — a backup that failed because the container was not up yet looks
+# exactly like a backup that failed because the database is gone.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kolonie/scripts/backup.sh backup
+
+# The object-store credentials and the restic password. Root-only, and
+# deliberately not the compose .env — the deploy copies that one into the
+# checkout (#27), and the stack has no use for these values.
+EnvironmentFile=/opt/kolonie/backup.env
+
+# restic caches pack and index metadata; without a writable cache it re-fetches
+# the index on every run and gets slower as the repository grows. CacheDirectory
+# gives it /var/cache/restic with the right ownership, created on first start,
+# and keeps it out of a home directory that ProtectHome below hides anyway.
+CacheDirectory=restic
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
+
+# The whole point is that this survives a stack under load, so it must not
+# compete with it. The backup finishing ten minutes later costs nothing; the API
+# stalling behind it would cost something.
+Nice=10
+IOSchedulingClass=idle
+
+# It reads one container, writes one directory, and talks to one endpoint.
+# Nothing else on the host is its business.
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

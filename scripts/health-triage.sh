@@ -35,6 +35,13 @@ set -uo pipefail
 # not described as chronic.
 SUSTAINED_SECONDS="${SUSTAINED_SECONDS:-900}"
 
+# When a daily backup has been silent long enough to be a fault rather than a
+# late run. 36 hours is one missed run plus the timer's jitter plus room for a
+# reboot: a backup that ran yesterday at 03:00 and has not run today by 15:00 is
+# genuinely overdue, and anything tighter would cry wolf on the morning after an
+# outage — which is the morning the report most needs to be believed.
+BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
+
 # Seconds into something a person reads without counting zeroes. The distinction
 # that matters is minutes versus days, so the units are coarse deliberately.
 human() {
@@ -54,21 +61,50 @@ healthy=()
 problems=()
 fingerprint_parts=()
 
+# `problems` drives the table and the exit status; these two only decide which
+# closing advice is printed. A container fault and a late backup are diagnosed
+# in completely different places, and a report that offers both every time is
+# one the reader stops reading.
+container_problems=()
+backup_problems=()
+
 while IFS=$'\t' read -r name state health streak approx image; do
     [ -z "${name:-}" ] && continue
     [ "$name" = "NO_CONTAINERS" ] && {
         problems+=("| _none running_ | - | - | - | the host reports no containers at all |")
+        container_problems+=("$name")
         fingerprint_parts+=("no-containers")
         continue
     }
 
     duration="$(human "$approx")"
 
+    # The backup row is not a container, so it is judged before the container
+    # rules — `state=ok` would otherwise fall through to "not running" and read
+    # as a broken service. What is being asked here is one question: has a
+    # backup succeeded recently enough that the ledger could be recovered.
+    if [ "$name" = "backup" ]; then
+        if [ "$state" = "never" ]; then
+            problems+=("| _database backup_ | never | - | - | no backup has ever succeeded on this host |")
+            backup_problems+=("never")
+            fingerprint_parts+=("backup:never")
+        elif [ "${approx:-0}" -ge "$BACKUP_STALE_SECONDS" ]; then
+            problems+=("| _database backup_ | stale | - | - | last successful backup was $duration ago |")
+            backup_problems+=("stale")
+            fingerprint_parts+=("backup:stale")
+        else
+            healthy+=("database backup ($duration ago)")
+        fi
+        continue
+    fi
+
     if [ "$state" = "gone" ]; then
         problems+=("| \`$name\` | gone | - | - | named in the project, not present on the host |")
+        container_problems+=("$name")
         fingerprint_parts+=("$name:gone")
     elif [ "$state" != "running" ]; then
         problems+=("| \`$name\` | $state | - | - | not running |")
+        container_problems+=("$name")
         fingerprint_parts+=("$name:$state")
     elif [ "$health" = "unhealthy" ]; then
         if [ "${approx:-0}" -ge "$SUSTAINED_SECONDS" ]; then
@@ -77,6 +113,7 @@ while IFS=$'\t' read -r name state health streak approx image; do
             note="unhealthy for about $duration"
         fi
         problems+=("| \`$name\` | running | unhealthy | $streak | $note |")
+        container_problems+=("$name")
         fingerprint_parts+=("$name:unhealthy")
     else
         healthy+=("$name ($health)")
@@ -105,15 +142,32 @@ if [ "${#healthy[@]}" -gt 0 ]; then
     echo "</details>"
 fi
 
-echo
-echo "A container can serve every request correctly and still report itself"
-echo "unhealthy — that is the case this watcher exists for, and an external HTTP"
-echo "probe does not see it. Check the container's own health log before assuming"
-echo "the service is down:"
-echo
-echo '```'
-echo "docker inspect <container> --format '{{json .State.Health}}'"
-echo '```'
+# Only when a container is actually implicated. A late backup is not diagnosed
+# by inspecting a container's health log, and advice that does not apply to the
+# problem on screen teaches the reader to skip the prose.
+if [ "${#container_problems[@]}" -gt 0 ]; then
+    echo
+    echo "A container can serve every request correctly and still report itself"
+    echo "unhealthy — that is the case this watcher exists for, and an external HTTP"
+    echo "probe does not see it. Check the container's own health log before assuming"
+    echo "the service is down:"
+    echo
+    echo '```'
+    echo "docker inspect <container> --format '{{json .State.Health}}'"
+    echo '```'
+fi
+
+if [ "${#backup_problems[@]}" -gt 0 ]; then
+    echo
+    echo "The backup is a systemd timer on the host, not a container — a stack that"
+    echo "is entirely healthy can have had no backup for a week. Start here:"
+    echo
+    echo '```'
+    echo "systemctl status kolonie-backup.timer"
+    echo "journalctl -u kolonie-backup.service -n 50"
+    echo "/opt/kolonie/scripts/backup.sh verify"
+    echo '```'
+fi
 
 # Sorted so the same set of problems in a different order is the same
 # fingerprint. Without that, two unhealthy containers would look like a new
