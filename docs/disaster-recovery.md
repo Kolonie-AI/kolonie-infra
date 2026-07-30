@@ -152,6 +152,14 @@ EOF
 # 2. the units, copied rather than symlinked — the same convention as
 #    kolonie-origin-firewall. A change to the unit in this repository does NOT
 #    reach the host on deploy; re-run this install and daemon-reload.
+#
+#    Copy *out of* the checkout, never create files in it as root. /opt/kolonie
+#    is a git checkout the deploy resets as the `ubuntu` user, and a root-owned
+#    file or directory inside it makes `git reset --hard` fail with "Permission
+#    denied" — which breaks every deploy, not just this one. That is exactly how
+#    adding these two units broke the deploy on 2026-07-30: `systemd/` had been
+#    left owned by root. Check with `ls -ld /opt/kolonie/*` if a deploy ever
+#    fails at the git step.
 sudo install -m 644 systemd/kolonie-backup.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now kolonie-backup.timer
