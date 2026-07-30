@@ -107,7 +107,7 @@ STUB
 chmod +x "$BIN/docker"
 
 run_deploy() {
-  local av="${API_VERSION:-${SHA:-some-sha}}" rv="${RUNNER_VERSION:-${SHA:-some-sha}}" mv="${MODERATION_VERSION:-${SHA:-some-sha}}" wv="${WEBSITE_VERSION:-${SHA:-some-sha}}"
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
   if [ "${NO_VERSIONS:-}" = "1" ]; then av=""; rv=""; mv=""; wv=""; fi
   API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" WEBSITE_VERSION="$wv" \
   DOCKER_LOG="$WORK/docker.log" \
@@ -118,9 +118,9 @@ run_deploy() {
 # Same, for a deploy of one named service — which is what a build in
 # kolonie-platform triggers.
 run_deploy_service() {
-  local av="${API_VERSION:-${SHA:-some-sha}}" rv="${RUNNER_VERSION:-${SHA:-some-sha}}" mv="${MODERATION_VERSION:-${SHA:-some-sha}}" wv="${WEBSITE_VERSION:-${SHA:-some-sha}}"
-  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" WEBSITE_VERSION="$wv" \
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
   local service="$1"; shift
+  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" WEBSITE_VERSION="$wv" \
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" "$service" 2>&1
@@ -178,9 +178,9 @@ contains "$(cat "$WORK/state/deployed.env")" "DEPLOYED_AT=19990101_000000" "a fa
 echo "== 5. an unresolvable digest degrades to the tag rather than aborting"
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(run_deploy env FAIL_DIGEST=ghcr.io/kolonie-ai/kolonie-website)
-contains "$out" "no digest recorded for ghcr.io/kolonie-ai/kolonie-website:latest" "warned about the unpinnable image"
+contains "$out" "no digest recorded for ghcr.io/kolonie-ai/kolonie-website:some-sha" "warned about the unpinnable image"
 contains "$out" "Deployment completed" "deploy still finished"
-contains "$(cat "$WORK/state/deployed.env")" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website:latest" "recorded the tag it actually used"
+contains "$(cat "$WORK/state/deployed.env")" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website:some-sha" "recorded the tag it actually used"
 
 echo "== 6. a caller that names a version gets that build, not :latest"
 # The point of #14: a deploy triggered by a build in kolonie-platform ships the
@@ -193,12 +193,12 @@ contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-api:$SH
 contains "$(cat "$WORK/docker.log")" "compose pull API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:$SHA" "pulled the requested version"
 contains "$out" "Deployment completed" "deploy finished"
 # And the other two images are untouched by an api-only version.
-contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-website:latest" "website stayed on latest"
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-website:some-sha" "website stayed on latest"
 
 echo "== 7. no version named is rejected, preventing :latest"
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
-out=$(run_deploy env)
-
+out=$(NO_VERSIONS=1 run_deploy env || true)
+contains "$out" "The deploy names the image it intends, not :latest." "defaulted to latest"
 
 echo "== 8. a single-service deploy never passes --remove-orphans"
 # A deploy of one service has no business asserting what the whole host should
@@ -317,8 +317,7 @@ check "marker exists after runner rollback" "$([ -f "$WORK/state/needs-redeploy.
 # But FAIL_UP only fails the FIRST up, so this won't work directly.
 # Instead, write a marker and verify it was read:
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
-NO_VERSIONS=1 out=$(run_deploy env || true)
-contains "$out" "The deploy names the image it intends, not :latest" "defaulted to latest"
+out=$(run_deploy env || true)
 contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade was attempted"
 
 echo

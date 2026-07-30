@@ -49,8 +49,12 @@ RUNNER_VERSION="${RUNNER_VERSION:-}"
 MODERATION_VERSION="${MODERATION_VERSION:-}"
 WEBSITE_VERSION="${WEBSITE_VERSION:-}"
 
+CUR_API=""
+CUR_RUNNER=""
+CUR_MOD=""
+CUR_WEB=""
 if [ -f "${STATE_DIR}/deployed.env" ]; then
-    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${WEBSITE_IMAGE}")
+    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${WEBSITE_IMAGE:-}")
     CUR_API="${PREV_STATE%%|*}"
     CUR_RUNNER="$(echo "$PREV_STATE" | cut -d"|" -f2)"
     CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
@@ -63,7 +67,7 @@ WEBSITE_VERSION="${WEBSITE_VERSION:-${CUR_WEB#*:}}"
 
 for ver in "$API_VERSION" "$RUNNER_VERSION" "$MODERATION_VERSION" "$WEBSITE_VERSION"; do
     if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
-        log "ERROR: The deploy names the image it intends, not :latest."
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: The deploy names the image it intends, not :latest." >&2
         exit 1
     fi
 done
