@@ -44,10 +44,29 @@ WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 # Per image rather than one version for all three, because the three are built by
 # three workflows in two repositories and share no version. A caller sets the one
 # it knows about; the other two stay on `latest` and are simply re-pulled.
-API_VERSION="${API_VERSION:-latest}"
-RUNNER_VERSION="${RUNNER_VERSION:-latest}"
-MODERATION_VERSION="${MODERATION_VERSION:-latest}"
-WEBSITE_VERSION="${WEBSITE_VERSION:-latest}"
+API_VERSION="${API_VERSION:-}"
+RUNNER_VERSION="${RUNNER_VERSION:-}"
+MODERATION_VERSION="${MODERATION_VERSION:-}"
+WEBSITE_VERSION="${WEBSITE_VERSION:-}"
+
+if [ -f "${STATE_DIR}/deployed.env" ]; then
+    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${WEBSITE_IMAGE}")
+    CUR_API="${PREV_STATE%%|*}"
+    CUR_RUNNER="$(echo "$PREV_STATE" | cut -d"|" -f2)"
+    CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
+    CUR_WEB="${PREV_STATE##*|}"
+fi
+API_VERSION="${API_VERSION:-${CUR_API#*:}}"
+RUNNER_VERSION="${RUNNER_VERSION:-${CUR_RUNNER#*:}}"
+MODERATION_VERSION="${MODERATION_VERSION:-${CUR_MOD#*:}}"
+WEBSITE_VERSION="${WEBSITE_VERSION:-${CUR_WEB#*:}}"
+
+for ver in "$API_VERSION" "$RUNNER_VERSION" "$MODERATION_VERSION" "$WEBSITE_VERSION"; do
+    if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
+        log "ERROR: The deploy names the image it intends, not :latest."
+        exit 1
+    fi
+done
 
 API_IMAGE_TAG="${API_REPO}:${API_VERSION}"
 RUNNER_IMAGE_TAG="${RUNNER_REPO}:${RUNNER_VERSION}"
@@ -292,7 +311,8 @@ record_deployment() {
         [ "$SERVICE" != website ]           && recorded_website="${previous##*|}"
     fi
 
-    cat > "$DEPLOYED_STATE" <<EOF
+    local infra_commit; infra_commit=$(git rev-parse HEAD 2>/dev/null || echo ""); cat > "$DEPLOYED_STATE" <<EOF
+INFRA_COMMIT=${infra_commit}
 # Written by scripts/deploy.sh after a successful health check.
 # These are the images currently serving. rollback() returns to them.
 # Do not edit by hand: a wrong digest here is a rollback into an unknown build.
@@ -428,12 +448,22 @@ deploy() {
     fi
 
     if [ "$SERVICE" = "all" ]; then
+    if [ -n "${INFRA_COMMIT:-}" ]; then
+        log "Returning /opt/kolonie to commit $INFRA_COMMIT..."
+        git reset --hard "$INFRA_COMMIT"
+    fi
+
         docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
             exit 1
         }
     else
+    if [ -n "${INFRA_COMMIT:-}" ]; then
+        log "Returning /opt/kolonie to commit $INFRA_COMMIT..."
+        git reset --hard "$INFRA_COMMIT"
+    fi
+
         docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" "$SERVICE" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
@@ -563,6 +593,11 @@ rollback() {
     # website down in response to one unhealthy container that was in fact
     # serving every request. A rollback must never destroy more than the deploy
     # touched.
+    if [ -n "${INFRA_COMMIT:-}" ]; then
+        log "Returning /opt/kolonie to commit $INFRA_COMMIT..."
+        git reset --hard "$INFRA_COMMIT"
+    fi
+
     docker compose "${PROFILE_ARGS[@]}" up -d 2>&1 || {
         log "ERROR: Rollback also failed! Manual intervention needed."
         exit 2
