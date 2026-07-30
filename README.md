@@ -295,36 +295,31 @@ sudo /opt/kolonie/scripts/host-hardening.sh apply
 seeing every time and never worth blocking a deploy for, not least because a
 deploy is how a drifted host gets repaired.
 
-**The reason this script exists is not the hardening.** ufw, fail2ban and
-unattended-upgrades were all already configured when #3 was opened — installed
-when the host was built, recorded nowhere, and listed in `ARCHITECTURE.md` as
-work still to do. The one claim in that list which was *false* was the one it
-presented as already true: **`SSH key auth only, no password login`**. Password
-authentication was on, and it was on by accident.
+**Why the SSH policy needs two files, and why they are numbered.** sshd uses the
+**first** value it obtains for a keyword, so among the drop-ins in
+`/etc/ssh/sshd_config.d/` the lowest-numbered file wins — and cloud-init writes
+`50-cloud-init.conf` on its own schedule. The global `PasswordAuthentication no`
+therefore sits in `10-kolonie-auth.conf`, ahead of anything cloud-init has to
+say.
 
-**How it was on by accident is worth knowing, because the shape recurs.** sshd
-takes the **first** value it obtains for a keyword. The image shipped
-`60-cloudimg-settings.conf` with `PasswordAuthentication no`; cloud-init then
-wrote `50-cloud-init.conf` with `yes`. `50` sorts first, so `yes` won — and no
-one chose that. Two files disagreed and the filename decided.
-
-So the policy now lives in drop-ins that sort at both ends of that range: the
-global `no` in `10-kolonie-auth.conf`, ahead of anything cloud-init writes, and
-the `Match` block in `99-kolonie-breakglass.conf`, at the true end of the parse
-where it cannot swallow a later `Include` into a conditional.
+The `Match` block sits at the other end, in `99-kolonie-breakglass.conf`. A
+`Match` runs until the next `Match` or the end of the file, and `Include` splices
+files inline, so a `Match` left open at the end of a low-numbered file would
+swallow whatever is included after it into a conditional block. At the true end
+of the parse there is nothing left to capture.
 
 **One account keeps password login on purpose.** It holds nothing, has no keys,
 and exists so that a lost or corrupted deploy key does not leave the provider's
 console as the only way back in. What makes that safe is the fail2ban policy
-rather than the account: five attempts per ten minutes per source is about 720 a
-day, which puts guessing a long passphrase out of reach by many orders of
-magnitude. That is also why the jail's numbers are now pinned in
-`/etc/fail2ban/jail.d/kolonie.conf` instead of inherited — they are load-bearing
-for a documented decision, and a package default that changes in an upgrade
-should not be able to move them quietly.
+rather than the account, which is why the jail's numbers are pinned in
+`/etc/fail2ban/jail.d/kolonie.conf` rather than inherited from the package. The
+deploy account is `L` in `/etc/shadow` and has no password to offer; `verify`
+fails if it ever acquires one.
 
-The deploy account is `L` in `/etc/shadow` and has no password to offer;
-`verify` fails if it ever acquires one.
+The argument for both — why a claim here has to be executable, and what the
+break-glass account does and does not defend against — is in `state/decisions.md`
+in kolonie-docs, under *"Why a security claim has to be executable"* and *"Why
+one account still has a password"*.
 
 ## Services
 
