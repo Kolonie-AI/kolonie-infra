@@ -1,24 +1,24 @@
 # Kolonie AI — Infrastructure as Code
 
-**Status: [STATUS.md](STATUS.md)** | **Last verified: 26.07.2026**
-
 Infrastructure as Code for Kolonie AI. This repository contains everything needed to run, deploy, and scale the Kolonie AI platform.
+
+Cross-project status is in [`kolonie-docs/state/STATUS.md`](https://github.com/Kolonie-AI/kolonie-docs/blob/main/state/STATUS.md).
 
 ## Current State
 
-**Traefik + PostgreSQL are running on the VPS.** The deploy workflow reaches the
-host and runs, but no deploy had ever completed until #7 — see STATUS.md and the
-open issues before trusting a green badge.
+**All five services are running and healthy on the VPS.** The deploy chain is
+connected end to end: a merge in `kolonie-platform` or `kolonie-website` builds
+the image and calls the reusable deploy workflow in this repository.
 
 ```
-kolonie-traefik    healthy   (v3.7, Reverse Proxy, Let's Encrypt via Cloudflare DNS Challenge)
-kolonie-postgres   healthy   (PostgreSQL 16-alpine)
-api                pending   (image not built yet)
-verifier-runner    pending   (image not built yet)
-website            pending   (image not built yet)
+kolonie-traefik              healthy   (v3.7, Reverse Proxy, Let's Encrypt via Cloudflare DNS Challenge)
+kolonie-postgres             healthy   (PostgreSQL 16-alpine)
+kolonie-api                  healthy   (api + academy + mcp + challenge)
+kolonie-verifier-runner      healthy   (no ingress — outbound only)
+kolonie-website              healthy   (Astro + Starlight)
 ```
 
-See [STATUS.md](STATUS.md) for detailed status, known issues, and what's still missing.
+Traefik Dashboard is disabled (`api.dashboard: false`).
 
 ## Why This Repo Exists
 
@@ -282,8 +282,8 @@ origin pull, which needs a zone setting — see #21.
 | Traefik | traefik:v3.7 | - | Running |
 | PostgreSQL | postgres:16 | internal | Running |
 | api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai, challenge.kolonie.ai | Running |
-| verifier-runner | kolonie-verifier-runner | none (outbound only) | Pending |
-| website | kolonie-website | kolonie.ai | Pending |
+| verifier-runner | kolonie-verifier-runner | none (outbound only) | Running |
+| website | kolonie-website | kolonie.ai | Running |
 
 ## Repository Structure
 
