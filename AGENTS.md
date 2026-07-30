@@ -19,6 +19,8 @@ scripts/deploy.sh           the deploy — pull, pin, migrate, seed, deploy, hea
 scripts/rehearse-deploy.sh  exercises deploy.sh against a stub docker
 scripts/healthcheck.sh      post-deploy health assertion
 scripts/rollback.sh         manual rollback to the last known-good build
+scripts/backup.sh           daily pg_dump into an off-host restic repository (#4)
+scripts/rehearse-backup.sh  exercises backup.sh against a stub docker and restic
 scripts/env-drift.sh        detects .env vs docker-compose.yml mismatches
 scripts/health-report.sh    structured health report for the diagnose workflow
 scripts/health-triage.sh    interprets health-report output
@@ -146,6 +148,7 @@ the test is the rehearsal:
 
 ```bash
 bash scripts/rehearse-deploy.sh     # exercises deploy.sh logic
+bash scripts/rehearse-backup.sh     # exercises backup.sh logic
 bash scripts/env-drift.sh           # detects .env mismatches (on the host)
 ```
 
@@ -158,6 +161,8 @@ locally it proves the logic; it does not prove the environment, and
 A change is done when all of these are true:
 
 - [ ] `bash scripts/rehearse-deploy.sh` passes with no failures
+- [ ] `bash scripts/rehearse-backup.sh` passes with no failures, if `backup.sh`
+      changed — and a new case for whatever branch changed
 - [ ] New `deploy.sh` behaviour has a rehearsal test, including the failure case
 - [ ] The test fails on `main` before the fix (assert the bug exists) and passes
       after (assert it is fixed)

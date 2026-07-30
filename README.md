@@ -305,7 +305,9 @@ kolonie-infra/
 │   ├── deploy.sh                   ← Deployment script
 │   ├── healthcheck.sh              ← Post-deploy health check
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
-│   └── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
+│   ├── backup.sh                   ← Daily pg_dump into an off-host restic repository
+│   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
+│   └── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
 │
 ├── docs/
 │   ├── scaling-strategy.md         ← How we scale from VPS to global
@@ -314,6 +316,8 @@ kolonie-infra/
 │   ├── cost-projections.md         ← Infrastructure cost planning
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
+│
+├── systemd/                        ← Host units: origin firewall, backup timer
 │
 └── .github/
     └── workflows/

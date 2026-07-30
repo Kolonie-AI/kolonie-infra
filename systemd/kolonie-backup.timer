@@ -1,0 +1,21 @@
+[Unit]
+Description=Daily database backup (kolonie-infra#4)
+# 03:00 for the reason every backup runs at night: the dump holds a consistent
+# view of the database from the moment it starts, and the less that changes
+# underneath it, the smaller the window between what is on the snapshot and what
+# is in production when the snapshot is needed.
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# A backup skipped because the host was down is the one most likely to be the
+# backup you wanted — an outage is exactly when the database was last touched by
+# something unusual. Persistent runs it on the next boot instead of waiting for
+# tomorrow.
+Persistent=true
+# Nothing else contends for this window and there is one host, so the jitter is
+# small. It exists only so the run is not pinned to the same second as every
+# other daily timer on the box.
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

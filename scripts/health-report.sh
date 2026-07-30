@@ -26,6 +26,17 @@
 #
 #   NAME  STATE  HEALTH  FAILING_STREAK  APPROX_SECONDS  IMAGE
 #
+# Plus one row that is not a container, on a host that has a deploy directory:
+#
+#   backup  ok|never  -  0  <seconds since the last successful backup>  -
+#
+# A backup that quietly stops is the failure this catches, and it is the one
+# failure mode a backup system reliably has. Nothing else on the host notices:
+# the timer keeps firing, the unit keeps failing into the journal, every
+# container stays green, and the gap is discovered by the person restoring. The
+# report states the age; health-triage.sh decides when that age is a problem
+# (#4).
+#
 # HEALTH is one of healthy / unhealthy / starting / none. APPROX_SECONDS is how
 # long it has been failing, and it is approximate on purpose: Docker records no
 # "unhealthy since" timestamp, so this is the failing streak multiplied by the
@@ -129,6 +140,37 @@ if [ "$emitted" -eq 0 ]; then
     # containers fine" are opposite situations that a row count alone confuses,
     # and the watcher has to be able to tell an empty host from a quiet one.
     echo "NO_CONTAINERS	-	-	0	0	-"
+fi
+
+# Emitted after the container rows and deliberately outside the `emitted`
+# accounting above: a host with no containers must still report NO_CONTAINERS,
+# and counting this row would have suppressed that. "No containers" and "the
+# backup is late" are independent facts and both have to survive to the triage.
+#
+# Only where a deploy directory exists. On a workstation checkout there is no
+# backup to be late, and a row claiming one would make every local run of this
+# report look degraded — which is how a watcher gets ignored. Skipped when
+# specific containers were named, because then the caller asked a narrower
+# question than "how is this host".
+if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
+    # Same default as backup.sh, and deliberately not $DEPLOY_DIR/backups —
+    # that one holds deploy.sh's container-state snapshots. See the comment on
+    # WORK_DIR in backup.sh.
+    marker="${KOLONIE_BACKUP_DIR:-/var/backups/kolonie}/.last-success"
+    last_epoch=""
+    if [ -r "$marker" ]; then
+        # `date -d` parses the ISO-8601 that backup.sh writes. If it ever cannot,
+        # the row says `never` rather than reporting an age of zero — a
+        # malformed timestamp must not read as "backed up just now", which is
+        # the direction that hides the problem.
+        last_epoch=$(date -d "$(cat "$marker" 2>/dev/null)" +%s 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$last_epoch" ]; then
+        printf 'backup\tok\t-\t0\t%s\t-\n' "$(( $(date +%s) - last_epoch ))"
+    else
+        printf 'backup\tnever\t-\t0\t0\t-\n'
+    fi
 fi
 
 exit 0
