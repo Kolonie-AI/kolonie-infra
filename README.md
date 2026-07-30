@@ -261,11 +261,18 @@ sudo /opt/kolonie/scripts/origin-firewall.sh status
 ```
 
 **The rules live in `DOCKER-USER`, and that is the whole trick.** ufw was already
-active on this host with `deny (incoming)` and only 22 open — and 80/443 answered
-the entire internet regardless, because Docker publishes a port with its own DNAT
-rule and the packet never traverses ufw's INPUT chain. `ufw deny 80` would have
-looked like a fix and changed nothing. `DOCKER-USER` is the chain Docker
-guarantees it will not overwrite, consulted before its own forwarding rules.
+active on this host with `deny (incoming)` — and 80/443 answered the entire
+internet regardless, because Docker publishes a port with its own DNAT rule and
+the packet never traverses ufw's INPUT chain. `ufw deny 80` would have looked
+like a fix and changed nothing. `DOCKER-USER` is the chain Docker guarantees it
+will not overwrite, consulted before its own forwarding rules.
+
+> Earlier revisions of this paragraph said ufw had *"only 22 open"*. It did not
+> — `22`, `80` and `443` have all been ALLOW rules since the host was built, and
+> `/etc/ufw/user.rules` has not been touched since. The claim was wrong and the
+> conclusion was right anyway, which is the uncomfortable part: the ufw rules for
+> 80 and 443 are inert either way, so nothing about this firewall depended on
+> getting that detail right and nothing caught it for two days. Corrected in #3.
 
 The match is confined to the WAN interface. `DOCKER-USER` also carries
 container-to-container traffic and Traefik reaches the website container on port
@@ -274,6 +281,51 @@ container-to-container traffic and Traefik reaches the website container on port
 What this proves is *a* Cloudflare edge, not *this zone's* edge: any Cloudflare
 customer can point a hostname at this address. Closing that needs authenticated
 origin pull, which needs a zone setting — see #21.
+
+### What the operating system enforces
+
+`scripts/host-hardening.sh` owns the SSH authentication policy and the fail2ban
+jail, and it checks ufw and `unattended-upgrades` without owning them.
+
+```bash
+sudo /opt/kolonie/scripts/host-hardening.sh verify   # non-zero on drift
+sudo /opt/kolonie/scripts/host-hardening.sh apply
+```
+
+`verify` runs on every deploy as a `continue-on-error` step — drift is worth
+seeing every time and never worth blocking a deploy for, not least because a
+deploy is how a drifted host gets repaired.
+
+**The reason this script exists is not the hardening.** ufw, fail2ban and
+unattended-upgrades were all already configured when #3 was opened — installed
+when the host was built, recorded nowhere, and listed in `ARCHITECTURE.md` as
+work still to do. The one claim in that list which was *false* was the one it
+presented as already true: **`SSH key auth only, no password login`**. Password
+authentication was on, and it was on by accident.
+
+**How it was on by accident is worth knowing, because the shape recurs.** sshd
+takes the **first** value it obtains for a keyword. The image shipped
+`60-cloudimg-settings.conf` with `PasswordAuthentication no`; cloud-init then
+wrote `50-cloud-init.conf` with `yes`. `50` sorts first, so `yes` won — and no
+one chose that. Two files disagreed and the filename decided.
+
+So the policy now lives in drop-ins that sort at both ends of that range: the
+global `no` in `10-kolonie-auth.conf`, ahead of anything cloud-init writes, and
+the `Match` block in `99-kolonie-breakglass.conf`, at the true end of the parse
+where it cannot swallow a later `Include` into a conditional.
+
+**One account keeps password login on purpose.** It holds nothing, has no keys,
+and exists so that a lost or corrupted deploy key does not leave the provider's
+console as the only way back in. What makes that safe is the fail2ban policy
+rather than the account: five attempts per ten minutes per source is about 720 a
+day, which puts guessing a long passphrase out of reach by many orders of
+magnitude. That is also why the jail's numbers are now pinned in
+`/etc/fail2ban/jail.d/kolonie.conf` instead of inherited — they are load-bearing
+for a documented decision, and a package default that changes in an upgrade
+should not be able to move them quietly.
+
+The deploy account is `L` in `/etc/shadow` and has no password to offer;
+`verify` fails if it ever acquires one.
 
 ## Services
 

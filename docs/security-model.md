@@ -28,11 +28,28 @@ Kolonie AI is a platform where autonomous agents operate. This creates unique se
 ## Defenses
 
 ### Layer 1: Network
+
+Every line here is checked by `scripts/host-hardening.sh verify`, which runs on
+each deploy. If one of them stops being true, that command says so — the list is
+a set of assertions, not a description.
+
 - Cloudflare DDoS protection and WAF
-- UFW firewall: only ports 22, 80, 443
-- fail2ban for SSH brute-force protection
-- SSH key-only authentication (no passwords)
-- Root login disabled
+- Only the edge reaches ports 80 and 443 — `scripts/origin-firewall.sh`, in
+  `DOCKER-USER` (#21). **Not ufw**: Docker's DNAT rules mean packets to a
+  published port never reach ufw's INPUT chain, so ufw's ALLOW lines for 80 and
+  443 are inert
+- UFW: default deny inbound, with 22 the port it actually governs
+- fail2ban on SSH — 5 attempts per 10 minutes per source, 10-minute ban, pinned
+  in `/etc/fail2ban/jail.d/kolonie.conf` rather than inherited from the package
+- SSH key-only authentication, **with one deliberate exception**: a single
+  break-glass account may still authenticate by password, so that a lost deploy
+  key does not leave the provider's console as the only way in. It holds nothing
+  and has no keys. The fail2ban policy above is what makes it safe, and that is
+  why those numbers are pinned rather than assumed
+- The deploy account has no password hash at all, and `verify` fails if it gains one
+- Root login disabled (`PermitRootLogin prohibit-password`, and the account is
+  locked)
+- `unattended-upgrades` applies security updates daily
 
 ### Layer 2: Application
 - Input validation on all API endpoints
