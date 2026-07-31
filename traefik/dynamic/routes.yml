@@ -59,6 +59,23 @@ http:
       tls:
         certResolver: cloudflare
 
+    # pgAdmin — the maintainer's database client, not a citizen-facing surface
+    # (#30). The one router here fronting a container that can read and write
+    # every table, so it is also the only one carrying an auth middleware.
+    #
+    # Cloudflare-proxied like the rest, so the origin address stays hidden and
+    # scripts/origin-firewall.sh's rule set still applies. Zero Trust is
+    # deliberately not in scope — see #30's "What is NOT in scope".
+    pgadmin:
+      rule: "Host(`db.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - pgadmin-auth
+      service: pgadmin
+      tls:
+        certResolver: cloudflare
+
     # www → apex, so the canonical URL is unambiguous
     website-www:
       rule: "Host(`www.kolonie.ai`)"
@@ -71,6 +88,30 @@ http:
         certResolver: cloudflare
 
   middlewares:
+    # The first of pgAdmin's two locks (#30).
+    #
+    # **`usersFile`, never `users`.** Traefik performs no environment
+    # interpolation in the files under /dynamic — a `users:` list here would mean
+    # an htpasswd hash committed to a public repository, and `${VAR}` would be
+    # matched against literally. The file is written by hand on the host into
+    # /opt/kolonie/secrets/, which is .gitignore'd and mounted read-only into the
+    # Traefik container by docker-compose.yml:
+    #
+    #   htpasswd -nbB <user> <password> >> /opt/kolonie/secrets/pgadmin.htpasswd
+    #   chmod 600 /opt/kolonie/secrets/pgadmin.htpasswd
+    #
+    # Missing, this middleware is invalid and Traefik drops the pgadmin router
+    # alone — db.kolonie.ai stops answering and nothing else changes. That is the
+    # right failure for a lock: absent means shut, not open.
+    pgadmin-auth:
+      basicAuth:
+        usersFile: "/secrets/pgadmin.htpasswd"
+        realm: "Kolonie"
+        # The header is consumed here and not passed to pgAdmin, which runs its
+        # own login and would otherwise see an Authorization header it cannot
+        # interpret.
+        removeHeader: true
+
     redirect-to-apex:
       redirectRegex:
         regex: "^https://www\\.kolonie\\.ai/(.*)"
@@ -87,3 +128,8 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-website:80"
+
+    pgadmin:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-pgadmin:80"

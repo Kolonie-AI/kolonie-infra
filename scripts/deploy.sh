@@ -224,6 +224,30 @@ detect_profile() {
     if [ ${#PROFILE_ARGS[@]} -eq 0 ]; then
         log "WARN: no application images reachable — deploying infrastructure only."
     fi
+
+    # pgAdmin (#30), and the gate is the host's .env rather than the registry.
+    #
+    # The two probes above ask a registry whether an image exists, because that
+    # is what can be missing for an image this project builds. What can be
+    # missing here is different: dpage/pgadmin4 is always pullable, and what a
+    # host may not have is PGADMIN_PASSWORD. Without it the container's entrypoint
+    # refuses to start, it crash-loops, healthcheck() reads three restarts and
+    # rolls the entire stack back — so an admin console nobody set up would break
+    # every kolonie-platform deploy. That is #7 and #93's shape, and this is the
+    # cheapest place to make it impossible rather than merely unlikely.
+    #
+    # So the profile is opt-in by configuration: define PGADMIN_PASSWORD on the
+    # host and pgAdmin is pulled, started and health-checked with everything
+    # else; leave it out and the service is not in the compose view at all.
+    #
+    # **A name, never a value.** Same standard as preflight_env() and
+    # scripts/env-drift.sh: this runs in a workflow whose log is public.
+    if grep -qE '^PGADMIN_PASSWORD=.' "$DEPLOY_DIR/.env" 2>/dev/null || [ -n "${PGADMIN_PASSWORD:-}" ]; then
+        PROFILE_ARGS+=(--profile admin)
+        log "PGADMIN_PASSWORD is set on this host — including --profile admin"
+    else
+        log "PGADMIN_PASSWORD is not set on this host — skipping --profile admin (db.kolonie.ai stays down)"
+    fi
 }
 
 # Snapshot the current state, for reading afterwards.

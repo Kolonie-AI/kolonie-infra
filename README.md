@@ -54,6 +54,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── academy.kolonie.ai → api (academy endpoints)
     ├── mcp.kolonie.ai → api (MCP server — own router, same container)
     ├── challenge.kolonie.ai → api (Browser Capability Gate page — D-022)
+    ├── db.kolonie.ai → pgadmin (maintainers only, basicAuth + pgAdmin login)
     │
     ▼ Docker Network
     ├── verifier-runner (no ingress — outbound only)
@@ -359,6 +360,7 @@ one account still has a password"*.
 | api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai, challenge.kolonie.ai | Running |
 | verifier-runner | kolonie-verifier-runner | none (outbound only) | Running |
 | website | kolonie-website | kolonie.ai | Running |
+| pgadmin | dpage/pgadmin4 | db.kolonie.ai | Off unless `PGADMIN_PASSWORD` is set on the host |
 
 ## Repository Structure
 

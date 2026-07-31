@@ -32,6 +32,7 @@ networks:
 volumes:
   postgres_data:
   traefik_certs:
+  pgadmin_data:
 
 services:
   # === Traefik Reverse Proxy ===
@@ -52,6 +53,21 @@ services:
       - ./traefik/traefik.yml:/traefik.yml:ro
       - ./traefik/dynamic:/dynamic:ro
       - traefik_certs:/certs
+      # Credentials the *dynamic configuration* needs, which is a different
+      # problem from the ones .env solves (#30).
+      #
+      # Traefik does not interpolate environment variables in the files under
+      # /dynamic. A basicAuth middleware therefore has exactly two ways to learn
+      # its htpasswd line: written literally into traefik/dynamic/routes.yml,
+      # which puts a password hash into a public repository, or read from a file
+      # through `usersFile`. This mount is the second.
+      #
+      # The directory is untracked and .gitignore'd; deploy.sh's `git reset
+      # --hard` does not touch untracked paths, so what an operator writes here
+      # survives every deploy. A missing file is not an outage: Traefik logs the
+      # middleware as invalid and drops the one router that references it, and
+      # every other router keeps serving.
+      - ./secrets:/secrets:ro
     # The two sides are different names on purpose, and neither is a typo.
     #
     # Left: what lego expects inside the Traefik container for the Cloudflare DNS
@@ -365,3 +381,96 @@ services:
       start_period: 20s
     profiles:
       - website
+
+  # === pgAdmin 4 — the maintainer's browser client for the database (#30) ===
+  #
+  # Reachable at db.kolonie.ai behind two locks: Traefik basicAuth in front, and
+  # pgAdmin's own login behind it. Postgres itself gains no `ports:` mapping and
+  # keeps none — pgAdmin reaches it as `postgres:5432` on the internal network,
+  # which is the whole reason this is worth running instead of opening 5432.
+  #
+  # **Its own profile, not `full`, and that is the one place this deviates from
+  # what #30 proposed.** `full` is what every kolonie-platform merge deploys, and
+  # healthcheck() in scripts/deploy.sh rolls the whole stack back when any
+  # service in the active profiles is unhealthy. So in `full`, an admin console
+  # that failed to start would take the API down with it — for a container whose
+  # failure costs nothing operational. That is the website's argument (see its
+  # comment above) and it applies here with more force, because this service also
+  # depends on two variables a human has to add to the host's .env out of band.
+  # Between merging this file and that edit there is a window, and in `full` that
+  # window is one where every deploy fails. #7 and #93 are both exactly that
+  # shape, and both cost days.
+  #
+  # detect_profile() therefore adds `--profile admin` only once the host defines
+  # PGADMIN_PASSWORD, so a host that has not been set up simply never sees this
+  # service, and one that has gets it pulled, started and health-checked with
+  # everything else.
+  #
+  # Pinned to a version, not `:latest`. Everything else here is pinned to a
+  # digest by deploy.sh after the pull; this image is not one deploy.sh knows
+  # about, so the pin has to be in the tag. `:latest` on a third party's image
+  # means an upstream release can change what this host runs without any commit
+  # here — which is #12's complaint, arriving from outside instead of inside.
+  pgadmin:
+    image: ${PGADMIN_IMAGE:-dpage/pgadmin4:9.17}
+    container_name: kolonie-pgadmin
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    environment:
+      # SERVER_MODE stays at the image's default of True, against the `False` in
+      # #30's sketch. False is pgAdmin's desktop mode: it serves every request
+      # without asking who is making it, and the second lock the issue's own
+      # security posture asks for — "pgAdmin login, separate credentials" — would
+      # then be a master-password prompt for stored server passwords rather than
+      # a login. Behind basicAuth either is defensible; a real login is what the
+      # acceptance criteria describe and the safer of the two to expose.
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      # Neither is defaulted and neither is marked `:?`. Empty, the image's own
+      # entrypoint refuses to start and says which variable it wanted, which is
+      # the message worth having; `:?` would instead fail `docker compose` as a
+      # whole, and this file is parsed on every deploy including the ones that
+      # never activate this profile.
+      #
+      # pgAdmin writes its own SQLite config into the volume, so the login above
+      # is read on *first* start only. Changing PGADMIN_PASSWORD later does not
+      # change the account — reset it inside pgAdmin, or remove the volume.
+      #
+      # False follows from server mode. The master password exists to unlock
+      # server passwords pgAdmin has stored; servers.json below stores none, so
+      # requiring one adds a third prompt that guards an empty keyring. Two locks
+      # is what #30 asked for and two is what this is.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # It sits behind Traefik, so the only address it ever sees is the proxy's.
+      # pgAdmin's rate limiter would otherwise count every request in the world
+      # as coming from one client.
+      PGADMIN_CONFIG_PROXY_X_FOR_COUNT: "1"
+      PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: "1"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      # The connection is registered for the operator rather than typed in by
+      # hand, so "it can reach the database" is a property of this file instead
+      # of a step somebody has to remember. Host, port and user only — pgAdmin
+      # asks for the password at connect time, and POSTGRES_PASSWORD does not
+      # belong in a tracked file.
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /misc/ping is pgAdmin's own unauthenticated liveness endpoint, and the
+      # check its container documentation recommends. 127.0.0.1 rather than
+      # localhost, for the reason spelled out on the website service above.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/misc/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Longer than anything else here on purpose: pgAdmin migrates its SQLite
+      # config on first start and takes tens of seconds to answer. Judged too
+      # early it looks like a failing container, and healthcheck() rolls the
+      # stack back over a service that was merely slow.
+      start_period: 60s
+    profiles:
+      - admin

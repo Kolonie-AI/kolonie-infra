@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Kolonie (production)",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "kolonie",
+      "Username": "kolonie",
+      "SSLMode": "prefer",
+      "Comment": "Registered by kolonie-infra/docker-compose.yml. No password here on purpose: pgAdmin asks at connect time and POSTGRES_PASSWORD does not belong in a tracked file. Host is the compose service name, reachable only on the internal kolonie network."
+    }
+  }
+}

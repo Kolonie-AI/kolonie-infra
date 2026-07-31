@@ -24,6 +24,12 @@
 traefik/acme.json
 traefik/acme-staging.json
 
+# htpasswd lines for the basicAuth middlewares in traefik/dynamic/routes.yml,
+# mounted into the Traefik container as /secrets (#30). Traefik cannot read an
+# environment variable from a dynamic config file, so a password hash has to
+# arrive as a file — and this is a checkout of a public repository.
+secrets/
+
 # Docker
 docker-compose.override.yml
 

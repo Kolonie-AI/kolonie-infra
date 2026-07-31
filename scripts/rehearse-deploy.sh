@@ -78,6 +78,10 @@ case "$1 ${2:-}" in
       echo "${repo}@sha256:$(echo -n "$repo" | sha256sum | cut -c1-64)"
       exit 0 ;;
   "compose"*)
+      # Kept before the flags are shifted away: the `config --services` handler
+      # below has to know which profiles were asked for, and by then they are
+      # gone.
+      RAW_ARGS="$*"
       # find the compose subcommand after the flags
       shift
       sub=""
@@ -97,6 +101,10 @@ case "$1 ${2:-}" in
         config)
           if echo "$*" | grep -q -- "--services"; then
             echo -e "api\nverifier-runner\nwebsite"
+            # pgadmin only when its profile is on, because that is the whole
+            # property #30's placement turns on: a service inside the active
+            # profiles is one healthcheck() will roll the stack back for.
+            case "$RAW_ARGS" in *"--profile admin"*) echo "pgadmin" ;; esac
           else
             echo "services: {}"
           fi
@@ -638,6 +646,55 @@ out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=BAN_MARK_SALT \
                     BAN_MARK_SALT=rehearsal-fixture-not-a-secret)
 contains "$out" "OK: every variable the images declare is provided" "the variable was seen as provided"
 absent "$out" "rehearsal-fixture-not-a-secret" "and its value reached no output"
+
+echo "== 22. pgAdmin's profile is off unless the host is configured for it"
+# #30. The `admin` profile is gated on the host's .env rather than on a
+# registry probe, and this is the case that has to keep working: a host that
+# never set pgAdmin up must deploy exactly as it did before this existed.
+#
+# The alternative — pgAdmin in `full`, as #30 proposed — puts a container that
+# cannot start without PGADMIN_PASSWORD into the profile every kolonie-platform
+# merge deploys, and healthcheck() below rolls the whole stack back for any
+# unhealthy service in it. That is #7 and #93's shape: an application the
+# Colony depends on, taken down by a variable belonging to one that it does not.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"; rm -f "$WORK/.env"
+out=$(run_deploy env)
+contains "$out" "PGADMIN_PASSWORD is not set on this host — skipping --profile admin" "said why it skipped it"
+absent "$(cat "$WORK/docker.log")" "--profile admin" "no admin profile in any compose call"
+contains "$(grep 'up -d' "$WORK/docker.log")" "compose --profile full --profile website up -d" "the other profiles are untouched"
+contains "$out" "=== Deployment completed ===" "and the deploy ran as before"
+
+echo "== 22b. a host that defines it gets pgAdmin pulled, started and health-checked"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+printf 'POSTGRES_PASSWORD=x\nPGADMIN_EMAIL=a@b.example\nPGADMIN_PASSWORD=rehearsal-fixture-not-a-secret\n' > "$WORK/.env"
+out=$(run_deploy env)
+contains "$out" "PGADMIN_PASSWORD is set on this host — including --profile admin" "activated the profile"
+contains "$(grep 'up -d' "$WORK/docker.log")" "--profile admin" "started it with everything else"
+contains "$(cat "$WORK/docker.log")" "pull pgadmin" "and pulled it"
+contains "$out" "OK: pgadmin (healthy)" "and asserted its health like any other service"
+absent "$out" "rehearsal-fixture-not-a-secret" "the value reached no output"
+
+echo "== 22c. an empty PGADMIN_PASSWORD= line does not count as configured"
+# A key with no value is how a half-finished .env edit looks, and it is the
+# state that would crash-loop the container. `grep -qE '=.'` requires a
+# character after the `=` for exactly this reason.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+printf 'POSTGRES_PASSWORD=x\nPGADMIN_PASSWORD=\n' > "$WORK/.env"
+out=$(run_deploy env)
+contains "$out" "PGADMIN_PASSWORD is not set on this host" "treated an empty value as unset"
+absent "$(cat "$WORK/docker.log")" "--profile admin" "and left the profile off"
+
+echo "== 22d. an unhealthy pgAdmin still rolls back — it is not exempt once it is in"
+# The trade the gate buys is narrow and worth stating: once an operator has
+# configured pgAdmin, it is a service in the active profiles like any other, and
+# healthcheck() makes no exceptions. The gate stops an *unconfigured* host from
+# being broken by it; it does not make a configured one immune.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+printf 'POSTGRES_PASSWORD=x\nPGADMIN_PASSWORD=rehearsal-fixture-not-a-secret\n' > "$WORK/.env"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-pgadmin || true)
+contains "$out" "pgadmin(unhealthy)" "named pgadmin as the failing service"
+contains "$out" "Rollback completed" "and rolled back"
+rm -f "$WORK/.env"
 
 echo
 echo "passed $pass, failed $fail"
