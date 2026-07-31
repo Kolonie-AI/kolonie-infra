@@ -180,6 +180,13 @@ by that.
 | Date | Snapshot | Result |
 |---|---|---|
 | 2026-07-30 | `78befaa7` | **Pass.** 20 tables, 338 rows, identical to live. |
+| 2026-07-31 | `cfe7f892` | **Pass.** 31 tables, 452 rows, identical to live — the first snapshot carrying `.env` as well, re-run because #45 changed the shape of a snapshot. `restic dump latest <path>` still resolves the dump with two paths in it. |
+
+The `.env` in that snapshot was checked separately, and not by restoring it over
+a working host: dumped out of the repository and compared by SHA-256 against the
+live file. Identical, 19 assignments, mode `0600` and ownership preserved by
+restic. Comparing hashes rather than printing either copy is the form that check
+has to take (AGENTS.md §11).
 
 An earlier run the same day differed by one row in four tables
 (`email_challenges`, `pow_challenges`, `submissions`, `verifications`) — one
