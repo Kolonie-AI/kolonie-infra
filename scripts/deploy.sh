@@ -60,22 +60,55 @@ if [ -f "${STATE_DIR}/deployed.env" ]; then
     CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
     CUR_WEB="${PREV_STATE##*|}"
 fi
-API_VERSION="${API_VERSION:-${CUR_API#*:}}"
-RUNNER_VERSION="${RUNNER_VERSION:-${CUR_RUNNER#*:}}"
-MODERATION_VERSION="${MODERATION_VERSION:-${CUR_MOD#*:}}"
-WEBSITE_VERSION="${WEBSITE_VERSION:-${CUR_WEB#*:}}"
 
-for ver in "$API_VERSION" "$RUNNER_VERSION" "$MODERATION_VERSION" "$WEBSITE_VERSION"; do
-    if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: The deploy names the image it intends, not :latest." >&2
-        exit 1
+# Resolve one image to the reference this deploy will fetch.
+#
+# Three inputs, in order of authority: the version the caller named, then what
+# the last successful deploy recorded, then nothing — and nothing is a failure.
+#
+# **The recorded value is carried whole, not taken apart.** `deployed.env` holds
+# digest references (`repo@sha256:…`), and the obvious-looking
+# `${recorded#*:}` strips everything up to the first colon — which in a digest
+# reference is the one inside `sha256:`. That yields the digest's hex as if it
+# were a tag, and `repo:<hex>` is a tag that has never existed. It was live for
+# one day: on 2026-07-31 a deploy probed
+# `kolonie-verifier-runner:a1e04d9b…` and reported the image unreachable, so
+# migrations were skipped as "the api is not reachable" while the api was in fact
+# serving. Nothing broke, because each service's *own* pass named a real commit
+# and only the other three were nonsense — but every one of those three was then
+# recorded as a mutable tag, and a rollback to a tag that does not resolve is not
+# a rollback.
+#
+# So: a digest reference is already the answer to "which build", and turning it
+# back into a version discards the only part that is unambiguous.
+resolve_image() {
+    local named="$1" recorded="$2" repo="$3" label="$4"
+
+    if [ -n "$named" ]; then
+        if [ "$named" = latest ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${label}: the deploy names the image it intends, not :latest." >&2
+            return 1
+        fi
+        echo "${repo}:${named}"
+        return 0
     fi
-done
 
-API_IMAGE_TAG="${API_REPO}:${API_VERSION}"
-RUNNER_IMAGE_TAG="${RUNNER_REPO}:${RUNNER_VERSION}"
-MODERATION_IMAGE_TAG="${MODERATION_REPO}:${MODERATION_VERSION}"
-WEBSITE_IMAGE_TAG="${WEBSITE_REPO}:${WEBSITE_VERSION}"
+    case "$recorded" in
+        "${repo}@sha256:"*|"${repo}:"*)
+            # Already a complete reference to this image, digest or tag.
+            echo "$recorded"
+            return 0 ;;
+    esac
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${label}: no version given and none recorded in ${STATE_DIR}/deployed.env." >&2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${label}: pass a version, or deploy this service once so a build is recorded." >&2
+    return 1
+}
+
+API_IMAGE_TAG=$(resolve_image "$API_VERSION" "$CUR_API" "$API_REPO" api)
+RUNNER_IMAGE_TAG=$(resolve_image "$RUNNER_VERSION" "$CUR_RUNNER" "$RUNNER_REPO" verifier-runner)
+MODERATION_IMAGE_TAG=$(resolve_image "$MODERATION_VERSION" "$CUR_MOD" "$MODERATION_REPO" moderation-runner)
+WEBSITE_IMAGE_TAG=$(resolve_image "$WEBSITE_VERSION" "$CUR_WEB" "$WEBSITE_REPO" website)
 
 # Exported *now*, before anything runs `docker compose`, because compose reads
 # `${API_IMAGE:-…:latest}` and would otherwise pull `latest` no matter what was

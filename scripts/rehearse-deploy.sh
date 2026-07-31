@@ -195,10 +195,46 @@ contains "$out" "Deployment completed" "deploy finished"
 # And the other two images are untouched by an api-only version.
 contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-website:some-sha" "website stayed on latest"
 
-echo "== 7. no version named is rejected, preventing :latest"
+echo "== 7. a deploy that can name no build at all is refused"
+# Nothing passed and nothing recorded. The old message said the deploy had
+# "defaulted to latest", which was the reason this guard was written but not what
+# had happened: nothing defaulted to anything, there was simply no build to name.
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(NO_VERSIONS=1 run_deploy env || true)
-contains "$out" "The deploy names the image it intends, not :latest." "defaulted to latest"
+contains "$out" "no version given and none recorded" "said what was actually missing"
+contains "$out" "api:" "and which image it was missing for"
+
+echo "== 7b. an explicit `latest` is still refused"
+# The guard PR #41 was written for. A caller may not ask for the mutable tag:
+# it ships whatever finished building most recently, which need not be the commit
+# that asked for the deploy.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env API_VERSION=latest || true)
+contains "$out" "the deploy names the image it intends, not :latest." "refused an explicit latest"
+
+echo "== 7c. an absent version falls back to the recorded digest, whole"
+# The regression this replaces: `${recorded#*:}` strips up to the first colon,
+# which in `repo@sha256:<hex>` is the one inside `sha256:` — so the fallback
+# produced `repo:<hex>`, a tag that has never existed. Every image the deploy was
+# not explicitly given then probed as unreachable.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+DIGEST="ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 9)"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=$DIGEST
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 2)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+: > "$WORK/docker.log"
+out=$(NO_VERSIONS=1 run_deploy env)
+# detect_profile probes the api and the website — the two that decide which
+# compose profiles come up — so the api digest is where the reference is
+# observable before pin() replaces everything with digests anyway.
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)" "probed the recorded digest itself"
+absent "$(cat "$WORK/docker.log")" "kolonie-api:0000" "and never rebuilt it into a tag"
+absent "$(cat "$WORK/docker.log")" "kolonie-verifier-runner:0000" "same for an image it does not probe"
+contains "$out" "Deployment completed" "the deploy ran on recorded digests alone"
 
 echo "== 8. a single-service deploy never passes --remove-orphans"
 # A deploy of one service has no business asserting what the whole host should
