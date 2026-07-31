@@ -71,6 +71,13 @@ echo "== 3. two builds back counts two, not one"
 out=$(printf 'api\t%s\timg\n' "$OLDER" | triage 2>/dev/null)
 contains "$out" "behind by 2" "counted correctly"
 
+echo "== 3b. a package GHCR answers for but has never tagged is a different unknown"
+# Distinct from a refusal: nothing to fix at the token, nothing has been built.
+out=$(printf 'api\t%s\timg\n' "$NEW" | PATH="$BIN:$PATH" HISTORY="" bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v")
+contains "$(cat "$WORK/v")" "VERDICT=unknown" "verdict unknown"
+contains "$out" "GHCR lists no tagged build" "said the package is empty"
+absent "$out" "refused the request" "and did not blame the token"
+
 echo "== 4. an image with no revision label is unknown, not current"
 # Every image built before kolonie-platform#75 is this case. Reporting it as
 # current would be a check that passes because it cannot see.
@@ -90,7 +97,10 @@ echo "== 6. GHCR being unreachable is never reported as no drift"
 # this whole workflow exists to end.
 out=$(printf 'api\t%s\timg\n' "$NEW" | PATH="$BIN:$PATH" GH_FAILS=1 bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v")
 contains "$(cat "$WORK/v")" "VERDICT=unknown" "verdict unknown, not ok"
-contains "$out" "GHCR listed no tagged build" "said it could not ask"
+contains "$out" "GHCR refused the request" "said GHCR refused, not that there was no build"
+contains "$out" "the token cannot read this package" "and named the fixable cause"
+absent "$out" "The host is not serving" "did not claim drift it cannot see"
+contains "$out" "could not be placed" "used the heading that matches the verdict"
 
 echo "== 7. one behind service among current ones still drifts the verdict"
 out=$(printf 'api\t%s\timg\nwebsite\t%s\timg\n' "$NEW" "$OLD" | triage 2>"$WORK/v"); status=$?

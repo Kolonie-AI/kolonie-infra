@@ -66,19 +66,32 @@ package_for() {
 # pointer and the second is an untagged layer. What is left is the build history
 # in order, which is what turns "not the newest" into "three builds behind".
 #
-# Prints nothing and returns non-zero when GHCR cannot be asked. That is not the
-# same as a package with no builds, and the caller must not read it as one — an
-# outage at GitHub reported as "no drift" is exactly the reassuring silence this
-# whole workflow exists to end.
+# A non-zero return means GHCR could not be asked, which is never the same as a
+# package with no builds and must never be read as "no drift" — an outage at
+# GitHub reported that way is exactly the reassuring silence this workflow exists
+# to end.
+#
+# Returns 1 when GHCR refused the request and 2 when it answered with no
+# tagged build. Both end as `unknown`, but they are different faults and the
+# report has to say which: the first is a token that cannot read that package —
+# fixable, and per-package, so it can be true of one image and false of its two
+# siblings in the same run — and the second is a package nothing has pushed to.
+# Collapsing them sends the reader looking for a build that exists.
 sha_history() {
-    local pkg="$1"
-    gh api --paginate "/orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
-        --jq '.[] | .metadata.container.tags[]?' 2>/dev/null \
-        | grep -E '^[0-9a-f]{40}$' || return 1
+    local pkg="$1" raw
+    # `</dev/null` for the reason health-report.sh documents: this runs inside a
+    # `while read` loop over stdin, and a subprocess that inherits that stdin
+    # eats the remaining rows. The report then covers one service and looks
+    # complete.
+    raw=$(gh api --paginate "/orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
+            --jq '.[] | .metadata.container.tags[]?' 2>/dev/null </dev/null) || return 1
+    printf '%s\n' "$raw" | grep -E '^[0-9a-f]{40}$' || return 2
 }
 
 summary=""
 fingerprint_input=""
+why=""
+ghcr_status=0
 verdict="ok"
 exit_code=0
 rows=0
@@ -95,11 +108,15 @@ while IFS=$'\t' read -r svc revision image; do
         continue
     fi
 
-    if ! history="$(sha_history "$pkg")" || [ -z "$history" ]; then
-        # Could not ask, or the package has no tagged build. Both leave this
-        # script unable to answer, and it says so rather than reporting `ok`.
+    history="$(sha_history "$pkg")"; ghcr_status=$?
+    if [ "$ghcr_status" -ne 0 ] || [ -z "$history" ]; then
+        if [ "$ghcr_status" -eq 1 ]; then
+            why="GHCR refused the request for \`$pkg\` — the token cannot read this package"
+        else
+            why="GHCR lists no tagged build for \`$pkg\`"
+        fi
         summary="$summary
-| \`$svc\` | unknown | GHCR listed no tagged build for \`$pkg\` |"
+| \`$svc\` | unknown | $why |"
         [ "$verdict" = "ok" ] && verdict="unknown"
         continue
     fi
@@ -149,15 +166,18 @@ if [ "$rows" -eq 0 ]; then
     exit 2
 fi
 
-if [ "$verdict" = "ok" ]; then
-    printf 'Every service is running the newest image built for it.\n\n'
-else
-    printf 'The host is not serving what was last built for it.\n\n'
-fi
+# Three verdicts, three headings. `unknown` claiming the host is behind would be
+# the check asserting the one thing it just said it could not determine — and a
+# reader who acts on that finds nothing wrong and stops believing the next one.
+case "$verdict" in
+    ok)      printf 'Every service is running the newest image built for it.\n\n' ;;
+    drifted) printf 'The host is not serving what was last built for it.\n\n' ;;
+    *)       printf 'Some services could not be placed against what was last built.\n\n' ;;
+esac
 
 printf '| Service | State | Detail |\n|---|---|---|%s\n' "$summary"
 
-if [ "$verdict" != "ok" ]; then
+if [ "$verdict" = "drifted" ]; then
     printf '\nThis reports; it does not deploy. Correcting drift is a separate decision\n'
     printf '(`AGENTS.md` §8) — a re-run of the deploy for the affected service is the\n'
     printf 'usual answer, but a service that is behind because its deploy *failed* needs\n'
