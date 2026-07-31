@@ -573,8 +573,8 @@ out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=KOLONIE_FUTURE_SE
 status=$?
 contains "$out" "an image requires a variable this host does not provide" "refused the deploy"
 contains "$out" "KOLONIE_FUTURE_SECRET — required by api" "named the variable and who wants it"
-contains "$out" "not interpolated by docker-compose.yml" "said compose had never heard of it"
-contains "$out" "not defined in .env or the deploy environment" "and that nothing defines it"
+contains "$out" "not set by docker-compose.yml at all" "said compose had never heard of it"
+contains "$out" "the container would never see it" "and what that means for the container"
 check "the run failed" "$status" "1"
 
 echo "== 21b. and it is refused before anything is recreated"
@@ -603,10 +603,41 @@ out=$(run_deploy env)
 contains "$out" "OK: every variable the images declare is provided" "an undeclared image is not a failure"
 contains "$out" "=== Deployment completed ===" "the deploy completed as before"
 
+echo "== 21f. a variable compose builds itself needs no .env entry"
+# DATABASE_URL is `DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@…`
+# for all three services — constructed in the compose file, never present in
+# .env, and correct that way. The first version of this check required every
+# declared name to appear in .env too, which would have refused every deploy
+# from the moment it shipped. A preflight that blocks good deploys is one
+# somebody switches off, and then it is not there for the deploy it was
+# written for.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=DATABASE_URL)
+contains "$out" "OK: every variable the images declare is provided" "a constructed value satisfies the check"
+contains "$out" "=== Deployment completed ===" "and the deploy ran"
+
+echo "== 21g. a pass-through variable still needs something to define it"
+# The trap the two cases create together: `BAN_MARK_SALT: ${BAN_MARK_SALT}` is
+# both assigned and interpolated. A check that asked "is it assigned?" first
+# would call it satisfied and wave through the exact 2026-07-31 failure this
+# was written for. Nothing defines it here, so it must be refused.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=BAN_MARK_SALT)
+status=$?
+contains "$out" "BAN_MARK_SALT — required by api, passed through by docker-compose.yml but not defined" \
+  "a pass-through with nothing behind it is refused"
+check "the run failed" "$status" "1"
+
 echo "== 21e. the check reports names and never a value"
 # env-drift.sh states the standard in its own header, and this runs in the same
-# public log. The fixture value must appear nowhere in the output.
-absent "$out" "rehearsal-fixture-not-a-secret" "no value reached the output"
+# public log. Run the case that actually *has* a value in the environment, and
+# require that the value appears nowhere — asserting this against a run with no
+# value set would prove nothing.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=BAN_MARK_SALT \
+                    BAN_MARK_SALT=rehearsal-fixture-not-a-secret)
+contains "$out" "OK: every variable the images declare is provided" "the variable was seen as provided"
+absent "$out" "rehearsal-fixture-not-a-secret" "and its value reached no output"
 
 echo
 echo "passed $pass, failed $fail"

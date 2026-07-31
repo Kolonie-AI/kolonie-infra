@@ -219,10 +219,21 @@ LABEL ai.kolonie.required-env="BAN_MARK_SALT,JWT_SECRET"
 
 Comma- or whitespace-separated names. `preflight_env()` in `deploy.sh` reads the
 label off each pulled image after `pin()` and before `migrate()` — the first step
-that starts a container — and refuses the deploy if a declared name is either not
-interpolated by `docker-compose.yml` or not defined by `.env` or the deploy
-environment. A deploy refused there has recreated nothing, so the build that was
-serving is still serving.
+that starts a container — and refuses the deploy if the host cannot supply a
+declared name. A deploy refused there has recreated nothing, so the build that
+was serving is still serving.
+
+A variable arrives one of two ways, and only one of them involves `.env`:
+
+| In `docker-compose.yml` | What is owed |
+|---|---|
+| `DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/…` | nothing — compose builds the value |
+| `BAN_MARK_SALT: ${BAN_MARK_SALT}` | `.env` or the deploy environment must define it |
+| absent entirely | the container never sees it; this is the 2026-07-31 case |
+
+The second row is both assigned *and* interpolated, so the check tests
+interpolation first. Asking "is it assigned?" first would call it satisfied and
+wave through the very failure this exists for.
 
 Three things this deliberately does:
 

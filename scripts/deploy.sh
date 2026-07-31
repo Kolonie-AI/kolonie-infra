@@ -612,9 +612,23 @@ declared_env() {
 # 2026-07-31 outage reached production because the failing path was the deployed
 # one.
 #
-# **Two lists, because a variable needs both to arrive.** Compose must interpolate
-# it, or the container never sees it whatever .env holds; and the environment must
-# define it, or it arrives empty. `BAN_MARK_SALT` was missing from both.
+# **A variable can arrive two ways, and only one of them involves .env.**
+#
+#   1. compose *assigns* it a value in an `environment:` block, as
+#      `DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/…`
+#      — the name is built here and never appears in .env at all. Whether the
+#      interpolations *inside* that value resolve is scripts/env-drift.sh's
+#      question, not this one.
+#   2. compose *passes it through*, as `BAN_MARK_SALT: ${BAN_MARK_SALT}`, and
+#      then .env or the deploy environment has to define it or it arrives empty.
+#
+# Requiring both of every variable was the first version of this check and it was
+# wrong: DATABASE_URL is case 1 for all three services, so it would have refused
+# every deploy from the moment it shipped. That is the failure this check has to
+# avoid above all others — a preflight that blocks good deploys is one somebody
+# switches off, and then it is not there for the deploy it was written for.
+# `BAN_MARK_SALT` on 2026-07-31 was neither case: absent from the compose file
+# entirely, which is what "invisible" meant.
 #
 # What this deliberately does not prove: that the variable reaches the *right*
 # service. It checks that compose mentions the name somewhere, not that the
@@ -628,7 +642,7 @@ declared_env() {
 preflight_env() {
     local compose_file="$DEPLOY_DIR/docker-compose.yml"
     local env_file="$DEPLOY_DIR/.env"
-    local pair image svc name compose_vars provided declared missing report
+    local pair image svc name compose_vars compose_assigned provided declared missing report
 
     log "Checking the images' declared environment against this host..."
 
@@ -637,7 +651,13 @@ preflight_env() {
         return 0
     fi
 
+    # Case 2: the names compose interpolates.
     compose_vars=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' "$compose_file" | sed 's/\${//' | sort -u)
+    # Case 1: the names compose assigns, in either `KEY: value` or `- KEY=value`
+    # form. Restricted to SHOUTING_CASE so the structural keys of the document —
+    # `image:`, `ports:`, a service's own name — cannot be read as variables.
+    compose_assigned=$(grep -oE '^[[:space:]]*-?[[:space:]]*[A-Z][A-Z0-9_]*[:=]' "$compose_file" \
+                        | tr -d ' -:=' | sort -u)
 
     # What compose will interpolate from: its .env file, plus the environment
     # this script runs in, which wins over the file. Names only.
@@ -658,9 +678,21 @@ preflight_env() {
         while read -r name; do
             [ -z "$name" ] && continue
             missing=""
-            printf '%s\n' "$compose_vars" | grep -qx "$name" || missing="not interpolated by docker-compose.yml"
-            printf '%s\n' "$provided"     | grep -qx "$name" || \
-                missing="${missing:+$missing, }not defined in .env or the deploy environment"
+            # **Interpolation is tested first, and the order is load-bearing.**
+            # `BAN_MARK_SALT: ${BAN_MARK_SALT}` is both assigned and
+            # interpolated, so a check that asked "is it assigned?" first would
+            # call it satisfied and wave through the exact failure this exists
+            # for. Only a name that compose never interpolates is case 1.
+            if printf '%s\n' "$compose_vars" | grep -qx "$name"; then
+                # Case 2: compose passes it through, so something must define it.
+                printf '%s\n' "$provided" | grep -qx "$name" || \
+                    missing="passed through by docker-compose.yml but not defined in .env or the deploy environment"
+            elif printf '%s\n' "$compose_assigned" | grep -qx "$name"; then
+                # Case 1: compose builds the value itself. Nothing more is owed.
+                :
+            else
+                missing="not set by docker-compose.yml at all — the container would never see it"
+            fi
             [ -n "$missing" ] && report="$report
   $name — required by $svc, $missing"
         done <<<"$declared"
