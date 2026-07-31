@@ -329,6 +329,37 @@ MODERATION_IMAGE=${recorded_moderation}
 WEBSITE_IMAGE=${recorded_website}
 EOF
     log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
+
+    # This file exists so a rollback goes to a build somebody chose. A line
+    # holding a *tag* rather than a digest defeats that entirely: `:latest`
+    # resolves to whatever it points at on the day of the rollback, which is the
+    # failure #12 removed and which came back on 2026-07-29 as
+    # `MODERATION_IMAGE=…:latest` — written because a service deploying for the
+    # first time had no previous record to carry forward and no digest of its
+    # own.
+    #
+    # It is a warning and not a failure, deliberately. The deploy has already
+    # passed its health check by the time this runs, so exiting non-zero here
+    # would paint a working deploy red — and #31 is largely a complaint about
+    # runs whose colour misdescribes what happened. The bookkeeping is what is
+    # broken, and this says so where it is broken.
+    local recorded name value untagged=
+    for recorded in "API_IMAGE=${recorded_api}" "RUNNER_IMAGE=${recorded_runner}" \
+                    "MODERATION_IMAGE=${recorded_moderation}" "WEBSITE_IMAGE=${recorded_website}"; do
+        name="${recorded%%=*}"
+        value="${recorded#*=}"
+        [ -z "$value" ] && continue
+        case "$value" in
+            *@sha256:*) ;;
+            *) untagged="${untagged:+$untagged }${name}" ;;
+        esac
+    done
+
+    if [ -n "$untagged" ]; then
+        log "ERROR: ${DEPLOYED_STATE} records a mutable tag where a digest belongs: ${untagged}"
+        log "ERROR: rollback() cannot return to a tag — it resolves to whatever it points at then, not to this build"
+        log "ERROR: the deploy itself succeeded; what is broken is the record of it"
+    fi
 }
 
 # Apply pending database migrations — after the pull, before the switch.

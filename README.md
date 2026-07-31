@@ -177,14 +177,37 @@ than one that is, so anything not provably inert still ships.
 
 ### Deploying a specific build
 
-`deploy.yml` takes a `service` and a `version`, and the version is applied to
-that service alone — the three images are built by three workflows in two
-repositories and share no version.
+`deploy.yml` takes a `service` and a `version`. `service` is `all`, one service,
+or a comma-separated list; `version` is applied to every service named, and to
+nothing else.
 
 ```bash
 gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra \
   -f service=api -f version=<sha>
+
+# One commit that rebuilt two images — deployed in one run, api first.
+gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra \
+  -f service=api,verifier-runner -f version=<sha>
 ```
+
+**A list is one deploy, not several, and that is the point** (#31). A commit
+touching `packages/core` or `packages/db` rebuilds every image, and while each
+build called this workflow separately, one of those calls was evicted from the
+concurrency queue every time — GitHub allows one pending run per group, so a
+third arrival replaces the one already waiting. Three consecutive pushes on
+2026-07-30 each dropped the **api** deploy: the largest image, so reliably second
+in the queue, and the only one carrying `migrate()` and the Academy seed.
+
+The order within a list is fixed by `scripts/deploy-set.sh` and not by the
+caller: api, verifier-runner, moderation-runner, website. The api runs the
+migrations out of its own image, so a runner started ahead of it is a runner
+reading a schema that has not moved. If a deploy in the sequence fails and rolls
+back, the ones after it do not run — that is the ordering doing its job, not a
+limitation of it.
+
+Sharing one `version` across a list is safe for the reason a list exists at all:
+a list only ever comes from one commit's builds. Across *different* callers the
+images share no version, which is why the input is per-deploy and not global.
 
 `version` defaults to `latest`, which is what a push to this repository means:
 re-deploy whatever is current. Naming a tag is how a deploy becomes a function

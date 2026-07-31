@@ -320,6 +320,44 @@ check "marker exists after runner rollback" "$([ -f "$WORK/state/needs-redeploy.
 out=$(run_deploy env || true)
 contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade was attempted"
 
+echo "== 17. the deploy set is ordered by dependency, and a typo is refused"
+# The policy behind #31's fix: one commit produces one deploy naming several
+# services, and the api has to be first because migrate() and the seed run out
+# of its image. Order is imposed here, not taken from the caller — a caller that
+# passes them alphabetically must not deploy a runner ahead of its schema.
+check "all stays all" "$("$WORK/scripts/deploy-set.sh" all)" "all"
+check "one service is itself" "$("$WORK/scripts/deploy-set.sh" api)" "api"
+check "the api leads whatever order it arrives in" \
+  "$("$WORK/scripts/deploy-set.sh" "moderation-runner,api" | tr '\n' ' ')" "api moderation-runner "
+check "the website goes last" \
+  "$("$WORK/scripts/deploy-set.sh" "website,verifier-runner,api" | tr '\n' ' ')" "api verifier-runner website "
+# The rejection case. A list with one typo must not deploy the rest and report
+# success — that is the silent partial deploy this whole issue is about, one
+# level up.
+out=$("$WORK/scripts/deploy-set.sh" "api,verifer-runner" 2>&1); rc=$?
+check "a misspelled service fails" "$rc" "1"
+contains "$out" "is not a deployable service" "and says which name it could not place"
+out=$("$WORK/scripts/deploy-set.sh" "" 2>&1); rc=$?
+check "an empty set fails rather than deploying nothing quietly" "$rc" "2"
+
+echo "== 18. a tag recorded where a digest belongs is called out"
+# #31: `record_deployment` wrote `MODERATION_IMAGE=…:latest` when a service
+# deployed for the first time and had no digest and no previous record to carry
+# forward. A rollback to that line resolves `:latest` on the day of the
+# rollback, which is a rollback into an unknown build — the failure #12 removed.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env FAIL_DIGEST=ghcr.io/kolonie-ai/kolonie-moderation-runner)
+contains "$out" "records a mutable tag where a digest belongs: MODERATION_IMAGE" "named the line that is wrong"
+contains "$out" "the deploy itself succeeded; what is broken is the record of it" "and did not blame the deploy for it"
+# Loud, not fatal: the health check has already passed by the time this runs, and
+# painting a working deploy red is the confusion #31 is largely a complaint about.
+contains "$out" "=== Deployment completed ===" "the deploy still completed"
+
+echo "== 19. a deploy whose digests all resolve says nothing about tags"
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+absent "$out" "records a mutable tag where a digest belongs" "no false alarm on a clean deploy"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

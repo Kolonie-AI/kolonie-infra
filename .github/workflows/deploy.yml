@@ -24,7 +24,11 @@ on:
   workflow_call:
     inputs:
       service:
-        description: 'Service to deploy (all, api, verifier-runner, moderation-runner, website)'
+        description: >-
+          What to deploy: `all`, one service, or a comma-separated list of them
+          (api, verifier-runner, moderation-runner, website). A list is deployed
+          in one run, in dependency order, which is what stops a fan-out from
+          becoming several deploys racing for one concurrency group — #31.
         type: string
         required: false
         default: 'all'
@@ -59,21 +63,34 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: 'Service to deploy (all, api, verifier-runner, moderation-runner, website)'
+        description: 'all, one service, or a comma-separated list (api, verifier-runner, moderation-runner, website)'
         required: false
         default: 'all'
       version:
-        description: 'Image tag to deploy, applied to the service named above'
+        description: 'Image tag to deploy, applied to every service named above'
         required: false
         default: 'latest'
 
 # One deploy at a time, and a queued one waits rather than replacing the one in
-# flight. Two builds in kolonie-platform can finish seconds apart — api and
-# verifier-runner are separate workflows — and two SSH sessions running
-# deploy.sh against one host would interleave a pull, a migration and an `up -d`
-# with neither knowing the other exists. `cancel-in-progress: false` because
-# cancelling a deploy mid-migration is the one outcome worse than deploying
-# twice.
+# flight. Two SSH sessions running deploy.sh against one host would interleave a
+# pull, a migration and an `up -d` with neither knowing the other exists.
+# `cancel-in-progress: false` because cancelling a deploy mid-migration is the
+# one outcome worse than deploying twice.
+#
+# **This is half a defence, and #31 is the other half.** GitHub allows exactly
+# one *pending* run per group, so a third arrival evicts the one already waiting.
+# While kolonie-platform fanned one commit out into three deploys, that was not a
+# rare interleaving — it was every push touching packages/core or packages/db,
+# and it always cost the middle arrival. Measured over five occurrences on
+# 2026-07-30: the api lost three times in a row, because it is the largest image
+# and therefore reliably queues second. It is also the only image carrying
+# migrate() and the Academy seed.
+#
+# The fix is upstream: one commit now produces **one** call to this workflow,
+# naming every service that changed (see the `service` input). The queue is not
+# made deeper — the thing that filled it stopped. This group still protects
+# against two *commits* landing inside one deploy window, which is what it was
+# always for.
 concurrency:
   group: deploy-vps
   cancel-in-progress: false
@@ -156,18 +173,52 @@ jobs:
 
             chmod +x scripts/*.sh
 
-            # The version applies to the service that was named, and to nothing
-            # else. Deploying "all" at one tag would have to assume the four
-            # images share a version, and they do not — they are built by four
-            # workflows in two repositories.
-            case "$SERVICE" in
-              api)               export API_VERSION="$VERSION" ;;
-              verifier-runner)   export RUNNER_VERSION="$VERSION" ;;
-              moderation-runner) export MODERATION_VERSION="$VERSION" ;;
-              website)           export WEBSITE_VERSION="$VERSION" ;;
-            esac
+            # A list is deployed as a sequence of single-service deploys in one
+            # session, not as a new mode inside deploy.sh (#31).
+            #
+            # Two reasons it is a loop here rather than a rewrite there.
+            # deploy.sh's rollback and its cascade marker are written per
+            # service, and the whole value of that machinery is that a service
+            # that fails returns to the build it was serving while the others do
+            # not. And the script is the most dangerous file in this repository:
+            # a queue defect is not a reason to reopen its migration ordering.
+            #
+            # What changes is that the sequence is now *one* run, so there is no
+            # second queue entry for a third arrival to evict.
+            #
+            # `all` and a single name behave exactly as before. The ordering and
+            # the rejection of an unknown name live in scripts/deploy-set.sh,
+            # where a rehearsal can reach them — the api must go first, and that
+            # is a policy with a wrong answer, not a formatting detail.
+            ORDERED=$(./scripts/deploy-set.sh "$SERVICE")
 
-            ./scripts/deploy.sh "$SERVICE"
+            echo "deploying in order: $(echo "$ORDERED" | tr '\n' ' ')"
+
+            for svc in $ORDERED; do
+              echo "--- deploy.sh $svc ---"
+
+              # The version applies to the service being deployed and to nothing
+              # else. Deploying "all" at one tag would have to assume the four
+              # images share a version, and they do not — they are built by four
+              # workflows in two repositories. Within one list they *do* share
+              # one, because a list only ever comes from one commit's builds.
+              (
+                case "$svc" in
+                  api)               export API_VERSION="$VERSION" ;;
+                  verifier-runner)   export RUNNER_VERSION="$VERSION" ;;
+                  moderation-runner) export MODERATION_VERSION="$VERSION" ;;
+                  website)           export WEBSITE_VERSION="$VERSION" ;;
+                esac
+
+                ./scripts/deploy.sh "$svc"
+              )
+            done
+
+            # `set -e` is what makes the ordering load-bearing rather than
+            # decorative: if the api deploy fails and rolls back, the loop stops
+            # and the runners are never started against a schema that did not
+            # move. Deploying them anyway is the failure this ordering exists to
+            # prevent, so failing early is the correct outcome, not a limitation.
 
       - name: Health Check
         uses: appleboy/ssh-action@v1
