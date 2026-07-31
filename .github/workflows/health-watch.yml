@@ -92,6 +92,21 @@ jobs:
               "cd ${DEPLOY_DIR} && chmod +x scripts/health-report.sh && ./scripts/health-report.sh" \
               > probe.out
 
+          # Why each unhealthy container says so, collected in the same session
+          # and *before* anything acts on the verdict. `.State.Health.Log` keeps
+          # only the last five attempts however long the container has been
+          # failing, so a reason not taken now is a reason gone — the same
+          # property that made #43 necessary one level down.
+          #
+          # It prints nothing when every container is healthy.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd ${DEPLOY_DIR} && chmod +x scripts/health-why.sh && ./scripts/health-why.sh" \
+              > why.out || true
+
           # A second question over the same connection: which commit is each
           # container running (#44). Separate from the health report because it
           # is a separate condition — a host can be entirely healthy and a build
@@ -110,6 +125,7 @@ jobs:
           shred -u ~/.ssh/deploy_key
 
           echo "health rows: $(wc -l < probe.out)"
+          echo "reason lines: $(wc -l < why.out)"
           echo "revision rows: $(wc -l < revisions.out)"
 
       - name: Triage the report
@@ -178,6 +194,10 @@ jobs:
           # that starts at column zero.
           {
             cat summary.md
+            # The container's own account of it. Empty when the fault is a late
+            # backup or a filling disk rather than a container, which is why it
+            # is concatenated rather than announced.
+            cat why.out
             printf '\n<!-- health-watch-fingerprint: %s -->\n\n' "$FINGERPRINT"
             printf 'Filed automatically by [Health Watch](%s). It closes itself when the host\n' "$RUN_URL"
             printf 'reports every container healthy again — do not close it by hand while the\n'
@@ -210,6 +230,7 @@ jobs:
           {
             printf 'What is wrong has changed.\n\n'
             cat summary.md
+            cat why.out
             printf '\n%s\n' "$RUN_URL"
           } > changed.md
 

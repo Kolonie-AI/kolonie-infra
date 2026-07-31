@@ -26,6 +26,7 @@ scripts/deployed-revision.sh  which commit each running container was built from
 scripts/drift-triage.sh     decides whether the host is behind what was last built
 scripts/rehearse-drift.sh   exercises drift-triage.sh against a stub gh
 scripts/health-report.sh    structured health report for the diagnose workflow
+scripts/health-why.sh       why an unhealthy container says so — the probe's own output
 scripts/health-triage.sh    interprets health-report output
 scripts/origin-firewall.sh  restricts origin to Cloudflare edge IPs
 .github/workflows/          deploy, diagnose, health-watch
