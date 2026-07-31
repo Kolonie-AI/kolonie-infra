@@ -576,6 +576,74 @@ deploy() {
 # and then recovers has not failed — it has started.
 HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
 
+# How many lines of a failing container's own log to quote, and how wide.
+#
+# 40 lines is a judgement: enough to carry a startup exception with its stack,
+# short enough that a reader finds it. The width cap is not cosmetic — a service
+# that dies while printing a serialised object emits single lines of many
+# kilobytes, and one of those buries the message underneath it.
+HEALTH_LOG_LINES=${HEALTH_LOG_LINES:-40}
+HEALTH_LOG_COLS=${HEALTH_LOG_COLS:-500}
+
+# When a crash loop is treated as decided, rather than waited out.
+#
+# `restart: unless-stopped` means a container that throws on its first line never
+# reaches `exited` — Docker restarts it, with a backoff, until the deploy gives
+# up at HEALTH_TIMEOUT. So the terminal signal is not the state, it is the
+# restart *count*: a process that has already died three times has answered the
+# question, and the remaining wait cannot change the answer. Three restarts take
+# roughly seven seconds of backoff, against 180 seconds of waiting for a verdict
+# that is already in.
+#
+# Set to 0 to disable and always wait the full timeout.
+EARLY_FAIL_RESTARTS=${EARLY_FAIL_RESTARTS:-3}
+
+# Quote what the failing containers printed, before rollback() replaces them.
+#
+# From #43, and the 2026-07-31 outage: nineteen deploys reported
+# `not healthy after 180s: api(unhealthy)` and nothing else. That line reads as a
+# health-check problem — a slow container, a flapping probe, too short a start
+# period — and every one of those is a more plausible first guess than "a
+# required environment variable is absent". The message that actually named
+# `BAN_MARK_SALT` was inside the container, the rollback replaced the container,
+# and the answer went with it. Twelve and a half hours.
+#
+# **This republishes container output into a public Actions log.** A process that
+# prints a secret — an echoed connection string, a debug dump of its environment
+# — has that secret copied here, permanently, into a place that cannot be
+# unpublished. `scripts/env-drift.sh` avoids this by never printing a value at
+# all; that option does not exist here, because the whole point is to quote what
+# the container said. So the mitigation is bounded rather than absolute: only
+# failing services, only on the failing path, capped in lines and in width. If a
+# service ever needs to print something sensitive at startup, it must not print
+# it to stdout or stderr.
+report_failure_logs() {
+    local svc container output
+
+    log "--- what the failing containers printed (last ${HEALTH_LOG_LINES} lines each) ---"
+    for svc in "$@"; do
+        container="kolonie-${svc}"
+
+        # 2>&1 because a container that died on its first line wrote to stderr,
+        # and `docker logs` reproduces the stream it was written on. Merging them
+        # is the point. `|| true` because the container may already be gone, and
+        # a missing log must not abort the deploy before rollback() runs.
+        output=$(docker logs --tail "$HEALTH_LOG_LINES" "$container" 2>&1 || true)
+
+        if [ -z "${output//[[:space:]]/}" ]; then
+            # Said explicitly, because an empty section reads as a broken feature
+            # and sends the reader looking for the log somewhere else. Nothing
+            # printed is itself a finding: it means the process died before it
+            # could speak, or never started.
+            log "$svc: printed nothing — no output at all, on either stream."
+            log "$svc: the failure is therefore before its first log line, not in what it reported."
+        else
+            printf '%s\n' "$output" | cut -c1-"$HEALTH_LOG_COLS" | sed "s/^/    [$svc] /"
+        fi
+    done
+    log "--- end of container output ---"
+}
+
 healthcheck() {
     log "Waiting up to ${HEALTH_TIMEOUT}s for services to become healthy..."
 
@@ -585,33 +653,72 @@ healthcheck() {
     services=$(cd "$DEPLOY_DIR" && docker compose "${PROFILE_ARGS[@]}" config --services)
 
     local deadline=$((SECONDS + HEALTH_TIMEOUT))
-    local pending status svc container
+    local pending failing crashed status svc container restarts
 
     while :; do
         pending=""
+        # The same set as $pending, as bare service names. $pending is a message
+        # and carries its states in parentheses; report_failure_logs() needs
+        # names it can build container names from.
+        failing=""
+        crashed=""
         for svc in $services; do
             container="kolonie-${svc}"
             status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "missing")
 
             case "$status" in
-                healthy) ;;
+                healthy) continue ;;
                 missing)
                     # No health check defined, or the container is not there at
                     # all. Distinguish the two: the second is a real failure.
                     if docker inspect --format='{{.State.Running}}' "$container" 2>/dev/null | grep -q true; then
-                        :
-                    else
-                        pending="$pending $svc(not running)"
+                        continue
                     fi
+                    pending="$pending $svc(not running)"
                     ;;
                 *) pending="$pending $svc($status)" ;;
             esac
+
+            failing="$failing $svc"
+
+            # `{{.RestartCount}}`, not `{{.State.RestartCount}}` — the field is
+            # top-level on the inspect document, and the plausible-looking one
+            # under .State does not exist. Docker answers a template naming it
+            # with a parse error on stderr and a non-zero exit, which this line
+            # would have swallowed into `0` and never triggered on. Measured
+            # against Docker 29.1.3 on 2026-07-31, along with the rest:
+            # a container that throws on its first line under
+            # `restart: unless-stopped` reports Status=restarting, Health=unhealthy,
+            # **Running=true** and RestartCount climbing. Running is why the state
+            # cannot carry this on its own.
+            restarts=$(docker inspect --format='{{.RestartCount}}' "$container" 2>/dev/null || echo 0)
+            # A non-numeric answer means the container is gone or the format was
+            # not understood; neither is evidence of a crash loop, so it counts
+            # as zero and the deadline stays in charge.
+            case "$restarts" in ''|*[!0-9]*) restarts=0 ;; esac
+
+            if [ "$EARLY_FAIL_RESTARTS" -gt 0 ] && [ "$restarts" -ge "$EARLY_FAIL_RESTARTS" ]; then
+                crashed="$crashed $svc(${restarts} restarts)"
+            fi
         done
 
         [ -z "$pending" ] && break
 
+        # Answered early, or at the deadline. Both paths quote the container
+        # first: after rollback() the container is replaced and its log is gone.
+        if [ -n "$crashed" ]; then
+            log "ERROR: restarting in a loop and will not become healthy:$crashed"
+            log "Not waiting out the remaining $(( deadline > SECONDS ? deadline - SECONDS : 0 ))s — a process that exits during startup exits just as fast on the next attempt."
+            # shellcheck disable=SC2086  # deliberate word splitting: a service list
+            report_failure_logs $failing
+            rollback
+            exit 1
+        fi
+
         if [ "$SECONDS" -ge "$deadline" ]; then
             log "ERROR: not healthy after ${HEALTH_TIMEOUT}s:$pending"
+            # shellcheck disable=SC2086  # deliberate word splitting: a service list
+            report_failure_logs $failing
             rollback
             exit 1
         fi

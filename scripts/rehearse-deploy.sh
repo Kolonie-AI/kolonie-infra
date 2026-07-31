@@ -94,11 +94,46 @@ case "$1 ${2:-}" in
       esac
       exit 0 ;;
   "inspect"*)
-      # healthcheck asks for .State.Health.Status
+      # healthcheck() asks three different questions through `docker inspect`,
+      # so the stub tells them apart by the --format it was handed.
+      #
+      # **Matched exactly, and an unknown format is a failure rather than a
+      # default.** A stub that answers a template Docker would reject is worse
+      # than no stub: it makes the rehearsal agree with a deploy that cannot
+      # work. This was not hypothetical — the first version of the crash-loop
+      # check asked for `{{.State.RestartCount}}`, which does not exist (the
+      # field is top-level), and a stub matching on the substring `RestartCount`
+      # answered it happily. Real Docker answers it with a parse error. Keep
+      # this list in step with `grep 'docker inspect' scripts/deploy.sh`.
+      case "$*" in
+        *"{{.State.Health.Status}}"*|*"{{.State.Running}}"*|*"{{.RestartCount}}"*) ;;
+        *) echo "STUB: unknown docker inspect format: $*" >&2; exit 125 ;;
+      esac
+
+      if echo "$*" | grep -qF '{{.RestartCount}}'; then
+        # CRASHLOOP_SERVICE names a container Docker keeps restarting — the
+        # shape of a process that throws on its first line under
+        # `restart: unless-stopped`, which is what the 2026-07-31 outage was.
+        if [ -n "${CRASHLOOP_SERVICE:-}" ] && echo "$*" | grep -q "${CRASHLOOP_SERVICE}"; then
+          echo "${CRASHLOOP_COUNT:-5}"
+        else
+          echo 0
+        fi
+        exit 0
+      fi
+      if echo "$*" | grep -qF '{{.State.Running}}'; then echo true; exit 0; fi
       if [ "${UNHEALTHY:-}" = 1 ]; then echo "unhealthy"
       elif [ -n "${UNHEALTHY_SERVICE:-}" ] && echo "$*" | grep -q "${UNHEALTHY_SERVICE}"; then echo "unhealthy"
       else echo "healthy"
       fi
+      exit 0 ;;
+  "logs"*)
+      # What the container printed, which #43 quotes before the rollback
+      # replaces it. LOG_FOR names the one container with output; every other
+      # container is silent, which is the case the "printed nothing" branch of
+      # report_failure_logs() exists for.
+      for container in "$@"; do :; done
+      if [ "${LOG_FOR:-}" = "$container" ]; then printf '%s\n' "${LOG_TEXT:-}"; fi
       exit 0 ;;
   "login"*|"logout"*) exit 0 ;;
 esac
@@ -429,6 +464,86 @@ echo "== 19. a deploy whose digests all resolve says nothing about tags"
 rm -rf "$WORK/state"; : > "$WORK/docker.log"
 out=$(run_deploy env)
 absent "$out" "records a mutable tag where a digest belongs" "no false alarm on a clean deploy"
+
+echo "== 20. a failed health check quotes the container's own log before rolling back"
+# #43, and the 2026-07-31 outage: nineteen runs said `not healthy after 180s:
+# api(unhealthy)` and nothing else, while the sentence naming the missing
+# variable sat inside the container the rollback was about to replace.
+seed_known_good() {
+  rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+  cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+}
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+STARTUP_ERROR="Error: BAN_MARK_SALT is not set. Ban marks are salted hashes of identifiers"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api LOG_FOR=kolonie-api LOG_TEXT="$STARTUP_ERROR")
+status=$?
+contains "$out" "ERROR: not healthy after 5s" "still reported the health verdict"
+contains "$out" "[api] $STARTUP_ERROR" "quoted the reason the container gave"
+check "the run still failed" "$status" "1"
+# Order is the whole point: after rollback() the container is replaced and its
+# log is gone with it, so a capture that runs afterwards captures nothing.
+logs_line=$(grep -n "docker logs" "$WORK/docker.log" | head -1 | cut -d: -f1)
+rollback_line=$(grep -n "up -d" "$WORK/docker.log" | tail -1 | cut -d: -f1)
+check "captured before the rollback ran" \
+  "$([ "$logs_line" -lt "$rollback_line" ] && echo yes || echo no)" "yes"
+
+echo "== 20b. a container that printed nothing says so, rather than showing a blank"
+# An empty section reads as a broken feature and sends the reader looking for
+# the log somewhere else. Nothing printed is itself a finding.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api)
+contains "$out" "api: printed nothing" "said the container was silent"
+contains "$out" "the failure is therefore before its first log line" "and what that means"
+
+echo "== 20c. a healthy deploy quotes no logs at all"
+# So the feature cannot be satisfied by always dumping logs — which would put
+# every container's output into a public Actions log on every deploy.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+absent "$out" "what the failing containers printed" "no log section on a healthy deploy"
+absent "$(cat "$WORK/docker.log")" "docker logs" 'and "docker logs" was never called'
+
+echo "== 20d. every failing service is quoted, not only the first"
+# The next occurrence will be a different container. `UNHEALTHY=1` fails all
+# three profiled services at once.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env UNHEALTHY=1 LOG_FOR=kolonie-website LOG_TEXT="listen EADDRINUSE")
+contains "$out" "api: printed nothing" "api was quoted"
+contains "$out" "verifier-runner: printed nothing" "verifier-runner was quoted"
+contains "$out" "[website] listen EADDRINUSE" "website was quoted, with its output"
+
+echo "== 20e. a crash loop is answered immediately rather than waited out"
+# `restart: unless-stopped` means a container that throws on its first line
+# never reaches `exited` — so the terminal signal is the restart count, not the
+# state. A process that has died three times has answered the question, and the
+# remaining wait cannot change the answer.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+started=$SECONDS
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api CRASHLOOP_SERVICE=kolonie-api \
+                    LOG_FOR=kolonie-api LOG_TEXT="$STARTUP_ERROR")
+status=$?
+elapsed=$((SECONDS - started))
+contains "$out" "restarting in a loop and will not become healthy: api(5 restarts)" "named the crash loop"
+contains "$out" "[api] $STARTUP_ERROR" "and still quoted the reason"
+contains "$out" "Rollback completed" "rolled back as before"
+check "the run still failed" "$status" "1"
+absent "$out" "ERROR: not healthy after" "did not wait for the deadline"
+check "returned a verdict inside 3s, not at the 5s deadline" \
+  "$([ "$elapsed" -lt 3 ] && echo yes || echo no)" "yes"
+
+echo "== 20f. the early verdict can be switched off, and the deadline still rules"
+# EARLY_FAIL_RESTARTS=0 restores the old behaviour exactly, which is what makes
+# the new behaviour reversible on the host without a deploy of this repository.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api CRASHLOOP_SERVICE=kolonie-api EARLY_FAIL_RESTARTS=0)
+contains "$out" "ERROR: not healthy after 5s" "waited for the deadline"
+absent "$out" "restarting in a loop" "and said nothing about restarts"
 
 echo
 echo "passed $pass, failed $fail"
