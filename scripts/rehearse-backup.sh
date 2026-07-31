@@ -138,7 +138,21 @@ case "$1" in
       exit 0 ;;
   snapshots)
       [ "${NO_SNAPSHOT:-}" = 1 ] && { echo "[]"; exit 0; }
-      echo '[{"time":"2026-07-30T03:00:00Z","short_id":"a1b2c3d4","id":"a1b2c3d4e5f6"}]'
+      # `--latest N` is per (host, paths) group, not per repository. Once the
+      # repository holds two shapes of snapshot — one path before #45, two after
+      # — it answers with one of each, oldest group first, and a `head -1` takes
+      # the stale one. That is exactly what happened on the host on 2026-07-31.
+      #
+      # The stub used to return a single element whatever it was asked, which is
+      # what let the bug ship: it modelled the repository as it was rather than as
+      # it would be. `snapshots latest` is the query that means "newest in this
+      # repository", and this stub is now the thing that tells the two apart.
+      if printf '%s' "$*" | grep -q -- '--latest'; then
+          echo '[{"time":"2026-07-31T03:00:00Z","short_id":"0ldgr0up","id":"0ldgr0upaaaa"},'\
+'{"time":"2026-07-31T11:35:00Z","short_id":"a1b2c3d4","id":"a1b2c3d4e5f6"}]'
+          exit 0
+      fi
+      echo '[{"time":"2026-07-31T11:35:00Z","short_id":"a1b2c3d4","id":"a1b2c3d4e5f6"}]'
       exit 0 ;;
   check)
       [ "${FAIL_CHECK:-}" = 1 ] && { echo "Fatal: pack file is missing" >&2; exit 1; }
@@ -153,7 +167,13 @@ case "$1" in
       # What the snapshot holds, which backup.sh reads back rather than trusting
       # the exit code of the write. NO_ENV_IN_SNAPSHOT is a snapshot that was
       # written without the secrets file — the failure the read-back exists for.
+      #
+      # `0ldgr0up` is the pre-#45 shape: a real snapshot, correctly stored, with
+      # only the dump in it. A run that identifies the wrong snapshot therefore
+      # fails here rather than passing on a listing that was never checked — the
+      # same way it failed on the host.
       echo "${KOLONIE_BACKUP_DIR:-/var/backups/kolonie}/kolonie.sql"
+      [ "$2" = "0ldgr0up" ] && exit 0
       [ "${NO_ENV_IN_SNAPSHOT:-}" = 1 ] || echo "${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/.env"
       exit 0 ;;
   unlock) exit 0 ;;
@@ -407,6 +427,25 @@ all+=$(run_backup)$'\n'
 write_env
 absent "$all" "$CANARY" "no secret value in any of five runs"
 contains "$all" "env: 19 assignments" "the count is what gets reported instead"
+
+# --- 21: the newest snapshot, across path groups --------------------------
+# The defect #45 shipped and the read-back caught, four minutes later, on the
+# host. `restic snapshots --latest 1` groups by (host, paths), so a repository
+# holding both the old one-path shape and the new two-path shape answers with one
+# of each — and the old one comes first. The run then verified this morning's
+# snapshot, correctly found no .env in it, and refused.
+#
+# The assertion is on *which* snapshot the run names, because the failure is not
+# that a check went wrong: both the check and the snapshot were fine. It looked
+# at the wrong object.
+echo "21. the snapshot that is verified is the newest one in the repository"
+write_env
+out=$(run_backup); rc=$?
+check "exits 0" "$rc" "0"
+contains "$out" "snapshot a1b2c3d4" "named the newest snapshot"
+absent "$out" "0ldgr0up" "not the newest of the old path group"
+contains "$(calls)" "restic snapshots latest" "asked for the repository's newest, not a per-group latest"
+absent "$(calls)" "snapshots --host kolonie --latest" "did not group by path"
 
 echo
 echo "passed: $pass   failed: $fail"

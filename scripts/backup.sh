@@ -405,8 +405,21 @@ do_backup() {
     # Ask the repository what it has, rather than trusting the exit code of the
     # command that just wrote to it. A backup is only a backup once the thing
     # that has to serve it during a restore says it is there.
+    #
+    # `snapshots latest` and NOT `snapshots --latest 1`, and the difference is not
+    # stylistic. **`--latest N` is per (host, paths) group, not per repository:**
+    # with two sets of paths in the repository it returns one snapshot for each,
+    # oldest group first. This script had `--latest 1 | head -1` while every
+    # snapshot held the same single path, so the grouping was invisible and the
+    # answer happened to be right. Adding /opt/kolonie/.env created a second group
+    # and the query started returning the newest snapshot *of the old shape* —
+    # this morning's, without the secrets in it.
+    #
+    # It surfaced as the check below refusing the run on 2026-07-31, which is the
+    # check doing its job on the code that wrote it. Anything grouping snapshots
+    # by path is a trap here for as long as the path set can change.
     local newest
-    newest=$(restic snapshots --host "$RESTIC_HOST_LABEL" --latest 1 --json 2>/dev/null \
+    newest=$(restic snapshots latest --host "$RESTIC_HOST_LABEL" --json 2>/dev/null \
         | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
     [ -n "$newest" ] || die "backup reported success but the repository has no snapshot for $RESTIC_HOST_LABEL"
 
