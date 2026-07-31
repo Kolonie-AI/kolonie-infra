@@ -560,6 +560,122 @@ deploy() {
     fi
 }
 
+# The label through which an application image declares what it cannot start
+# without (#42).
+#
+# The 2026-07-31 outage: kolonie-platform#93 made `BAN_MARK_SALT` mandatory —
+# `packages/db` throws at startup without it, deliberately — and the variable
+# reached this repository nowhere. Not docker-compose.yml, not .env.example, not
+# the host's .env. `scripts/env-drift.sh` could not see it either, and its own
+# header says why: all three of its lists are seeded from what compose already
+# reads, so a variable compose has never heard of is invisible to every one of
+# them. Twelve and a half hours, nineteen deploys, each rolling back.
+#
+# Stated generally, and this is the part worth keeping: **a repository that makes
+# a variable mandatory has changed the deploy contract of a repository it cannot
+# see.** #42 lists three places that hand-off could live. This is option A, the
+# image answering for itself: no shared file, no cross-repo path, nothing to keep
+# in sync, and it works for an image built from a repository this one has never
+# heard of. The declaration ships inside the same artefact as the code that
+# throws, so it cannot drift from it.
+#
+# A label rather than a command in the image, because reading it neither starts
+# the application nor needs its entrypoint to be sane — and a preflight that runs
+# the very build it is meant to vet has the failure inside the check.
+#
+# The emitting half is kolonie-platform#75.
+REQUIRED_ENV_LABEL="ai.kolonie.required-env"
+
+# What one image says it requires. Empty for an image that says nothing, which
+# is every image built before #75 — those must keep deploying, or this check is
+# itself the outage.
+declared_env() {
+    local out
+    # Measured against Docker 29.1.3 on 2026-07-31, over four images: no labels
+    # at all, labels without this one, this label, and an image that is not on
+    # the host. The first three render an **empty string** and exit 0; the fourth
+    # exits non-zero. `<no value>` and `map[]` are what a bare Go template does
+    # with an absent key and a nil map — Docker's formatter swallows both today,
+    # but they are cheap to tolerate and this script has to survive whatever
+    # Docker the host is on.
+    out=$(docker image inspect --format "{{index .Config.Labels \"$REQUIRED_ENV_LABEL\"}}" "$1" 2>/dev/null) || return 0
+    case "$out" in "<no value>"|"map[]"|"") return 0 ;; esac
+    # Comma- or whitespace-separated, so both spellings of the label work.
+    printf '%s' "$out" | tr ',[:space:]' '\n\n' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || true
+}
+
+# Refuse a deploy whose images require something this host does not provide.
+#
+# Runs after pin() — the images are on the host, so their labels are readable —
+# and before migrate(), which is the first step that starts a container from one
+# of them. Nothing has moved when this fails, which is the whole point: the
+# 2026-07-31 outage reached production because the failing path was the deployed
+# one.
+#
+# **Two lists, because a variable needs both to arrive.** Compose must interpolate
+# it, or the container never sees it whatever .env holds; and the environment must
+# define it, or it arrives empty. `BAN_MARK_SALT` was missing from both.
+#
+# What this deliberately does not prove: that the variable reaches the *right*
+# service. It checks that compose mentions the name somewhere, not that the
+# service declaring it lists it under its own `environment:`. Rendering the
+# per-service environment would mean `docker compose config`, whose output
+# carries every value — and this runs in a workflow whose log is public.
+#
+# **Names only, never a value**, for that same reason. `scripts/env-drift.sh`
+# states the standard in its own header: adding a value to the output here
+# publishes a production secret somewhere it cannot be unpublished.
+preflight_env() {
+    local compose_file="$DEPLOY_DIR/docker-compose.yml"
+    local env_file="$DEPLOY_DIR/.env"
+    local pair image svc name compose_vars provided declared missing report
+
+    log "Checking the images' declared environment against this host..."
+
+    if [ ! -f "$compose_file" ]; then
+        log "WARN: no $compose_file — skipping the declared-environment check"
+        return 0
+    fi
+
+    compose_vars=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' "$compose_file" | sed 's/\${//' | sort -u)
+
+    # What compose will interpolate from: its .env file, plus the environment
+    # this script runs in, which wins over the file. Names only.
+    provided=$( { [ -f "$env_file" ] && grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$env_file" | tr -d '='
+                  printenv | grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='
+                } | sort -u )
+
+    report=""
+    for pair in "api:$API_IMAGE" "verifier-runner:$RUNNER_IMAGE" \
+                "moderation-runner:$MODERATION_IMAGE" "website:$WEBSITE_IMAGE"; do
+        svc="${pair%%:*}"
+        image="${pair#*:}"
+        [ -z "$image" ] && continue
+
+        declared=$(declared_env "$image")
+        [ -z "$declared" ] && continue
+
+        while read -r name; do
+            [ -z "$name" ] && continue
+            missing=""
+            printf '%s\n' "$compose_vars" | grep -qx "$name" || missing="not interpolated by docker-compose.yml"
+            printf '%s\n' "$provided"     | grep -qx "$name" || \
+                missing="${missing:+$missing, }not defined in .env or the deploy environment"
+            [ -n "$missing" ] && report="$report
+  $name — required by $svc, $missing"
+        done <<<"$declared"
+    done
+
+    if [ -n "$report" ]; then
+        log "ERROR: an image requires a variable this host does not provide:$report"
+        log "Nothing has been recreated — the build that was serving is still serving."
+        log "Add the variable to docker-compose.yml, .env.example and the host's .env, then deploy again."
+        exit 1
+    fi
+
+    log "OK: every variable the images declare is provided"
+}
+
 # Wait for every deployed service to become healthy.
 #
 # The old version slept ten seconds and judged once. That is wrong twice:
@@ -839,6 +955,10 @@ pull
 # step below — the migration, the seed, the containers — must use the build this
 # deploy inspected, not whatever `:latest` points at by the time it gets there.
 pin
+# After pin, so the labels are read off the exact builds this deploy will run,
+# and before migrate — the first step that starts a container from one of them.
+# A deploy refused here has moved nothing.
+preflight_env
 # Between the two on purpose: the images are on the host but nothing is serving
 # from them yet, which is the only window in which the schema can be moved
 # forward without a running API seeing a database it does not expect.

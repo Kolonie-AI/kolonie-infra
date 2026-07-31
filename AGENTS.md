@@ -196,6 +196,49 @@ The deploy is serialised at two levels:
 for each image and includes only what is reachable, so one missing image degrades
 to a warning rather than taking the others down.
 
+### The environment contract: `ai.kolonie.required-env`
+
+**If you are working in an application repository and are about to make an
+environment variable mandatory, this section is the one you need.**
+
+A repository that makes a variable mandatory has changed the deploy contract of
+*this* repository, which it cannot see. On 2026-07-31 that hand-off had no
+artefact: `kolonie-platform#93` made `BAN_MARK_SALT` required, `packages/db`
+threw at startup without it, and the name reached this repository nowhere — not
+`docker-compose.yml`, not `.env.example`, not the host's `.env`. Every one of
+`scripts/env-drift.sh`'s three lists is seeded from what compose already reads,
+so a variable compose has never heard of was invisible to all of them. Twelve and
+a half hours and nineteen rolled-back deploys later, the answer was in a container
+log that each rollback destroyed.
+
+So the image declares it, in an OCI label:
+
+```dockerfile
+LABEL ai.kolonie.required-env="BAN_MARK_SALT,JWT_SECRET"
+```
+
+Comma- or whitespace-separated names. `preflight_env()` in `deploy.sh` reads the
+label off each pulled image after `pin()` and before `migrate()` — the first step
+that starts a container — and refuses the deploy if a declared name is either not
+interpolated by `docker-compose.yml` or not defined by `.env` or the deploy
+environment. A deploy refused there has recreated nothing, so the build that was
+serving is still serving.
+
+Three things this deliberately does:
+
+- **An image with no label deploys exactly as before.** Every image built before
+  this existed carries none, and a check that stopped them would be its own
+  outage.
+- **Names only, never values.** The deploy log is public — the same standard
+  `scripts/env-drift.sh` states in its own header.
+- **It does not prove the variable reaches the right *service*** — only that
+  compose mentions the name somewhere. Rendering the per-service environment
+  means `docker compose config`, whose output carries every value.
+
+Adding a variable is therefore three edits here — `docker-compose.yml`,
+`.env.example`, the host's `.env` — plus the label there. Miss the host and the
+deploy stops before it moves anything, naming the variable.
+
 ### Cascade re-deploy
 
 When a service rolls back (typically because it built faster than the api and

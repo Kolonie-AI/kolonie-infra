@@ -52,6 +52,23 @@ case "$1 ${2:-}" in
       [ "${UNREACHABLE:-}" = "${tag%%:*}" ] && exit 1
       exit 0 ;;
   "image inspect")
+      # Two questions come through here. preflight_env() asks for the label an
+      # image declares its required environment in (#42); everything else is
+      # digest_of asking for RepoDigests.
+      if echo "$*" | grep -qF 'ai.kolonie.required-env'; then
+        # DECLARING_IMAGE is a repository substring, DECLARED_VARS what that
+        # image declares. Every other image answers with an empty line and
+        # exit 0 — measured against Docker 29.1.3, for an image with no labels
+        # and for an image carrying other labels but not this one. That is what
+        # every image built before kolonie-platform#75 answers.
+        for ref in "$@"; do :; done
+        if [ -n "${DECLARING_IMAGE:-}" ] && [[ "$ref" == *"$DECLARING_IMAGE"* ]]; then
+          echo "${DECLARED_VARS:-}"
+        else
+          echo ""
+        fi
+        exit 0
+      fi
       # the tag is the last argument; return the digest for its own repo, plus a
       # decoy from another repo to prove the prefix match is doing work.
       for tag in "$@"; do :; done
@@ -544,6 +561,52 @@ seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
 out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api CRASHLOOP_SERVICE=kolonie-api EARLY_FAIL_RESTARTS=0)
 contains "$out" "ERROR: not healthy after 5s" "waited for the deadline"
 absent "$out" "restarting in a loop" "and said nothing about restarts"
+
+echo "== 21. an image requiring a variable the host does not provide is refused"
+# #42, and the other half of the 2026-07-31 outage. BAN_MARK_SALT was mandatory
+# in the application and absent from this repository entirely — so compose never
+# interpolated it, .env never defined it, and all three of env-drift.sh's lists
+# are seeded from what compose reads. It was invisible to every check the Colony
+# had, and production found it nineteen times.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=KOLONIE_FUTURE_SECRET)
+status=$?
+contains "$out" "an image requires a variable this host does not provide" "refused the deploy"
+contains "$out" "KOLONIE_FUTURE_SECRET — required by api" "named the variable and who wants it"
+contains "$out" "not interpolated by docker-compose.yml" "said compose had never heard of it"
+contains "$out" "not defined in .env or the deploy environment" "and that nothing defines it"
+check "the run failed" "$status" "1"
+
+echo "== 21b. and it is refused before anything is recreated"
+# The criterion that separates this from a warning: a deploy stopped here has
+# moved nothing, so the build that was serving is still serving.
+absent "$(cat "$WORK/docker.log")" "up -d" "no container was recreated"
+absent "$(cat "$WORK/docker.log")" "run --rm -T api npm run migrate" "and the migration never ran"
+contains "$out" "the build that was serving is still serving" "said so plainly"
+
+echo "== 21c. a declared variable that is provided passes silently"
+# So the check cannot be satisfied by refusing everything. BAN_MARK_SALT is in
+# docker-compose.yml today — it was added after the outage — so providing it in
+# the environment satisfies both halves.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=BAN_MARK_SALT \
+                    BAN_MARK_SALT=rehearsal-fixture-not-a-secret)
+contains "$out" "OK: every variable the images declare is provided" "the check passed"
+contains "$out" "=== Deployment completed ===" "and the deploy ran"
+absent "$out" "does not provide" "no false alarm"
+
+echo "== 21d. an image that declares nothing still deploys"
+# Every image built before kolonie-platform#75 carries no label at all. If those
+# stopped deploying, this check would itself be the outage.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$out" "OK: every variable the images declare is provided" "an undeclared image is not a failure"
+contains "$out" "=== Deployment completed ===" "the deploy completed as before"
+
+echo "== 21e. the check reports names and never a value"
+# env-drift.sh states the standard in its own header, and this runs in the same
+# public log. The fixture value must appear nowhere in the output.
+absent "$out" "rehearsal-fixture-not-a-secret" "no value reached the output"
 
 echo
 echo "passed $pass, failed $fail"
