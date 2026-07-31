@@ -25,7 +25,12 @@ mkdir -p "$BIN"
 # looks like and must not be reported as "no drift".
 cat > "$BIN/gh" <<'STUB'
 #!/bin/bash
-[ "${GH_FAILS:-}" = 1 ] && exit 1
+if [ "${GH_FAILS:-}" = 1 ]; then
+  # What gh actually writes: a status line and the API's message. The report
+  # quotes this, so the stub has to produce something shaped like it (#50).
+  echo "${GH_ERROR:-gh: Package not found. (HTTP 404)}" >&2
+  exit 1
+fi
 # Only one call is made: the package version listing. Anything else is a change
 # in drift-triage.sh that this stub has not been taught about, and it should be
 # loud rather than answer plausibly.
@@ -98,9 +103,20 @@ echo "== 6. GHCR being unreachable is never reported as no drift"
 out=$(printf 'api\t%s\timg\n' "$NEW" | PATH="$BIN:$PATH" GH_FAILS=1 bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v")
 contains "$(cat "$WORK/v")" "VERDICT=unknown" "verdict unknown, not ok"
 contains "$out" "GHCR refused the request" "said GHCR refused, not that there was no build"
-contains "$out" "the token cannot read this package" "and named the fixable cause"
+contains "$out" "Package not found. (HTTP 404)" "and quoted what GHCR actually said"
 absent "$out" "The host is not serving" "did not claim drift it cannot see"
 contains "$out" "could not be placed" "used the heading that matches the verdict"
+
+echo "== 6b. the reason is whatever GHCR said, not a guess about it"
+# #50: the first version discarded gh's stderr and reported only that the call
+# had failed. The issue filed off that run named a per-package permission —
+# inferred from an exit code rather than read from an error. Same mistake #43
+# exists to correct one level up.
+out=$(printf 'api\t%s\timg\n' "$NEW" | PATH="$BIN:$PATH" GH_FAILS=1 \
+        GH_ERROR="gh: Resource not accessible by integration (HTTP 403)" \
+        bash "$ROOT/scripts/drift-triage.sh" 2>/dev/null)
+contains "$out" "Resource not accessible by integration (HTTP 403)" "carried a different reason through unchanged"
+absent "$out" "Package not found" "and did not substitute a stock explanation"
 
 echo "== 7. one behind service among current ones still drifts the verdict"
 out=$(printf 'api\t%s\timg\nwebsite\t%s\timg\n' "$NEW" "$OLD" | triage 2>"$WORK/v"); status=$?

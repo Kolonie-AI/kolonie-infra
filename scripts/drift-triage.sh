@@ -73,25 +73,46 @@ package_for() {
 #
 # Returns 1 when GHCR refused the request and 2 when it answered with no
 # tagged build. Both end as `unknown`, but they are different faults and the
-# report has to say which: the first is a token that cannot read that package —
-# fixable, and per-package, so it can be true of one image and false of its two
-# siblings in the same run — and the second is a package nothing has pushed to.
-# Collapsing them sends the reader looking for a build that exists.
+# report has to say which: the first is something about the request the caller
+# can act on, the second is a package nothing has pushed to. Collapsing them
+# sends the reader looking for a build that exists.
+#
+# **A refusal leaves its reason in GHCR_ERROR** (#50). The first version sent
+# gh's stderr to /dev/null and reported only that the call had failed, which
+# reproduced the mistake #43 exists to correct one level up: the state without
+# the reason. It cost a wrong diagnosis immediately — a run reported
+# `moderation-runner | unknown` and the issue filed off it named a per-package
+# permission, inferred from an exit code rather than read from an error. Whatever
+# the cause turns out to be, the next reader should not have to infer it.
+#
+# gh prints the status line and the API's message here; neither carries a token.
 sha_history() {
     local pkg="$1" raw
     # `</dev/null` for the reason health-report.sh documents: this runs inside a
     # `while read` loop over stdin, and a subprocess that inherits that stdin
     # eats the remaining rows. The report then covers one service and looks
     # complete.
+    # The reason goes to a **file**, not a variable. This function is called
+    # through a command substitution, so it runs in a subshell and anything it
+    # assigns dies with that subshell — the same trap health-report.sh documents
+    # for its own loop. The file outlives it; `2>` truncates it per call, so a
+    # stale reason cannot be attributed to the next package.
     raw=$(gh api --paginate "/orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
-            --jq '.[] | .metadata.container.tags[]?' 2>/dev/null </dev/null) || return 1
+            --jq '.[] | .metadata.container.tags[]?' 2>"$ERR_FILE" </dev/null) || return 1
     printf '%s\n' "$raw" | grep -E '^[0-9a-f]{40}$' || return 2
 }
 
 summary=""
 fingerprint_input=""
 why=""
+reason=""
 ghcr_status=0
+
+# Somewhere to catch gh's stderr. A file rather than a command substitution
+# because the exit status of the call is what decides the branch, and wrapping it
+# to capture both would lose it.
+ERR_FILE=$(mktemp)
+trap 'rm -f "$ERR_FILE"' EXIT
 verdict="ok"
 exit_code=0
 rows=0
@@ -111,7 +132,10 @@ while IFS=$'\t' read -r svc revision image; do
     history="$(sha_history "$pkg")"; ghcr_status=$?
     if [ "$ghcr_status" -ne 0 ] || [ -z "$history" ]; then
         if [ "$ghcr_status" -eq 1 ]; then
-            why="GHCR refused the request for \`$pkg\` — the token cannot read this package"
+            # One line, trimmed: the useful part is the status and the message,
+            # and gh follows them with a usage block nobody needs in a table.
+            reason=$(tr '\n' ' ' < "$ERR_FILE" | sed 's/  */ /g; s/^ *//; s/ *$//' | cut -c1-300)
+            why="GHCR refused the request for \`$pkg\`: ${reason:-no error text}"
         else
             why="GHCR lists no tagged build for \`$pkg\`"
         fi
