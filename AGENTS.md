@@ -200,6 +200,25 @@ The deploy is serialised at two levels:
 for each image and includes only what is reachable, so one missing image degrades
 to a warning rather than taking the others down.
 
+### Logging and disk
+
+Container logs are capped in `docker-compose.yml` at **50 MB across 3 files per
+service** — about 900 MB for the whole stack. Docker's default has no cap at all,
+and nothing on this host rotated container logs before #37: a container logged
+until the partition was full, and then every service failed at once for a reason
+none of their logs could record, because there was nowhere left to record it.
+
+The policy is a YAML anchor in the compose file rather than `daemon.json`, so it
+lives where it is reviewed and deployed instead of in host state nothing here can
+see. **It applies when a container is recreated, not when the file changes** — a
+running container keeps the policy it started with.
+
+The cap bounds the fastest way the disk fills, not the disk. Images, volumes,
+backups and the Postgres data directory grow regardless, so Health Watch reports
+the partition above **85%** (`DISK_FULL_PERCENT` in `scripts/health-triage.sh`).
+That threshold has room to act in it; one at 99% arrives after the host has
+stopped being able to write.
+
 ### The environment contract: `ai.kolonie.required-env`
 
 **If you are working in an application repository and are about to make an

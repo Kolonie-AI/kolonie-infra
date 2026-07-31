@@ -42,6 +42,15 @@ SUSTAINED_SECONDS="${SUSTAINED_SECONDS:-900}"
 # outage — which is the morning the report most needs to be believed.
 BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
 
+# How full the Docker partition may get before it is reported (#37).
+#
+# 85% is a threshold with room to act in it rather than an alarm at the moment
+# of failure: a partition that crosses it has days left at ordinary growth, and
+# a report that only fires at 99% arrives after the host has already stopped
+# being able to write. Capped container logs bound the fastest way this fills;
+# images, volumes and the Postgres data directory are not bounded by anything.
+DISK_FULL_PERCENT="${DISK_FULL_PERCENT:-85}"
+
 # Seconds into something a person reads without counting zeroes. The distinction
 # that matters is minutes versus days, so the units are coarse deliberately.
 human() {
@@ -67,6 +76,7 @@ fingerprint_parts=()
 # one the reader stops reading.
 container_problems=()
 backup_problems=()
+disk_problems=()
 
 while IFS=$'\t' read -r name state health streak approx image; do
     [ -z "${name:-}" ] && continue
@@ -94,6 +104,28 @@ while IFS=$'\t' read -r name state health streak approx image; do
             fingerprint_parts+=("backup:stale")
         else
             healthy+=("database backup ($duration ago)")
+        fi
+        continue
+    fi
+
+    # Not a container either, and judged before the container rules for the same
+    # reason the backup row is: `state=ok` would otherwise fall through to "not
+    # running" and read as a broken service. APPROX_SECONDS carries a percentage
+    # here, not a duration — see health-report.sh.
+    if [ "$name" = "disk" ]; then
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _disk_ | unknown | - | - | the host could not report how full its partition is |")
+            disk_problems+=("unknown")
+            fingerprint_parts+=("disk:unknown")
+        elif [ "${approx:-0}" -ge "$DISK_FULL_PERCENT" ]; then
+            problems+=("| _disk_ | filling | - | - | the Docker partition is ${approx}% full |")
+            disk_problems+=("full")
+            # The percentage is deliberately out of the fingerprint. It moves a
+            # point at a time, and including it would file a fresh comment on
+            # every run while the condition simply persists.
+            fingerprint_parts+=("disk:full")
+        else
+            healthy+=("disk (${approx}% used)")
         fi
         continue
     fi
@@ -167,6 +199,24 @@ if [ "${#backup_problems[@]}" -gt 0 ]; then
     echo "journalctl -u kolonie-backup.service -n 50"
     echo "/opt/kolonie/scripts/backup.sh verify"
     echo '```'
+fi
+
+if [ "${#disk_problems[@]}" -gt 0 ]; then
+    echo
+    echo "A full partition takes every service down at once, and for a reason none of"
+    echo "their logs can record — there is nowhere left to record it. Container logs"
+    echo "are capped in docker-compose.yml (#37); everything else on this disk is not."
+    echo "Find what grew before deleting anything:"
+    echo
+    echo '```'
+    echo "df -h /var/lib/docker"
+    echo "docker system df"
+    echo "sudo du -xh --max-depth=1 /var/lib/docker | sort -h | tail"
+    echo '```'
+    echo
+    echo "\`docker system prune\` removes stopped containers and unused images. It also"
+    echo "removes the image a rollback would return to, so read \`state/deployed.env\`"
+    echo "first and keep what it names."
 fi
 
 # Sorted so the same set of problems in a different order is the same

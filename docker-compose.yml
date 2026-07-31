@@ -1,3 +1,29 @@
+# Container logs that cannot fill the disk (#37).
+#
+# Docker's default json-file driver has **no cap at all**: a container logs until
+# the partition is full, and then every service on the host fails at once for a
+# reason none of their logs can record, because there is nowhere left to record
+# it. Nothing on this host rotated container logs before this.
+#
+# 50 MB across 3 files is 150 MB per container and about 900 MB for the stack —
+# affordable on this disk, and long enough to still hold a startup exception a
+# day later. That matters more here than usual: since kolonie-infra#43 the deploy
+# quotes a failing container's log before rolling it back, and a rotation window
+# shorter than the gap between a bad deploy and somebody reading about it would
+# quietly hollow that out.
+#
+# Applied per service through a YAML anchor rather than daemon.json, so the
+# policy is in the file that is reviewed and deployed rather than in host state
+# nothing here can see — the class of gap kolonie-infra#42 is about.
+#
+# **This takes effect when a container is recreated, not when the file changes.**
+# A running container keeps the policy it started with.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 networks:
   kolonie:
     name: kolonie
@@ -13,6 +39,7 @@ services:
     image: traefik:v3.7
     container_name: kolonie-traefik
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     ports:
@@ -51,6 +78,7 @@ services:
     image: postgres:16-alpine
     container_name: kolonie-postgres
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     environment:
@@ -80,6 +108,7 @@ services:
     image: ${API_IMAGE:-ghcr.io/kolonie-ai/kolonie-api:latest}
     container_name: kolonie-api
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     environment:
@@ -177,6 +206,7 @@ services:
     image: ${RUNNER_IMAGE:-ghcr.io/kolonie-ai/kolonie-verifier-runner:latest}
     container_name: kolonie-verifier-runner
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     environment:
@@ -241,6 +271,7 @@ services:
     image: ${MODERATION_IMAGE:-ghcr.io/kolonie-ai/kolonie-moderation-runner:latest}
     container_name: kolonie-moderation-runner
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     environment:
@@ -305,6 +336,7 @@ services:
     image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:latest}
     container_name: kolonie-website
     restart: unless-stopped
+    logging: *logging
     networks:
       - kolonie
     healthcheck:

@@ -171,6 +171,29 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'backup\tnever\t-\t0\t0\t-\n'
     fi
+
+    # A third row that is not a container: how full the partition the containers
+    # write to is (#37).
+    #
+    # Capping the logs in docker-compose.yml bounds the one thing that was
+    # unbounded, and it is not a disk monitor — images, volumes, backups and the
+    # Postgres data directory all still grow, and a full partition takes every
+    # service down at once for a reason none of their logs can record, because
+    # there is nowhere left to record it. The cap makes that slower; only a
+    # threshold makes it visible.
+    #
+    # APPROX_SECONDS carries the percentage used, because the row format has no
+    # other numeric column and adding one would change what health-triage.sh
+    # parses. Ugly, and confined to these two files.
+    disk_pct=$(df --output=pcent /var/lib/docker 2>/dev/null | tail -1 | tr -dc '0-9')
+    [ -z "$disk_pct" ] && disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
+    if [ -n "$disk_pct" ]; then
+        printf 'disk\tok\t-\t0\t%s\t-\n' "$disk_pct"
+    else
+        # Say nothing rather than report 0%. An unreadable df reported as an
+        # empty disk is the direction that hides the problem.
+        printf 'disk\tunknown\t-\t0\t0\t-\n'
+    fi
 fi
 
 exit 0
