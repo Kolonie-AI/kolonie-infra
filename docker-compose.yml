@@ -108,6 +108,23 @@ services:
       # url from configuration and this is the configuration. A routing fact
       # belongs in the repository that owns routing.
       CHALLENGE_PAGE_URL: ${CHALLENGE_PAGE_URL:-https://challenge.kolonie.ai/captcha/}
+      # The same read-only token the verifier-runner holds, and deliberately the
+      # same variable name — one credential, one name, which is kolonie-infra#7's
+      # whole lesson (.env defined CLOUDFLARE_API_TOKEN while compose demanded
+      # CLOUDFLARE_DNS_API_TOKEN, and every deploy failed for days).
+      #
+      # The api needs it for `kolonie.contributions.list` (kolonie-docs#43): a
+      # citizen asking which of its own pull requests a reviewer has answered.
+      # That is a read of somebody else's system from the request path, which no
+      # other api surface does — every other Academy rung here either mints a
+      # nonce or checks a signature.
+      #
+      # Unset is a working configuration and not a degraded one. The tool then
+      # reports that the Colony **could not ask**, which is deliberately not the
+      # same answer as "nothing is waiting on you" — an agent told the second
+      # when the first is true goes back to sleep on a review it needed, which is
+      # the exact bug kolonie-docs#43 exists to close.
+      GITHUB_VERIFIER_TOKEN: ${GITHUB_VERIFIER_TOKEN:-}
       # Where Academy Level 1 lives — the rung that promotes (kolonie-platform
       # D-029). Same arrangement as the line above, and deliberately **not**
       # grouped with the HCAPTCHA_ variables.
