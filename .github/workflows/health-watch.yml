@@ -42,6 +42,7 @@ env:
   VPS_USER: ubuntu
   DEPLOY_DIR: /opt/kolonie
   ISSUE_TITLE: 'Containers on the deploy host are unhealthy'
+  DRIFT_ISSUE_TITLE: 'The deploy host is not serving what was last built'
 
 jobs:
   watch:
@@ -51,6 +52,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      packages: read
 
     steps:
       - name: Checkout
@@ -90,11 +92,25 @@ jobs:
               "cd ${DEPLOY_DIR} && chmod +x scripts/health-report.sh && ./scripts/health-report.sh" \
               > probe.out
 
+          # A second question over the same connection: which commit is each
+          # container running (#44). Separate from the health report because it
+          # is a separate condition — a host can be entirely healthy and a build
+          # behind, which is the silence #31 left open, and merging the two rows
+          # into one report would mean one verdict for two unrelated faults.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd ${DEPLOY_DIR} && chmod +x scripts/deployed-revision.sh && ./scripts/deployed-revision.sh" \
+              > revisions.out
+
           # Never leave a production key on the filesystem past the step that
           # needed it, even on a runner that is about to be destroyed.
           shred -u ~/.ssh/deploy_key
 
-          echo "rows: $(wc -l < probe.out)"
+          echo "health rows: $(wc -l < probe.out)"
+          echo "revision rows: $(wc -l < revisions.out)"
 
       - name: Triage the report
         id: triage
@@ -199,4 +215,107 @@ jobs:
 
           gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file body.md
           gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file changed.md
+          echo "updated #$number"
+
+      # --- deploy drift (#44) ---------------------------------------------
+      #
+      # A separate condition, a separate issue and a separate verdict. #31 made
+      # one commit produce one deploy, which was the mechanism; this is the
+      # measurement, and it is what notices the ways a host falls behind that no
+      # queue can prevent — a deploy that failed and rolled back, a cancelled
+      # run, a manual intervention, an image that never built.
+      #
+      # It runs whatever the health verdict was. A host is perfectly capable of
+      # being green and a build behind, and that combination is the one that
+      # stays hidden longest.
+      - name: Compare what is running against what was last built
+        id: drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          chmod +x scripts/drift-triage.sh
+          ./scripts/drift-triage.sh < revisions.out > drift.md 2> drift-verdict.env
+          status=$?
+
+          # Exit 2 is the script saying it could not run — an empty probe rather
+          # than a behind host. Fail the run so it is visible in the Actions tab,
+          # for the same reason the health triage does: a broken watcher that
+          # reports "ok" is the failure this workflow exists to end.
+          if [ "$status" -eq 2 ]; then
+            echo "::error::The revision probe returned no rows. SSH reachable but the report is empty?"
+            exit 1
+          fi
+
+          cat drift-verdict.env >> "$GITHUB_OUTPUT"
+          cat drift.md
+
+      - name: File, update or close the drift report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT: ${{ steps.drift.outputs.VERDICT }}
+          FINGERPRINT: ${{ steps.drift.outputs.FINGERPRINT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$DRIFT_ISSUE_TITLE\"" --json number,body --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          # `unknown` files nothing. It means this check is partly blind — an
+          # image from before kolonie-platform#75, or a revision GHCR no longer
+          # lists — and an issue that says "I cannot tell" every fifteen minutes
+          # teaches the reader to ignore the ones that say something.
+          if [ "$VERDICT" != "drifted" ]; then
+            if [ -n "$number" ]; then
+              printf '%s\n\n%s\n' \
+                'Resolved. Every service is running the newest image built for it.' \
+                "$RUN_URL" > drift-recovered.md
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file drift-recovered.md
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+                --reason completed --comment "Closed automatically by Health Watch."
+              echo "closed #$number"
+            else
+              echo "verdict $VERDICT, nothing open — saying nothing"
+            fi
+            exit 0
+          fi
+
+          {
+            cat drift.md
+            printf '\n<!-- drift-watch-fingerprint: %s -->\n\n' "$FINGERPRINT"
+            printf 'Filed automatically by [Health Watch](%s). It closes itself once every\n' "$RUN_URL"
+            printf 'service is running the newest image built for it.\n\n'
+            printf 'A green stack and a behind host are compatible states, so do not read this\n'
+            printf 'as an outage. Read it as: a build exists that this host is not running, and\n'
+            printf 'something decided that without saying so.\n'
+          } > drift-body.md
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$DRIFT_ISSUE_TITLE" \
+              --label p1 --label area:infra \
+              --body-file drift-body.md
+            echo "filed a new drift report"
+            exit 0
+          fi
+
+          previous="$(echo "$existing" | jq -r '.[0].body // ""' \
+            | sed -n 's/.*drift-watch-fingerprint: \(.*\) -->.*/\1/p')"
+
+          if [ "$previous" = "$FINGERPRINT" ]; then
+            echo "unchanged since the last run — #$number already says this"
+            exit 0
+          fi
+
+          {
+            printf 'What is behind has changed.\n\n'
+            cat drift.md
+            printf '\n%s\n' "$RUN_URL"
+          } > drift-changed.md
+
+          gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file drift-body.md
+          gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file drift-changed.md
           echo "updated #$number"

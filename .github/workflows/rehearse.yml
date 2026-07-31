@@ -48,6 +48,13 @@ jobs:
       - name: backup.sh
         run: bash scripts/rehearse-backup.sh
 
+      # drift-triage.sh reaches GHCR in production; here it reaches a stub. The
+      # judgement it makes — current, behind by a number, or unable to tell — is
+      # the part worth testing, and collapsing `unknown` into either of the
+      # others is how a watcher becomes noise (#44).
+      - name: drift-triage.sh
+        run: bash scripts/rehearse-drift.sh
+
       # Syntax alone would not have caught anything above, but it is free and it
       # catches the class of mistake that never reaches a test case.
       - name: shell syntax

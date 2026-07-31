@@ -22,6 +22,9 @@ scripts/rollback.sh         manual rollback to the last known-good build
 scripts/backup.sh           daily pg_dump into an off-host restic repository (#4)
 scripts/rehearse-backup.sh  exercises backup.sh against a stub docker and restic
 scripts/env-drift.sh        detects .env vs docker-compose.yml mismatches
+scripts/deployed-revision.sh  which commit each running container was built from
+scripts/drift-triage.sh     decides whether the host is behind what was last built
+scripts/rehearse-drift.sh   exercises drift-triage.sh against a stub gh
 scripts/health-report.sh    structured health report for the diagnose workflow
 scripts/health-triage.sh    interprets health-report output
 scripts/origin-firewall.sh  restricts origin to Cloudflare edge IPs
@@ -149,6 +152,7 @@ the test is the rehearsal:
 ```bash
 bash scripts/rehearse-deploy.sh     # exercises deploy.sh logic
 bash scripts/rehearse-backup.sh     # exercises backup.sh logic
+bash scripts/rehearse-drift.sh      # exercises drift-triage.sh logic
 bash scripts/env-drift.sh           # detects .env mismatches (on the host)
 ```
 
