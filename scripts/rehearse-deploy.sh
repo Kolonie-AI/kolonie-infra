@@ -236,6 +236,42 @@ absent "$(cat "$WORK/docker.log")" "kolonie-api:0000" "and never rebuilt it into
 absent "$(cat "$WORK/docker.log")" "kolonie-verifier-runner:0000" "same for an image it does not probe"
 contains "$out" "Deployment completed" "the deploy ran on recorded digests alone"
 
+echo "== 7d. a digest that lost its '@' is read back as a digest"
+# The repair path for the records written while the split was live. This ran in
+# production: deployed.env held ghcr.io/kolonie-ai/kolonie-website:cf52b9a8… —
+# 64 hex characters, which is a sha256 without its separator and not a tag anyone
+# pushed. Without this the next website rollback resolves nothing.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+HEX=$(printf %064d 5)
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:${HEX}
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(NO_VERSIONS=1 run_deploy env)
+contains "$out" "which is a digest that lost its '@' — reading it as one" "said what it was repairing"
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-api@sha256:${HEX}" "probed it as a digest"
+
+echo "== 7e. a real tag is left alone"
+# The heuristic must not eat a 40-character git SHA, which is what every tag in
+# this project actually is.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+GITSHA=$(printf %040d 6)
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:${GITSHA}
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(NO_VERSIONS=1 run_deploy env)
+absent "$out" "digest that lost its '@'" "left a git-sha tag alone"
+contains "$(cat "$WORK/docker.log")" "pull -q ghcr.io/kolonie-ai/kolonie-api:${GITSHA}" "and probed it as the tag it is"
+
 echo "== 8. a single-service deploy never passes --remove-orphans"
 # A deploy of one service has no business asserting what the whole host should
 # contain, and that flag deletes everything the compose view does not list.

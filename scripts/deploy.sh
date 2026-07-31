@@ -94,8 +94,28 @@ resolve_image() {
     fi
 
     case "$recorded" in
-        "${repo}@sha256:"*|"${repo}:"*)
-            # Already a complete reference to this image, digest or tag.
+        "${repo}@sha256:"*)
+            echo "$recorded"
+            return 0 ;;
+        "${repo}:"*)
+            # Repair the records the split above wrote while it was live.
+            #
+            # A recorded value of `repo:<64 lowercase hex>` is not a tag anyone
+            # ever pushed — this project's tags are 40-character git SHAs and
+            # `latest`, and 64 hex characters is the shape of a sha256 digest
+            # that lost its `@`. Reading it back as the digest it came from turns
+            # a file the next rollback would have failed on into a working one,
+            # without anybody logging into the host.
+            #
+            # Narrow on purpose: a real 64-hex tag would be misread, and there is
+            # no such tag here. If one is ever introduced this heuristic has to
+            # go, and the loud line below is what will lead someone to it.
+            local tag="${recorded#"${repo}":}"
+            if [ ${#tag} -eq 64 ] && [[ "$tag" =~ ^[0-9a-f]+$ ]]; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${label}: deployed.env holds ${repo}:${tag}, which is a digest that lost its '@' — reading it as one" >&2
+                echo "${repo}@sha256:${tag}"
+                return 0
+            fi
             echo "$recorded"
             return 0 ;;
     esac
