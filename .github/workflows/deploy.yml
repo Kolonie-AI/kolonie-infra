@@ -34,13 +34,16 @@ on:
         default: 'all'
       version:
         description: >-
-          Image tag to deploy, applied to the service named above. A caller that
-          knows which build it just pushed passes that build, and then what runs
-          is a function of a commit rather than of whatever happens to be sitting
-          in :latest by the time the pull runs.
+          Image tag to deploy, applied to every service named above. A caller
+          that knows which build it just pushed passes that build, and then what
+          runs is a function of a commit rather than of whatever happens to be
+          sitting in :latest by the time the pull runs. Leave it empty to
+          re-deploy the builds already recorded in state/deployed.env — deploy.sh
+          refuses `latest` outright, so an empty version is the only way to say
+          "whatever is serving now".
         type: string
         required: false
-        default: 'latest'
+        default: ''
     # Named rather than inherited. `secrets: inherit` would hand this workflow —
     # which lives in another repository and can SSH into production — every
     # secret the calling repository holds, for the two it actually needs. Listing
@@ -67,9 +70,9 @@ on:
         required: false
         default: 'all'
       version:
-        description: 'Image tag to deploy, applied to every service named above'
+        description: 'Image tag, applied to every service named above. Empty re-deploys what state/deployed.env records; `latest` is refused.'
         required: false
-        default: 'latest'
+        default: ''
 
 # One deploy at a time, and a queued one waits rather than replacing the one in
 # flight. Two SSH sessions running deploy.sh against one host would interleave a
@@ -118,10 +121,19 @@ jobs:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ubuntu
       DEPLOY_DIR: /opt/kolonie
-      # `inputs` is empty on a push, so both fall back to deploying everything
-      # from the mutable tag — which is what a change to this repository means.
+      # `inputs` is empty on a push, so this deploys everything at whatever
+      # state/deployed.env already records — which is what a change to *this*
+      # repository means: the infrastructure config moved, the application
+      # builds did not.
+      #
+      # An empty VERSION rather than `latest`. deploy.sh refuses `latest` outright
+      # since PR #41 — a deploy that pulls the mutable tag ships whatever finished
+      # building most recently, which need not be the commit that asked for it and
+      # need not be a commit anyone reviewed. Empty means "keep serving the builds
+      # you have recorded", which is a statement about a known digest; `latest` is
+      # a statement about a moment in time.
       SERVICE: ${{ inputs.service || 'all' }}
-      VERSION: ${{ inputs.version || 'latest' }}
+      VERSION: ${{ inputs.version || '' }}
 
     steps:
       - name: Checkout

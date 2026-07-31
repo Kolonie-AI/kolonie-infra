@@ -209,9 +209,15 @@ Sharing one `version` across a list is safe for the reason a list exists at all:
 a list only ever comes from one commit's builds. Across *different* callers the
 images share no version, which is why the input is per-deploy and not global.
 
-`version` defaults to `latest`, which is what a push to this repository means:
-re-deploy whatever is current. Naming a tag is how a deploy becomes a function
-of a commit rather than of whatever finished building most recently.
+**`version` defaults to empty, and `latest` is refused** (PR #41). An empty
+version re-deploys the digests `state/deployed.env` already records, which is
+what a push to *this* repository means: the infrastructure config moved and the
+application builds did not. `latest` used to be that default and it is a
+different claim — it ships whatever finished building most recently, which need
+not be the commit that asked for the deploy and need not be a commit anyone
+reviewed. Naming a tag is how a deploy becomes a function of a commit; naming
+nothing is how it becomes a function of what is already serving. Neither is a
+function of the clock.
 
 A `workflow_dispatch` always deploys, whatever the path filter says.
 
