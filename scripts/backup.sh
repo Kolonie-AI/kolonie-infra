@@ -51,6 +51,38 @@
 # is the current policy: no `restic forget` runs anywhere. See
 # `docs/disaster-recovery.md` for the one line that changes that.
 #
+# ## Why the secrets file is in the snapshot too (#45)
+#
+# `/opt/kolonie/.env` is backed up alongside the dump. This reverses what
+# `docs/disaster-recovery.md` argued until 2026-07-31 — that secrets must not go
+# where the database goes — and the reversal is deliberate.
+#
+# The separation bought less than it read like. `backup.env` is root-only, so
+# anyone who can read the object-store credentials is already root on this host,
+# and root can read `/opt/kolonie/.env` directly. The only scenario the split
+# defended against was the object-store key *and* the repository password leaking
+# with no host access at all — and an attacker in that position already holds
+# every user record in the database.
+#
+# Against that stood a hole: part of the backup was conditional on a secret that
+# was not in it. `BAN_MARK_SALT` salts the ban marks stored *in the database*, and
+# `packages/db/src/ban-salt.ts` states that every existing mark stops matching the
+# day that value moves. Restore the database without it and the rows come back
+# permanently unmatchable. That is not a gap in the rebuild, it is a gap in the
+# backup.
+#
+# The retention policy makes it nearly free and adds something worth having:
+# nothing prunes, so a daily snapshot of this file is a version history of it.
+# `restic diff` shows the day a secret changed, and a clobbered file is
+# recoverable from yesterday.
+#
+# **What stays out is `backup.env` itself.** It holds the repository URL, its
+# password and the object-store credentials — backing it up inside the repository
+# it unlocks is circular and worthless during a restore. It belongs in the
+# maintainer's password manager, and that is where it is. The rule that falls out:
+# everything the host needs to come back goes into restic; what unlocks restic
+# goes into the vault.
+#
 # ## Configuration
 #
 # Read from the environment, and from `/opt/kolonie/backup.env` if that file
@@ -98,6 +130,29 @@ RESTIC_HOST_LABEL="kolonie"
 # The path the dump occupies inside a snapshot. Stable on purpose: it is what
 # every restore command in docs/disaster-recovery.md names.
 DUMP_NAME="kolonie.sql"
+
+# The compose secrets file, backed up in place rather than copied into WORK_DIR.
+#
+# In place, because the path inside the snapshot is then the path it has to be
+# restored to — a restore under pressure should not have to know where the file
+# used to live. Naming it explicitly also means the `.env.bak-*` files that
+# accumulate next to it are not swept along: restic backs up the paths it is
+# given, and this is the only one it is given.
+ENV_FILE="${KOLONIE_ENV_FILE:-$DEPLOY_DIR/.env}"
+
+# The floor below which the secrets file is assumed damaged rather than small.
+#
+# The same argument as the 1 KB floor on the dump: a file that has been truncated
+# or half-written is still a file, and a snapshot made from it is discovered at
+# restore time, by someone who has no way left to check. There were 19
+# assignments on 2026-07-31; ten is low enough that a legitimate consolidation
+# does not trip it and high enough that a clobbered file does.
+#
+# It counts assignments and never reads a value. No part of this script may put
+# the contents of this file into a variable, a log line or a message — the
+# no-secrets rule is AGENTS.md §11, and a backup script is exactly the place
+# where "just print it to debug" is tempting.
+ENV_MIN_ASSIGNMENTS="${KOLONIE_ENV_MIN_ASSIGNMENTS:-10}"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 die()  { echo "ERROR: $1" >&2; exit 1; }
@@ -161,11 +216,45 @@ docker_pipe() {
 
 # --- preflight ------------------------------------------------------------
 
+# Is the secrets file whole enough to be worth a snapshot.
+#
+# Checked in preflight, which means a damaged `.env` stops the database backup
+# too. That is the uncomfortable half of the decision and it was taken on
+# purpose. The alternative — snapshot the database anyway, warn about the file —
+# writes a snapshot that looks complete and is not, and the person who finds out
+# is the one restoring it. Every other branch in this script refuses to write
+# rather than write something partial, and this one is not the place to start
+# making exceptions.
+#
+# What makes that affordable is that it cannot be silent: the run fails, the unit
+# fails, `.last-success` keeps its old timestamp, and health-report.sh turns the
+# `backup` row red after 36 hours. And the trigger is almost always an edit made
+# seconds earlier by the person now reading the error.
+check_env_file() {
+    [ -e "$ENV_FILE" ] || die "$ENV_FILE does not exist — refusing to write a snapshot without the secrets (#45)"
+    [ -r "$ENV_FILE" ] || die "$ENV_FILE is not readable — run this as root"
+    [ -s "$ENV_FILE" ] || die "$ENV_FILE is empty — refusing to overwrite a good history with nothing (#45)"
+
+    # `|| true` because grep -c exits 1 on no matches, and this runs under
+    # pipefail inside a command substitution.
+    local assignments
+    assignments=$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" 2>/dev/null || true)
+    assignments=${assignments:-0}
+
+    if [ "$assignments" -lt "$ENV_MIN_ASSIGNMENTS" ]; then
+        die "$ENV_FILE holds $assignments assignments, fewer than $ENV_MIN_ASSIGNMENTS — it looks truncated (#45)"
+    fi
+
+    echo "env: $assignments assignments" >&2
+}
+
 # Everything that can be known before a byte is written is checked here, because
 # the alternative is discovering it with a half-finished dump on a full disk.
 preflight() {
     docker_cmd inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null | grep -q true \
         || die "$PG_CONTAINER is not running — refusing to record a backup that did not happen"
+
+    check_env_file
 
     mkdir -p -m 755 "$WORK_DIR" || die "cannot create $WORK_DIR"
 
@@ -294,12 +383,22 @@ do_backup() {
     # failure this whole script exists for.
     trap cleanup_dump EXIT
 
-    log "backing up $(basename "$DUMP_PATH")"
+    # One snapshot, two paths, and not two snapshots. A restore needs both files
+    # to have come from the same moment: the secrets that were live when the
+    # database was dumped are the ones that decrypt and match what is in it. Two
+    # snapshots can drift apart by a night, and the pairing would then have to be
+    # reconstructed by timestamp at exactly the wrong moment.
+    #
+    # `kolonie-db` stays on the snapshot so that the tag older snapshots carry
+    # keeps meaning the same thing; `kolonie-env` is added so that "which
+    # snapshots contain the secrets file" is one query.
+    log "backing up $(basename "$DUMP_PATH") and $(basename "$ENV_FILE")"
     if ! restic backup \
             --host "$RESTIC_HOST_LABEL" \
             --tag kolonie-db \
+            --tag kolonie-env \
             --quiet \
-            "$DUMP_PATH"; then
+            "$DUMP_PATH" "$ENV_FILE"; then
         die "restic backup failed — the previous snapshot is still the newest one"
     fi
 
@@ -310,6 +409,16 @@ do_backup() {
     newest=$(restic snapshots --host "$RESTIC_HOST_LABEL" --latest 1 --json 2>/dev/null \
         | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
     [ -n "$newest" ] || die "backup reported success but the repository has no snapshot for $RESTIC_HOST_LABEL"
+
+    # The same argument as reading the snapshot id back instead of trusting an
+    # exit code, one level deeper. `restic backup` exiting 0 says the command
+    # succeeded, not that both paths are in the snapshot — an excluded path, a
+    # file that vanished mid-run, a future change to the invocation above. The
+    # dump has the restore test to catch its absence; the secrets file had
+    # nothing until this line.
+    if ! restic ls "$newest" 2>/dev/null | grep -qxF "$ENV_FILE"; then
+        die "snapshot $newest does not contain $ENV_FILE — the secrets are not backed up"
+    fi
 
     log "snapshot $newest"
 
@@ -340,6 +449,13 @@ do_verify() {
     require_config
     restic cat config >/dev/null 2>&1 || die "the repository is unreachable with the configured credentials"
     restic snapshots --host "$RESTIC_HOST_LABEL" --latest 5
+
+    # What the newest snapshot actually holds. Paths only — `restic ls` prints
+    # names, never contents, so this stays safe to run where the output is read
+    # by someone who should not see the secrets themselves.
+    echo "--- contents of the newest snapshot ---"
+    restic ls latest 2>/dev/null | grep '^/' | grep -v '^/$' || true
+
     restic stats --host "$RESTIC_HOST_LABEL" --mode raw-data 2>/dev/null || true
 }
 

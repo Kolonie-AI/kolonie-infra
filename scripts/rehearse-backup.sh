@@ -33,6 +33,29 @@ AWS_ACCESS_KEY_ID=rehearsal
 AWS_SECRET_ACCESS_KEY=rehearsal
 ENV
 
+# The compose secrets file, which since #45 is part of the snapshot. Nineteen
+# assignments, the number the host carried on 2026-07-31, so that the floor is
+# cleared the way the real file clears it.
+#
+# CANARY is what case 20 looks for. Every value here is invented, and the point
+# of that case is that none of them can reach a log line, a message or the
+# rehearsal's own output — a backup script is precisely where someone eventually
+# adds an echo to debug a failing run.
+CANARY='rehearsal-canary-must-never-be-printed'
+write_env() {
+  {
+    echo "POSTGRES_USER=kolonie"
+    echo "POSTGRES_PASSWORD=$CANARY"
+    for n in $(seq 1 17); do echo "REHEARSAL_VAR_$n=$CANARY"; done
+  } > "$WORK/.env"
+}
+write_env
+
+# Neighbours of the real file on the host. They must not be swept into the
+# snapshot: restic backs up the paths it is handed, and these are not among them.
+echo "POSTGRES_PASSWORD=$CANARY" > "$WORK/.env.bak-20260729-213912"
+echo "POSTGRES_PASSWORD=$CANARY" > "$WORK/.env.example"
+
 # --- the stubs ------------------------------------------------------------
 # Between them they answer every question backup.sh asks of the outside world.
 # The switches (PG_DOWN, FAIL_DUMP, TRUNCATED, EMPTY, HUGE_DB, FAIL_RESTIC,
@@ -125,6 +148,13 @@ case "$1" in
       echo "-- PostgreSQL database dump"
       echo "CREATE TABLE citizens (id int);"
       echo "-- PostgreSQL database dump complete"
+      exit 0 ;;
+  ls)
+      # What the snapshot holds, which backup.sh reads back rather than trusting
+      # the exit code of the write. NO_ENV_IN_SNAPSHOT is a snapshot that was
+      # written without the secrets file — the failure the read-back exists for.
+      echo "${KOLONIE_BACKUP_DIR:-/var/backups/kolonie}/kolonie.sql"
+      [ "${NO_ENV_IN_SNAPSHOT:-}" = 1 ] || echo "${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/.env"
       exit 0 ;;
   unlock) exit 0 ;;
   cat) exit 0 ;;
@@ -297,6 +327,86 @@ out=$(run_restore_test ROWS_DIFFER=1); rc=$?
 check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
 contains "$out" "The two databases differ" "says so"
 contains "$(calls)" "DROP DATABASE IF EXISTS restoretest_" "still dropped the throwaway database"
+
+# --- 15: the secrets file rides along -------------------------------------
+# #45. The database alone is not a recoverable colony: BAN_MARK_SALT lives in
+# /opt/kolonie/.env and the ban marks it salted live in the dump, so a snapshot
+# holding one without the other restores rows that can never match again.
+echo "15. the secrets file is in the same snapshot as the dump"
+write_env
+out=$(run_backup); rc=$?
+check "exits 0" "$rc" "0"
+contains "$(calls)" "$WORK/.env" "the secrets file was handed to restic"
+contains "$(calls)" "--tag kolonie-env" "the snapshot is tagged as carrying it"
+contains "$(calls)" "--tag kolonie-db" "the original tag is still there"
+check "one snapshot, not two" "$(grep -c 'restic backup' "$WORK/call.log")" "1"
+absent "$(calls)" ".env.bak-" "the .env.bak-* neighbours were not swept in"
+absent "$(calls)" ".env.example" "nor .env.example"
+
+# --- 16: a missing secrets file -------------------------------------------
+# Deliberately fatal to the whole run rather than to its second half. A snapshot
+# that looks complete and is not is found by the person restoring it, and by
+# then there is nothing left to check it against.
+echo "16. a missing secrets file stops the run before the database is touched"
+echo "2020-01-01T00:00:00+00:00" > "$WORK/backups/.last-success"
+rm -f "$WORK/.env"
+out=$(run_backup); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "does not exist" "says what is missing"
+absent "$(calls)" "pg_dump" "no dump was attempted"
+absent "$(calls)" "restic backup" "no snapshot was attempted"
+check "the success timestamp survives" "$(cat "$WORK/backups/.last-success")" "2020-01-01T00:00:00+00:00"
+write_env
+
+# --- 17: an emptied secrets file ------------------------------------------
+# The .env equivalent of the truncated dump in case 3, and the likelier accident
+# of the two: a redirection that clobbers the file before it writes it.
+echo "17. an empty secrets file is refused"
+: > "$WORK/.env"
+out=$(run_backup); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "is empty" "says why"
+absent "$(calls)" "restic backup" "no snapshot was attempted"
+write_env
+
+# --- 18: a half-written secrets file --------------------------------------
+# Not empty, not obviously wrong, and worthless. Nothing downstream of the
+# snapshot would notice: the file parses, it just no longer holds the colony.
+echo "18. a secrets file below the assignment floor is refused"
+printf 'POSTGRES_USER=kolonie\nNODE_ENV=production\n' > "$WORK/.env"
+out=$(run_backup); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "looks truncated" "says what it suspects"
+contains "$out" "2 assignments" "says how many it counted"
+absent "$(calls)" "restic backup" "no snapshot was attempted"
+write_env
+
+# --- 19: the snapshot came back without it --------------------------------
+# restic exiting 0 is not the same as the snapshot holding both paths — the same
+# distinction case 7 draws for the snapshot existing at all.
+echo "19. a snapshot that does not contain the secrets file is a failure"
+echo "2020-01-01T00:00:00+00:00" > "$WORK/backups/.last-success"
+out=$(run_backup NO_ENV_IN_SNAPSHOT=1); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "does not contain" "says what is missing from it"
+check "the success timestamp survives" "$(cat "$WORK/backups/.last-success")" "2020-01-01T00:00:00+00:00"
+
+# --- 20: no secret is ever printed ----------------------------------------
+# AGENTS.md §11. This script now reads a file where every line is a production
+# secret, and the pressure to echo one while debugging a failing run is highest
+# in exactly the branches above. Counting is allowed; printing is not.
+echo "20. no value from the secrets file reaches the output"
+all=""
+write_env;                                   all+=$(run_backup)$'\n'
+all+=$(run_backup NO_ENV_IN_SNAPSHOT=1)$'\n'
+all+=$(run_backup FAIL_RESTIC=1)$'\n'
+printf 'POSTGRES_USER=kolonie\n' > "$WORK/.env"
+all+=$(run_backup)$'\n'
+: > "$WORK/.env"
+all+=$(run_backup)$'\n'
+write_env
+absent "$all" "$CANARY" "no secret value in any of five runs"
+contains "$all" "env: 19 assignments" "the count is what gets reported instead"
 
 echo
 echo "passed: $pass   failed: $fail"

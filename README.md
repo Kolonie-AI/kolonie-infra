@@ -380,7 +380,7 @@ kolonie-infra/
 │   ├── deploy.sh                   ← Deployment script
 │   ├── healthcheck.sh              ← Post-deploy health check
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
-│   ├── backup.sh                   ← Daily pg_dump into an off-host restic repository
+│   ├── backup.sh                   ← Daily pg_dump + .env into an off-host restic repository
 │   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
 │   └── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
 │

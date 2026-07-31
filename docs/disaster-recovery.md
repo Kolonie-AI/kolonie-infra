@@ -4,14 +4,21 @@
 
 ### What exists
 
-A daily `pg_dump` of the Colony's database, stored in a [restic](https://restic.net)
-repository on an S3-compatible object store off this host (#4, 2026-07-30).
+A daily `pg_dump` of the Colony's database **and `/opt/kolonie/.env`**, stored in a
+[restic](https://restic.net) repository on an S3-compatible object store off this
+host (#4, 2026-07-30; the secrets file added in #45, 2026-07-31).
+
+Both files go into **one** snapshot, not two. A restore needs them from the same
+moment: the secrets that were live when the database was dumped are the ones that
+match what is inside it. Two snapshots drift apart by a night, and the pairing
+would have to be reconstructed by timestamp at exactly the wrong moment.
 
 | | |
 |---|---|
 | **Schedule** | `kolonie-backup.timer`, daily at 03:00, `Persistent=true` |
 | **Runs** | `scripts/backup.sh backup`, on the host — not in Compose |
 | **Working directory** | `/var/backups/kolonie` |
+| **In the snapshot** | `/var/backups/kolonie/kolonie.sql`, `/opt/kolonie/.env` |
 | **Retention** | every snapshot is kept; nothing prunes |
 | **Encryption** | restic, client-side, before anything leaves the host |
 | **Configuration** | `/opt/kolonie/backup.env`, root-only, `0600` |
@@ -63,6 +70,38 @@ restic key add --user <name> --host offline
 restic key list
 ```
 
+### Why the secrets file is in here, against what this document used to say
+
+Until 2026-07-31 this document argued the opposite, and said so under *What is not
+backed up*: secrets must not go where the database goes. That was reversed in #45,
+and the argument is recorded here rather than edited away.
+
+**The separation bought less than it read like.** `backup.env` is root-only, so
+anyone who can read the object-store credentials is already root on this host —
+and root can read `/opt/kolonie/.env` directly. The only case the split defended
+against was the object-store key *and* the repository password leaking with no
+host access at all, and an attacker holding both already has every user record in
+the database.
+
+**Against that stood a hole in the backup itself, not merely in the rebuild.**
+`BAN_MARK_SALT` lives in `.env` and salts the ban marks stored *in the database*.
+`packages/db/src/ban-salt.ts` states that every existing mark stops matching the
+day that value moves. A restore without it brings the rows back permanently
+unmatchable — so part of what the snapshot held was worthless without a file the
+snapshot did not hold.
+
+**And it only became possible on the day it was done.** While the repository
+password existed nowhere but the host, "put everything in restic" was a circle.
+The password reached the maintainer's vault on 2026-07-31, which is what
+terminates the chain outside this machine.
+
+Two things follow that are worth having in their own right. The retention policy
+never prunes, so a daily snapshot of `.env` is a **version history** of it —
+`restic diff` shows the day a secret changed, and a clobbered file comes back from
+yesterday. And a damaged `.env` now fails the whole run, database included, which
+is the uncomfortable half: see *A damaged `.env` stops the database backup too*
+below.
+
 ### Restoring
 
 Everything below assumes the credentials are loaded:
@@ -75,9 +114,25 @@ export RESTIC_CACHE_DIR=/var/cache/restic
 
 ```bash
 restic snapshots                      # what is available
-./scripts/backup.sh verify            # newest snapshots plus repository size
+./scripts/backup.sh verify            # newest snapshots, contents, repository size
+restic ls latest                      # which paths this snapshot holds
+```
+
+**The secrets come out first, and the database second.** That order is not a
+preference: the stack cannot start without `.env`, and the database cannot be
+loaded into a Postgres that is not running.
+
+```bash
+restic dump latest /opt/kolonie/.env > /opt/kolonie/.env
+chmod 600 /opt/kolonie/.env
+chown ubuntu:ubuntu /opt/kolonie/.env
+
 restic dump latest /var/backups/kolonie/kolonie.sql > /tmp/restore.sql
 ```
+
+Restoring `.env` over a host that still has a working one is how you replace a
+current secret with an older one. On a host that is not a bare rebuild, dump it
+somewhere else and diff first.
 
 The dump is plain SQL. It restores into an **empty** database — it carries no
 `DROP` statements, so loading it over existing data produces duplicate-key errors
@@ -136,18 +191,29 @@ version, and add a row above.
 
 ### Rebuilding this on a new host
 
-The scripts and units arrive with the checkout; three things do not.
+The scripts and units arrive with the checkout; three things do not. Step 1 is the
+only one that comes from a human — everything after it is recoverable from what
+step 1 unlocks.
 
 ```bash
 sudo apt-get install -y restic
 
-# 1. credentials — repository URL, restic password, object-store key
+# 1. credentials — repository URL, restic password, object-store key.
+#    From the maintainer's password manager. This is the single input the rebuild
+#    cannot derive, which is why it is the single thing kept out of the snapshot.
 sudo install -m 600 /dev/stdin /opt/kolonie/backup.env <<'EOF'
 RESTIC_REPOSITORY=...
 RESTIC_PASSWORD=...
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 EOF
+
+# 1b. the compose secrets, out of the snapshot rather than out of a human (#45).
+#     Before the units, because a backup run refuses to start without this file.
+sudo -i
+set -a; . /opt/kolonie/backup.env; set +a
+restic dump latest /opt/kolonie/.env > /opt/kolonie/.env
+chmod 600 /opt/kolonie/.env && chown ubuntu:ubuntu /opt/kolonie/.env
 
 # 2. the units, copied rather than symlinked — the same convention as
 #    kolonie-origin-firewall. A change to the unit in this repository does NOT
@@ -175,14 +241,46 @@ one.
 
 ### What is not backed up
 
+The rule, since #45: **everything the host needs to come back goes into restic;
+what unlocks restic goes into the vault.** So what is left out is left out because
+it is one of those two, and not by accident.
+
 - **Docker volumes other than the database.** Traefik's `acme.json` is the only
   one holding state that is not reproducible, and it re-issues on demand.
-- **`/opt/kolonie/.env`.** It holds every production secret and it is not in this
-  repository by design. It is not in the restic repository either — back it up
-  where secrets belong, not where the database goes. `.env.example` lists what it
-  must contain.
-- **The repository password.** Obviously, but it is the mistake that turns a
-  complete backup into nothing. See "The two passwords".
+- **`/opt/kolonie/backup.env`.** The repository URL, its password and the
+  object-store credentials. Backing it up inside the repository it unlocks is a
+  circle: you would need it to reach the copy of it. It lives in the maintainer's
+  password manager, and that is the one thing this whole scheme depends on being
+  kept somewhere else. See "The two passwords".
+- **`.env.bak-*` and `.env.example`.** `backup.sh` names the one path it backs up
+  rather than backing up a directory, so the neighbours are not swept along.
+  `.env.example` is in this repository anyway.
+
+`/opt/kolonie/.env` **was** on this list until 2026-07-31 and is now in the
+snapshot — see the section above for why the reasoning was reversed.
+
+### A damaged `.env` stops the database backup too
+
+`backup.sh` checks the secrets file in preflight: it must exist, be non-empty, and
+hold at least `KOLONIE_ENV_MIN_ASSIGNMENTS` assignments — ten, against the
+nineteen the host carried on 2026-07-31. Below that it is assumed truncated rather
+than small, and **the whole run is refused, including the database dump**.
+
+That is deliberate and it is the uncomfortable half of #45. The alternative is to
+snapshot the database anyway and warn about the file, which writes a snapshot that
+looks complete and is not — discovered by the person restoring it, who has nothing
+left to check it against. Every other branch in that script refuses to write
+rather than write something partial.
+
+What makes it affordable is that it cannot be silent. The run fails, the unit
+fails, `.last-success` keeps its old timestamp, and the `backup` row goes red after
+36 hours. The trigger is nearly always an edit made seconds earlier by the person
+now reading the error.
+
+The script counts assignments and never reads a value; no part of it may put the
+contents of that file into a variable, a log line or a message (AGENTS.md §11).
+Rehearsal case 20 asserts exactly that across five runs, including the failing
+ones.
 
 ### One accepted leak
 
@@ -242,11 +340,17 @@ before overwriting anything.
    application key — a compromised host had it in /opt/kolonie/backup.env
 2. Provision new VPS
 3. Clone kolonie-infra repo
-4. Restore .env from secure backup
+4. Rebuild backup.env from the vault, then restore .env out of the snapshot
+   (see "Restoring") — but see the warning below before reusing those values
 5. Restore database from backup (see "Rebuilding this on a new host")
 6. docker compose up -d
 7. Investigate breach, update security model
 ```
+
+**Step 4 is the one that differs from every other scenario.** Everywhere else the
+snapshot of `.env` is what you want. Here it holds the secrets the attacker had:
+restore it to know *what* has to be rotated, and rotate every value in it before
+the stack serves traffic. It is an inventory, not a configuration.
 
 The restic password does **not** need rotating for confidentiality — an attacker
 who had the host had the plaintext database anyway. It needs rotating only if you
@@ -259,13 +363,16 @@ the repository without destroying it.
 ```
 1. Provision VPS at an alternative provider
 2. Clone kolonie-infra repo
-3. Restore .env and the database (see "Rebuilding this on a new host")
+3. Rebuild backup.env from the vault, restore .env, then the database
+   (see "Rebuilding this on a new host")
 4. Update DNS (Cloudflare) to new IP
 5. docker compose up -d
 ```
 
 The restic repository is reachable from anywhere with the credentials, so the
-replacement host does not depend on the old one being alive.
+replacement host does not depend on the old one being alive. Since #45 that is
+true of the secrets as well as the data: the only input this scenario needs from
+outside the repository is the vault entry that opens it.
 
 ### Scenario 5: The migration succeeded and the health check then failed
 
@@ -335,6 +442,11 @@ sudo /opt/kolonie/scripts/backup.sh backup
 ## Configuration
 
 - **Source of truth:** this GitHub repository
-- **Secrets:** `/opt/kolonie/.env` on the host, backed up separately — see
-  "What is not backed up"
-- **Recovery:** clone repo, restore `.env`, `docker compose up -d`
+- **Secrets:** `/opt/kolonie/.env` on the host, in the nightly snapshot since #45.
+  It is still edited by hand there, so the snapshot is a backup and a history —
+  not a source of truth
+- **The one thing kept elsewhere:** `/opt/kolonie/backup.env`, in the maintainer's
+  password manager. Everything above is recoverable from it and nothing recovers
+  it
+- **Recovery:** rebuild `backup.env` from the vault, clone repo, `restic dump`
+  `.env`, `docker compose up -d`, `restic dump` the database
