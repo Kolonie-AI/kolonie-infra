@@ -208,10 +208,16 @@ log() {
 
 # Authenticate against GHCR.
 #
-# The application images are private and stay that way until the repositories go
-# public at MVP (kolonie-docs#6). Public packages would publish the built source
-# of kolonie-platform ahead of that decision — the images carry no secrets, but
-# "no secrets" is the wrong test.
+# **All five application images are private, and the reason this comment used to
+# give has expired.** It said they *"stay that way until the repositories go
+# public at MVP (kolonie-docs#6)"* — and kolonie-docs#6 closed on 2026-07-28. The
+# repositories are public; the packages were never revisited. So the honest
+# statement is that they are private because nobody has changed them, not because
+# a condition still holds.
+#
+# That is a live decision rather than a detail, and it is #58: a private package
+# needs a per-repository read grant that has no API and that nothing checks, so
+# every image added costs one dashboard visit somebody has to know about.
 #
 # GHCR_TOKEN is the workflow's own GITHUB_TOKEN, forwarded over SSH. It expires
 # with the job, so nothing long-lived is stored on this host. It only reaches the
