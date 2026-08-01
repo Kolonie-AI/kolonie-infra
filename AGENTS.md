@@ -194,9 +194,55 @@ The deploy is serialised at two levels:
 - **`flock`** in `deploy.sh` itself — defence in depth against concurrent SSH
   sessions.
 
+### Adding a sixth image
+
+Five files, and the fifth is the one that has no API and no test. A service added
+on 2026-08-01 (`kolonie-platform#105`) failed to deploy four times, each with a
+message pointing somewhere other than the file that was wrong.
+
+1. **`scripts/deploy-set.sh`** — `ORDER`, in the position the service's
+   dependencies require. A runner that reads a schema goes behind the api.
+2. **`scripts/deploy.sh`** — a `_REPO`, a `_VERSION`, a `CUR_`, a `resolve_image`
+   call, `pin()`, `preflight_env()`, `record_deployment()` and both halves of the
+   rollback cascade.
+3. **`.github/workflows/deploy.yml`** — the `case` that maps the caller's
+   `version` onto that image's variable. Missing, the deploy refuses with
+   `no version given and none recorded`, which names `deployed.env` on the host
+   and is about this file. There is a `*)` branch now that says so instead.
+4. **`docker-compose.yml`** and **`.env.example`** — the service, and every
+   variable it reads.
+5. **The GHCR package's read access**, and this is the one nothing checks.
+
+A package created by a build is **private and linked to the repository that
+pushed it**, which is `kolonie-platform`. This repository is not granted access
+automatically. A deploy triggered from *here* then answers
+
+```
+403 Forbidden — failed to resolve reference ghcr.io/kolonie-ai/<image>:<sha>
+```
+
+and **carries on**: `detect_profile()` probes only the api and the website, and
+`pull()` on an `all` deploy warns rather than failing. So the service silently
+keeps running whatever image is already on the host while the deploy reports
+success. A deploy triggered from `kolonie-platform` is unaffected, because that
+token owns the package — which is why this is discovered late, by somebody
+wondering why a merged fix is not running.
+
+**There is no API.** Measured 2026-08-01 across every plausible route:
+`PUT/POST/GET .../packages/container/<name>/repositories`, `PATCH` on the package
+itself, and the GraphQL schema — which offers `deletePackageVersion` and nothing
+about access. `gh` has no `package` command. It is a dashboard action:
+
+> Organisation → Packages → *&lt;image&gt;* → Package settings → **Manage Actions
+> access** → Add repository → `kolonie-infra`, Read.
+
+Do it when the package is created, not when a deploy is quietly stale.
+`kolonie-infra#1` is the first time this cost a day; `#58` is the second.
+
 ### Profiles
 
-`--profile full` deploys `api`, `verifier-runner` and `moderation-runner`.
+`--profile full` deploys `api`, `verifier-runner`, `moderation-runner` and
+`support-triage-runner`.
 `--profile website` deploys the website. `detect_profile()` probes the registry
 for each image and includes only what is reachable, so one missing image degrades
 to a warning rather than taking the others down.
