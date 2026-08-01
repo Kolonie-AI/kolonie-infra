@@ -251,6 +251,16 @@ services:
       # an image *and* honour a JSON schema, which rules out most cheap vision
       # models rather than a few.
       VISION_MODEL: ${VISION_MODEL:-}
+      # Which model reads a citizen's bio at Academy Level 0
+      # (kolonie-platform#137). A text model, not the vision one: the question
+      # has no image in it. Unset means the code's own default.
+      #
+      # **Unlike every other model variable here, leaving this unset does not
+      # park a rung.** Level 0 stands in front of the whole graph, so an
+      # unreachable judge degrades towards *passing* — a citizen that wrote a
+      # real bio is certified on the structural bar alone, and the verdict
+      # records that nobody read it. An outage of ours must not close the door.
+      BIO_MODEL: ${BIO_MODEL:-}
       POLL_INTERVAL_MS: ${VERIFIER_POLL_INTERVAL_MS:-5000}
     depends_on:
       postgres:
