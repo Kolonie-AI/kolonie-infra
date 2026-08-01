@@ -791,6 +791,52 @@ check "the api still leads" \
 check "the website still goes last" \
   "$("$WORK/scripts/deploy-set.sh" "website,support-triage-runner,api" | tr '\n' ' ')" "api support-triage-runner website "
 
+echo "== 24. an image this deploy does not touch, and has never recorded, is not fatal"
+# The deadlock introducing kolonie-platform#105 walked into. `deploy.sh api`
+# resolves every image, so on a host with no recorded build for a *new* service
+# the api deploy was refused — several iterations before the one that would have
+# recorded it, and the caller deploys the list in order, so the failure always
+# came first. A service could therefore never be introduced.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(run_deploy_service api env API_VERSION="$SHA" TRIAGE_VERSION="")
+contains "$out" "support-triage-runner: no build recorded, and this deploy does not touch it" "said so, at WARN"
+contains "$out" "=== Deployment completed ===" "and deployed the service it was asked for"
+absent "$out" "support-triage-runner: no version given and none recorded" "did not refuse over an unrelated image"
+
+echo "== 24b. and it never becomes :latest on the way through"
+# The trade this must not make. #12 removed the mutable tag from the deploy path;
+# an unresolved image becomes empty, and empty is inert.
+absent "$(cat "$WORK/docker.log")" "kolonie-support-triage-runner:latest" "no mutable tag anywhere in the run"
+absent "$(cat "$WORK/state/deployed.env")" "kolonie-support-triage-runner:latest" "and none recorded"
+
+echo '== 24c. an all-deploy still refuses, because up -d with no service named starts everything'
+# The half that must not be relaxed: with no service named, compose creates every
+# container, so an unresolved image really would be started from its compose
+# default.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+# Cleared through `env`, after run_deploy has computed its defaults: its own
+# `${TRIAGE_VERSION:-some-sha}` treats an empty string as unset and would put
+# the default back.
+out=$(run_deploy env TRIAGE_VERSION="" || true)
+contains "$out" "support-triage-runner: no version given and none recorded" "an all-deploy still refuses"
+absent "$(cat "$WORK/docker.log")" "up -d" "and nothing was recreated"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

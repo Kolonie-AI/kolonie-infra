@@ -93,6 +93,27 @@ fi
 #
 # So: a digest reference is already the answer to "which build", and turning it
 # back into a version discards the only part that is unambiguous.
+#
+# **Fatal only for an image this invocation will actually start.** It used to
+# refuse for any of the five, and that made a new service impossible to introduce:
+# `deploy.sh api` resolves every image, so on 2026-08-01 the first deploy carrying
+# `support-triage-runner` failed on the *api* iteration — for want of a recorded
+# build for a service the api deploy does not touch, several iterations before the
+# one that would have recorded it. The list the caller sends is deployed in order,
+# so the failure came before the fix could.
+#
+# `all` keeps the old behaviour, and must: `up -d` with no service named creates
+# every container, so an unresolved image there really would be started from
+# `:latest`. For a named service, the others are not recreated and their reference
+# is never read — so an empty tag is carried, `pin()` leaves it alone, and
+# `record_deployment` copies the previous record forward as it already did.
+#
+# What is *not* traded away: a missing build never becomes `:latest`. It becomes
+# empty, and empty is inert.
+required_image() {
+    [ "$SERVICE" = all ] || [ "$SERVICE" = "$1" ]
+}
+
 resolve_image() {
     local named="$1" recorded="$2" repo="$3" label="$4"
 
@@ -131,6 +152,15 @@ resolve_image() {
             echo "$recorded"
             return 0 ;;
     esac
+
+    if ! required_image "$label"; then
+        # Not this deploy's business. Said once, at WARN, because a host that
+        # never records this image is a real condition somebody should notice —
+        # just not by having an unrelated deploy refused.
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${label}: no build recorded, and this deploy does not touch it — carrying nothing" >&2
+        echo ""
+        return 0
+    fi
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${label}: no version given and none recorded in ${STATE_DIR}/deployed.env." >&2
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${label}: pass a version, or deploy this service once so a build is recorded." >&2
@@ -363,6 +393,10 @@ pin() {
 # inside it.
 digest_of() {
     local tag="$1" repo="$2" digest
+
+    # An image this deploy is not touching and has never recorded. Nothing to
+    # resolve and nothing to warn about — see required_image().
+    [ -z "$tag" ] && { echo ""; return 0; }
     digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$tag" 2>/dev/null \
         | grep "^${repo}@" | head -n 1 || true)
 
