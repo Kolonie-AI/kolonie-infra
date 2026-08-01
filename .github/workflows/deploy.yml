@@ -232,6 +232,25 @@ jobs:
                   moderation-runner)     export MODERATION_VERSION="$VERSION" ;;
                   support-triage-runner) export TRIAGE_VERSION="$VERSION" ;;
                   website)               export WEBSITE_VERSION="$VERSION" ;;
+                  # `all` is not a service and takes no version, which is what
+                  # the paragraph above already argues: five images built by five
+                  # workflows in two repositories share no tag, so there is no
+                  # single version to apply. `deploy.sh all` resolves each image
+                  # from what the host has recorded, which is exactly right for a
+                  # change to compose or to the environment — the images do not
+                  # move.
+                  #
+                  # **It was missing, and that made every `all` deploy fail.**
+                  # `deploy-set.sh` deliberately passes `all` through rather than
+                  # expanding it — that is `deploy.sh`'s whole-project mode, one
+                  # pull and one `--remove-orphans`, and its own comment says
+                  # expanding it here would be worse. So the loop always runs once
+                  # with `all`, always reached this `*)` branch, and always
+                  # exited 1. Nothing caught it because every deploy since had
+                  # named a service; the first push that changed
+                  # `docker-compose.yml` found it (2026-08-01), after the host had
+                  # already fetched the commit but before anything was recreated.
+                  all)                   ;;
                   # deploy-set.sh accepted this name and this file has no
                   # mapping for it, so the two have drifted. Said here, where the
                   # fix is, rather than left to surface as deploy.sh refusing an
