@@ -210,16 +210,33 @@ jobs:
               echo "--- deploy.sh $svc ---"
 
               # The version applies to the service being deployed and to nothing
-              # else. Deploying "all" at one tag would have to assume the four
-              # images share a version, and they do not — they are built by four
+              # else. Deploying "all" at one tag would have to assume the five
+              # images share a version, and they do not — they are built by five
               # workflows in two repositories. Within one list they *do* share
               # one, because a list only ever comes from one commit's builds.
+              #
+              # **A service missing from this case is a service that cannot be
+              # deployed for the first time**, and it fails somewhere that does
+              # not mention this file. `support-triage-runner` shipped without its
+              # line on 2026-08-01: `deploy.sh` resolved every image, found no
+              # version named and nothing recorded for the new one, and refused —
+              # correctly, and with a message about `deployed.env` that sends the
+              # reader to the host rather than here. The rehearsal did not catch
+              # it either, because it drives `deploy.sh` with the variables this
+              # block is what sets. Adding a service means adding it here, in
+              # `deploy-set.sh`'s ORDER, and in `deploy.sh` — all three.
               (
                 case "$svc" in
-                  api)               export API_VERSION="$VERSION" ;;
-                  verifier-runner)   export RUNNER_VERSION="$VERSION" ;;
-                  moderation-runner) export MODERATION_VERSION="$VERSION" ;;
-                  website)           export WEBSITE_VERSION="$VERSION" ;;
+                  api)                   export API_VERSION="$VERSION" ;;
+                  verifier-runner)       export RUNNER_VERSION="$VERSION" ;;
+                  moderation-runner)     export MODERATION_VERSION="$VERSION" ;;
+                  support-triage-runner) export TRIAGE_VERSION="$VERSION" ;;
+                  website)               export WEBSITE_VERSION="$VERSION" ;;
+                  # deploy-set.sh accepted this name and this file has no
+                  # mapping for it, so the two have drifted. Said here, where the
+                  # fix is, rather than left to surface as deploy.sh refusing an
+                  # image for want of a version nobody passed it.
+                  *) echo "::error::deploy.yml has no version mapping for '$svc' — add one beside the others"; exit 1 ;;
                 esac
 
                 ./scripts/deploy.sh "$svc"
