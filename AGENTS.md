@@ -211,33 +211,29 @@ message pointing somewhere other than the file that was wrong.
    and is about this file. There is a `*)` branch now that says so instead.
 4. **`docker-compose.yml`** and **`.env.example`** — the service, and every
    variable it reads.
-5. **The GHCR package's read access**, and this is the one nothing checks.
+5. **Nothing.** The packages are public since 2026-08-01, and the organisation
+   allows public packages by default, so a new image is readable by every deploy
+   the moment it is pushed. This entry stays because of what it used to say.
 
-A package created by a build is **private and linked to the repository that
-pushed it**, which is `kolonie-platform`. This repository is not granted access
-automatically. A deploy triggered from *here* then answers
+Until that day a package created by a build was **private and linked only to the
+repository that pushed it**. A deploy triggered from *here* answered
+`403 Forbidden` on the pull and **carried on** — `detect_profile()` probes only
+the api and the website, and `pull()` on an `all` deploy warns rather than
+failing — so the service silently kept whatever image was already on the host
+while the deploy reported success. It cost a day in `#1` and a morning in `#58`,
+both times found by somebody wondering why a merged fix was not running.
 
-```
-403 Forbidden — failed to resolve reference ghcr.io/kolonie-ai/<image>:<sha>
-```
+Neither the per-repository grant nor package visibility has an API. That was
+settled from GitHub's own OpenAPI description rather than by probing: the entire
+packages API is `GET`, `DELETE` and `restore`, under `/orgs`, `/user` and
+`/users`. No `PATCH`, no `PUT`, and no path anywhere whose name mentions
+visibility, access or repositories. GraphQL offers `deletePackageVersion` and
+nothing else.
 
-and **carries on**: `detect_profile()` probes only the api and the website, and
-`pull()` on an `all` deploy warns rather than failing. So the service silently
-keeps running whatever image is already on the host while the deploy reports
-success. A deploy triggered from `kolonie-platform` is unaffected, because that
-token owns the package — which is why this is discovered late, by somebody
-wondering why a merged fix is not running.
-
-**There is no API.** Measured 2026-08-01 across every plausible route:
-`PUT/POST/GET .../packages/container/<name>/repositories`, `PATCH` on the package
-itself, and the GraphQL schema — which offers `deletePackageVersion` and nothing
-about access. `gh` has no `package` command. It is a dashboard action:
-
-> Organisation → Packages → *&lt;image&gt;* → Package settings → **Manage Actions
-> access** → Add repository → `kolonie-infra`, Read.
-
-Do it when the package is created, not when a deploy is quietly stale.
-`kolonie-infra#1` is the first time this cost a day; `#58` is the second.
+**So if a package ever needs to be private again, it cannot be undone either:**
+*"once you make a package public, you cannot make it private again."* A
+deliberately private image would have to be a new package, and then item 5 comes
+back exactly as it was — the grant, the dashboard, and nothing that checks it.
 
 ### Profiles
 

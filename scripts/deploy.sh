@@ -208,16 +208,19 @@ log() {
 
 # Authenticate against GHCR.
 #
-# **All five application images are private, and the reason this comment used to
-# give has expired.** It said they *"stay that way until the repositories go
-# public at MVP (kolonie-docs#6)"* — and kolonie-docs#6 closed on 2026-07-28. The
-# repositories are public; the packages were never revisited. So the honest
-# statement is that they are private because nobody has changed them, not because
-# a condition still holds.
+# **All five application images are public since 2026-08-01 (#58)**, and the
+# organisation now allows public packages by default, so the sixth will be too.
 #
-# That is a live decision rather than a detail, and it is #58: a private package
-# needs a per-repository read grant that has no API and that nothing checks, so
-# every image added costs one dashboard visit somebody has to know about.
+# This login is therefore no longer required to pull them, and it stays because a
+# login that is unnecessary is not a login that fails: it still authenticates the
+# rate limit, and it is what a private package would need if one is ever added
+# deliberately. Nothing below has to change for either case.
+#
+# What it removes is the failure it was written under. A package created by a
+# build was private and linked only to the repository that pushed it, so a deploy
+# triggered from *this* repository answered 403 — and carried on, leaving the
+# service on a stale image while reporting success. Public packages make that
+# unreachable rather than merely fixed. AGENTS.md §8 keeps the history.
 #
 # GHCR_TOKEN is the workflow's own GITHUB_TOKEN, forwarded over SSH. It expires
 # with the job, so nothing long-lived is stored on this host. It only reaches the
