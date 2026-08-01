@@ -385,6 +385,26 @@ services:
       # tick means two reports of the same thing usually land in one pass and
       # produce one issue rather than two.
       POLL_INTERVAL_MS: ${TRIAGE_POLL_INTERVAL_MS:-1800000}
+    # **Runs as the user that owns the key, and the numbers are measured.**
+    #
+    # The image ships `USER node`, which is uid 1000 inside it. The App key is
+    # `0600` and owned by the deploy user, so as `node` this process gets EACCES
+    # and files nothing — which it reports and survives, but it is not what
+    # anybody wanted.
+    #
+    # The obvious fix is `chown 1000` on the host, and on this host it is wrong:
+    # uid 1000 is **`admin`** and gid 1000 is **`wheel`**, both real. Handing a
+    # private key to them because a container happened to pick the same numbers
+    # is a widening disguised as a permission fix. Measured 2026-08-01, not
+    # assumed — Traefik gets away with reading its htpasswd only because it runs
+    # as root, and this service deliberately does not.
+    #
+    # So the container takes the deploy user's identity instead, and the key
+    # stays `0600` with nothing on the host gaining access. A variable rather
+    # than a literal because these numbers belong to *this* host: a rebuild that
+    # lands on different ones sets it, and a wrong value degrades — the runner
+    # logs EACCES and files nothing — rather than taking the container down.
+    user: "${SECRETS_READER:-1001:1002}"
     volumes:
       # Read-only, and the same directory Traefik reads its htpasswd from. A
       # missing key is not an outage: the runner says so at startup and files
