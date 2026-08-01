@@ -443,33 +443,42 @@ services:
       # requiring one adds a third prompt that guards an empty keyring. Two locks
       # is what #30 asked for and two is what this is.
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-      # **Two hops, not one, and the difference is a login that cannot succeed.**
+      # **pgAdmin cannot learn who the client is here, and the fix is to stop
+      # pretending it can.**
       #
-      # There are two proxies in front of this: Cloudflare, then Traefik. So the
-      # header arriving here is `X-Forwarded-For: <client>, <cloudflare-edge>` —
-      # Cloudflare records the client, Traefik appends the peer it accepted the
-      # connection from, which is Cloudflare's edge.
+      # `X-Forwarded-For` arrives with exactly **one** entry: the Cloudflare edge.
+      # Not `<client>, <edge>` as the two proxies in front would suggest — the
+      # `websecure` entryPoint in traefik/traefik.yml sets no
+      # `forwardedHeaders.trustedIPs`, so Traefik discards the incoming header
+      # and writes the peer it accepted the connection from. The real client
+      # address is in `CF-Connecting-IP`, which nothing here can be told to read.
+      # (apps/api/src/client-ip.ts in kolonie-platform reads exactly that, which
+      # is why the API is unaffected by any of this.)
       #
-      # With a count of 1, Flask's ProxyFix takes the *rightmost* entry, so
-      # pgAdmin believed the client was the Cloudflare edge. Cloudflare answers
-      # from many edges, and a browser opening parallel connections lands on
-      # several: measured on 2026-08-01, one page load reported 104.23.199.178,
-      # 162.159.121.22, 104.23.199.250, 104.23.199.160 and 104.23.199.207 as five
-      # different clients.
+      # So the count stays 1, which is the honest description of the header.
       #
-      # `ENHANCED_COOKIE_PROTECTION` is on by default and binds the session to
-      # that address, so every request invalidated the session the previous one
-      # created — and the login failed with **"The CSRF tokens do not match"**,
-      # which names the symptom and points nowhere near the cause. A single
-      # client doing two requests in one second usually hits one edge, which is
-      # why curl passed this and a browser did not.
+      # **`ENHANCED_COOKIE_PROTECTION` is off, and that is the bug fix.** It
+      # defaults on and pins a session to the address pgAdmin believes the client
+      # has — here, a Cloudflare edge. Cloudflare answers from many, and a browser
+      # opening parallel connections lands on several: one page load on
+      # 2026-08-01 reported 104.23.199.178, 162.159.121.22, 104.23.199.250,
+      # 104.23.199.160 and 104.23.199.207 as five different clients. Every
+      # request therefore invalidated the session the one before it created, and
+      # the login failed with **"The CSRF tokens do not match"** — a message that
+      # names the symptom and points nowhere near the cause.
       #
-      # Two takes the entry Cloudflare wrote, which is the real client. That it
-      # can be trusted at all rests on #21: the origin refuses connections that
-      # did not come through Cloudflare, so nothing can hand us a forged chain.
-      # If that ever stops being true, this number becomes a spoofing surface.
-      PGADMIN_CONFIG_PROXY_X_FOR_COUNT: "2"
+      # Turning it off loses nothing, because it was never protecting anything:
+      # a pin to an address that changes per request is not a defence, it is an
+      # outage. Setting the count to 2 also "works", by running out of entries and
+      # falling back to Traefik's own container address — stable, and a lie about
+      # what the header contains. That was tried and rejected.
+      #
+      # What would let this be real protection is Traefik trusting Cloudflare's
+      # ranges so the client entry survives — a change affecting every service
+      # behind it, filed separately rather than made here.
+      PGADMIN_CONFIG_PROXY_X_FOR_COUNT: "1"
       PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: "1"
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "False"
       # This host is reachable over https only — Traefik redirects `web` to
       # `websecure`. pgAdmin defaults this to False because it terminates plain
       # HTTP itself and cannot know that, so the cookie carrying an admin session
