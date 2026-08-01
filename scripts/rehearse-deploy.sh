@@ -100,7 +100,7 @@ case "$1 ${2:-}" in
         pull)    echo "compose pull API_IMAGE=${API_IMAGE:-unset}" >> "$DOCKER_LOG" ;;
         config)
           if echo "$*" | grep -q -- "--services"; then
-            echo -e "api\nverifier-runner\nwebsite"
+            echo -e "api\nverifier-runner\nsupport-triage-runner\nwebsite"
             # pgadmin only when its profile is on, because that is the whole
             # property #30's placement turns on: a service inside the active
             # profiles is one healthcheck() will roll the stack back for.
@@ -167,9 +167,9 @@ STUB
 chmod +x "$BIN/docker"
 
 run_deploy() {
-  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
-  if [ "${NO_VERSIONS:-}" = "1" ]; then av=""; rv=""; mv=""; wv=""; fi
-  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" WEBSITE_VERSION="$wv" \
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
+  if [ "${NO_VERSIONS:-}" = "1" ]; then av=""; rv=""; mv=""; tv=""; wv=""; fi
+  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" WEBSITE_VERSION="$wv" \
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" all 2>&1
@@ -178,9 +178,9 @@ run_deploy() {
 # Same, for a deploy of one named service — which is what a build in
 # kolonie-platform triggers.
 run_deploy_service() {
-  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
   local service="$1"; shift
-  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" WEBSITE_VERSION="$wv" \
+  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" WEBSITE_VERSION="$wv" \
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" "$service" 2>&1
@@ -224,6 +224,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:3333333333333333333333333333333333333333333333333333333333333333
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
 EOF
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
@@ -284,6 +285,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=$DIGEST
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 2)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
 EOF
 : > "$WORK/docker.log"
@@ -308,6 +310,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:${HEX}
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
 EOF
 : > "$WORK/docker.log"
@@ -325,6 +328,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api:${GITSHA}
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
 EOF
 : > "$WORK/docker.log"
@@ -367,6 +371,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:3333333333333333333333333333333333333333333333333333333333333333
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
 EOF
 : > "$WORK/docker.log"
@@ -396,6 +401,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:3333333333333333333333333333333333333333333333333333333333333333
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
 EOF
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
@@ -437,6 +443,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:3333333333333333333333333333333333333333333333333333333333333333
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
 EOF
 # First: runner deploys, fails, writes marker
@@ -501,6 +508,7 @@ DEPLOYED_AT=19990101_000000
 API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
 RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
 MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
 WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
 EOF
 }
@@ -695,6 +703,93 @@ out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-pgadmin || true)
 contains "$out" "pgadmin(unhealthy)" "named pgadmin as the failing service"
 contains "$out" "Rollback completed" "and rolled back"
 rm -f "$WORK/.env"
+
+echo "== 23. the support triage runner deploys like the other two runners (kolonie-platform#105)"
+# A fifth image threaded through resolve_image, pin, record_deployment, rollback
+# and the cascade. Each of those decides whether containers live or die, which is
+# what the header of this file says earns a case.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$out" "support-triage-runner: ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:" "pinned to a digest like the rest"
+contains "$(cat "$WORK/state/deployed.env")" "TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:" "and recorded, so a rollback has somewhere to go"
+
+echo "== 23b. a host whose last record predates this service still deploys"
+# The state every host is in on the day this ships: deployed.env has four lines
+# and the fifth service has never run. It must resolve from the named version
+# rather than refusing the whole deploy.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(run_deploy env TRIAGE_VERSION="$SHA")
+contains "$out" "=== Deployment completed ===" "an absent fifth line is not a refusal"
+# Asserted through `image inspect` rather than `pull -q`: detect_profile only
+# probes the api and the website — they are what decide which compose profiles
+# come up — so the fifth image's resolved tag is observable where pin() reads its
+# digest, and nowhere earlier.
+contains "$(cat "$WORK/docker.log")" "ghcr.io/kolonie-ai/kolonie-support-triage-runner:$SHA" "it resolved to the version it was told, not to a default"
+absent "$(cat "$WORK/state/deployed.env")" "kolonie-support-triage-runner:latest" "and never recorded the mutable tag"
+
+echo "== 23c. and a host with no record and no version named is still refused"
+# The other half: absent must not silently become `latest`. This is #12's rule
+# applying to the new service on its first day rather than being learned again.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(NO_VERSIONS=1 run_deploy env || true)
+contains "$out" "support-triage-runner: no version given and none recorded" "named the service it could not resolve"
+
+echo "== 23d. a single-service triage deploy leaves the other four digests alone"
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+seed_known_good_five() {
+  mkdir -p "$WORK/state"
+  cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+}
+seed_known_good_five; : > "$WORK/docker.log"
+out=$(run_deploy_service support-triage-runner env TRIAGE_VERSION="$SHA")
+recorded=$(cat "$WORK/state/deployed.env")
+contains "$recorded" "API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)" "api digest carried over untouched"
+contains "$recorded" "MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)" "moderation digest carried over untouched"
+absent "$recorded" "TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)" "triage digest was replaced"
+
+echo "== 23e. an unhealthy triage runner rolls the deploy back, and records itself for the cascade"
+# It reads a schema the api migrates, so it is in the class of service that can
+# deploy ahead of its own migration — the failure #29 exists for.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy_service support-triage-runner env TRIAGE_VERSION="$SHA" FAIL_UP=1)
+contains "$out" "Rollback completed" "rolled back"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_SERVICE=support-triage-runner" "marker names it"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-support-triage-runner:$SHA" "marker carries the tag it meant to ship"
+
+echo "== 23f. and the next successful deploy cascades it back"
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env)
+contains "$out" "Cascade re-deploy: support-triage-runner was rolled back" "cascade triggered for the new service"
+contains "$out" "Cascade re-deploy of support-triage-runner completed" "and completed"
+
+echo "== 23g. it is deployed after the api and before the website"
+check "the api still leads" \
+  "$("$WORK/scripts/deploy-set.sh" "support-triage-runner,api" | tr '\n' ' ')" "api support-triage-runner "
+check "the website still goes last" \
+  "$("$WORK/scripts/deploy-set.sh" "website,support-triage-runner,api" | tr '\n' ' ')" "api support-triage-runner website "
 
 echo
 echo "passed $pass, failed $fail"

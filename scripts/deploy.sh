@@ -30,6 +30,11 @@ RUNNER_REPO="ghcr.io/kolonie-ai/kolonie-verifier-runner"
 # task before any other agent reads it, and like the verifier runner it has no
 # Traefik route: it reads Postgres and talks outward to OpenRouter.
 MODERATION_REPO="ghcr.io/kolonie-ai/kolonie-moderation-runner"
+# The fifth (kolonie-platform#105). It reads the support tickets citizens file,
+# matches them against work the Colony already has, and files what is new — so
+# like the other two runners it has no Traefik route: it reads Postgres and talks
+# outward to OpenRouter and GitHub.
+TRIAGE_REPO="ghcr.io/kolonie-ai/kolonie-support-triage-runner"
 WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 
 # Which build to fetch, per image, defaulting to the mutable tag (#14).
@@ -47,17 +52,24 @@ WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 API_VERSION="${API_VERSION:-}"
 RUNNER_VERSION="${RUNNER_VERSION:-}"
 MODERATION_VERSION="${MODERATION_VERSION:-}"
+TRIAGE_VERSION="${TRIAGE_VERSION:-}"
 WEBSITE_VERSION="${WEBSITE_VERSION:-}"
 
 CUR_API=""
 CUR_RUNNER=""
 CUR_MOD=""
+CUR_TRIAGE=""
 CUR_WEB=""
 if [ -f "${STATE_DIR}/deployed.env" ]; then
-    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${WEBSITE_IMAGE:-}")
+    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${TRIAGE_IMAGE:-}|${WEBSITE_IMAGE:-}")
     CUR_API="${PREV_STATE%%|*}"
     CUR_RUNNER="$(echo "$PREV_STATE" | cut -d"|" -f2)"
     CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
+    # Empty on a host whose last record predates this service, which is every
+    # host on the day this ships. resolve_image() then refuses only if nothing
+    # names a version either — the same path a service deploying for the first
+    # time has always taken.
+    CUR_TRIAGE="$(echo "$PREV_STATE" | cut -d"|" -f4)"
     CUR_WEB="${PREV_STATE##*|}"
 fi
 
@@ -128,6 +140,7 @@ resolve_image() {
 API_IMAGE_TAG=$(resolve_image "$API_VERSION" "$CUR_API" "$API_REPO" api)
 RUNNER_IMAGE_TAG=$(resolve_image "$RUNNER_VERSION" "$CUR_RUNNER" "$RUNNER_REPO" verifier-runner)
 MODERATION_IMAGE_TAG=$(resolve_image "$MODERATION_VERSION" "$CUR_MOD" "$MODERATION_REPO" moderation-runner)
+TRIAGE_IMAGE_TAG=$(resolve_image "$TRIAGE_VERSION" "$CUR_TRIAGE" "$TRIAGE_REPO" support-triage-runner)
 WEBSITE_IMAGE_TAG=$(resolve_image "$WEBSITE_VERSION" "$CUR_WEB" "$WEBSITE_REPO" website)
 
 # Exported *now*, before anything runs `docker compose`, because compose reads
@@ -139,6 +152,7 @@ WEBSITE_IMAGE_TAG=$(resolve_image "$WEBSITE_VERSION" "$CUR_WEB" "$WEBSITE_REPO" 
 export API_IMAGE="$API_IMAGE_TAG"
 export RUNNER_IMAGE="$RUNNER_IMAGE_TAG"
 export MODERATION_IMAGE="$MODERATION_IMAGE_TAG"
+export TRIAGE_IMAGE="$TRIAGE_IMAGE_TAG"
 export WEBSITE_IMAGE="$WEBSITE_IMAGE_TAG"
 
 # What the last *successful* deploy shipped, as immutable digests. Written only
@@ -327,13 +341,15 @@ pin() {
     API_IMAGE=$(digest_of "$API_IMAGE_TAG" "$API_REPO")
     RUNNER_IMAGE=$(digest_of "$RUNNER_IMAGE_TAG" "$RUNNER_REPO")
     MODERATION_IMAGE=$(digest_of "$MODERATION_IMAGE_TAG" "$MODERATION_REPO")
+    TRIAGE_IMAGE=$(digest_of "$TRIAGE_IMAGE_TAG" "$TRIAGE_REPO")
     WEBSITE_IMAGE=$(digest_of "$WEBSITE_IMAGE_TAG" "$WEBSITE_REPO")
-    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE WEBSITE_IMAGE
+    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE WEBSITE_IMAGE
 
-    log "  api:               $API_IMAGE"
-    log "  verifier-runner:   $RUNNER_IMAGE"
-    log "  moderation-runner: $MODERATION_IMAGE"
-    log "  website:           $WEBSITE_IMAGE"
+    log "  api:                   $API_IMAGE"
+    log "  verifier-runner:       $RUNNER_IMAGE"
+    log "  moderation-runner:     $MODERATION_IMAGE"
+    log "  support-triage-runner: $TRIAGE_IMAGE"
+    log "  website:               $WEBSITE_IMAGE"
 }
 
 # The digest a local image carries for its own repository, or the tag if it has
@@ -379,17 +395,19 @@ record_deployment() {
     # and the verifier-runner deploy queued behind it overwrote API_IMAGE with the
     # stale local `:latest`, while the api container went on running the new one.
     local recorded_api="${API_IMAGE}" recorded_runner="${RUNNER_IMAGE}"
-    local recorded_moderation="${MODERATION_IMAGE}" recorded_website="${WEBSITE_IMAGE}"
+    local recorded_moderation="${MODERATION_IMAGE}" recorded_triage="${TRIAGE_IMAGE}"
+    local recorded_website="${WEBSITE_IMAGE}"
 
     if [ "$SERVICE" != all ] && [ -f "$DEPLOYED_STATE" ]; then
         # Read the previous record in a subshell, so sourcing it cannot clobber
         # the variables this deploy just resolved.
         local previous
-        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${WEBSITE_IMAGE}")
-        [ "$SERVICE" != api ]               && recorded_api="${previous%%|*}"
-        [ "$SERVICE" != verifier-runner ]   && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
-        [ "$SERVICE" != moderation-runner ] && recorded_moderation="$(cut -d'|' -f3 <<<"$previous")"
-        [ "$SERVICE" != website ]           && recorded_website="${previous##*|}"
+        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${TRIAGE_IMAGE}|${WEBSITE_IMAGE}")
+        [ "$SERVICE" != api ]                   && recorded_api="${previous%%|*}"
+        [ "$SERVICE" != verifier-runner ]       && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
+        [ "$SERVICE" != moderation-runner ]     && recorded_moderation="$(cut -d'|' -f3 <<<"$previous")"
+        [ "$SERVICE" != support-triage-runner ] && recorded_triage="$(cut -d'|' -f4 <<<"$previous")"
+        [ "$SERVICE" != website ]               && recorded_website="${previous##*|}"
     fi
 
     local infra_commit; infra_commit=$(git rev-parse HEAD 2>/dev/null || echo ""); cat > "$DEPLOYED_STATE" <<EOF
@@ -403,6 +421,7 @@ DEPLOYED_AT=${TIMESTAMP}
 API_IMAGE=${recorded_api}
 RUNNER_IMAGE=${recorded_runner}
 MODERATION_IMAGE=${recorded_moderation}
+TRIAGE_IMAGE=${recorded_triage}
 WEBSITE_IMAGE=${recorded_website}
 EOF
     log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
@@ -422,7 +441,8 @@ EOF
     # broken, and this says so where it is broken.
     local recorded name value untagged=
     for recorded in "API_IMAGE=${recorded_api}" "RUNNER_IMAGE=${recorded_runner}" \
-                    "MODERATION_IMAGE=${recorded_moderation}" "WEBSITE_IMAGE=${recorded_website}"; do
+                    "MODERATION_IMAGE=${recorded_moderation}" "TRIAGE_IMAGE=${recorded_triage}" \
+                    "WEBSITE_IMAGE=${recorded_website}"; do
         name="${recorded%%=*}"
         value="${recorded#*=}"
         [ -z "$value" ] && continue
@@ -691,7 +711,8 @@ preflight_env() {
 
     report=""
     for pair in "api:$API_IMAGE" "verifier-runner:$RUNNER_IMAGE" \
-                "moderation-runner:$MODERATION_IMAGE" "website:$WEBSITE_IMAGE"; do
+                "moderation-runner:$MODERATION_IMAGE" "support-triage-runner:$TRIAGE_IMAGE" \
+                "website:$WEBSITE_IMAGE"; do
         svc="${pair%%:*}"
         image="${pair#*:}"
         [ -z "$image" ] && continue
@@ -950,10 +971,11 @@ rollback() {
     set -a; . "$DEPLOYED_STATE"; set +a
 
     log "Returning to the build deployed at ${DEPLOYED_AT:-unknown}:"
-    log "  api:               ${API_IMAGE:-unset}"
-    log "  verifier-runner:   ${RUNNER_IMAGE:-unset}"
-    log "  moderation-runner: ${MODERATION_IMAGE:-unset}"
-    log "  website:           ${WEBSITE_IMAGE:-unset}"
+    log "  api:                   ${API_IMAGE:-unset}"
+    log "  verifier-runner:       ${RUNNER_IMAGE:-unset}"
+    log "  moderation-runner:     ${MODERATION_IMAGE:-unset}"
+    log "  support-triage-runner: ${TRIAGE_IMAGE:-unset}"
+    log "  website:               ${WEBSITE_IMAGE:-unset}"
 
     # No --remove-orphans, ever. That flag deletes every container absent from
     # the file it is given, and on 2026-07-28 it took api, verifier-runner and
@@ -988,6 +1010,7 @@ rollback() {
         api)               redeploy_tag="$API_IMAGE_TAG" ;;
         verifier-runner)   redeploy_tag="$RUNNER_IMAGE_TAG" ;;
         moderation-runner) redeploy_tag="$MODERATION_IMAGE_TAG" ;;
+        support-triage-runner) redeploy_tag="$TRIAGE_IMAGE_TAG" ;;
         website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
         *)                 redeploy_tag="" ;;
     esac
@@ -1079,6 +1102,7 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
             api)               export API_IMAGE="$NEEDS_REDEPLOY_TAG"; API_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
             verifier-runner)   export RUNNER_IMAGE="$NEEDS_REDEPLOY_TAG"; RUNNER_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
             moderation-runner) export MODERATION_IMAGE="$NEEDS_REDEPLOY_TAG"; MODERATION_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+            support-triage-runner) export TRIAGE_IMAGE="$NEEDS_REDEPLOY_TAG"; TRIAGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
             website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
         esac
 

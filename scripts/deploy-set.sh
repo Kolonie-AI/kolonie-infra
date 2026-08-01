@@ -26,7 +26,12 @@ set -euo pipefail
 
 # The order. Adding a service means adding it here, in the position its
 # dependencies require — not at the end because that is where there is room.
-readonly ORDER=(api verifier-runner moderation-runner website)
+#
+# `support-triage-runner` (kolonie-platform#105) sits with the other two runners
+# and behind the api for the same reason they do: it reads and writes
+# `support_tickets` through packages/db, so a build started before the api has
+# been started against a schema that has not moved yet.
+readonly ORDER=(api verifier-runner moderation-runner support-triage-runner website)
 
 usage() {
     echo "usage: $(basename "$0") all|<service>[,<service>...]" >&2

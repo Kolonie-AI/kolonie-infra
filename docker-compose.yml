@@ -343,6 +343,78 @@ services:
     profiles:
       - full
 
+  # === Support Triage Runner (kolonie-platform / apps/support-triage-runner) ===
+  # No Traefik route, for the same reason as the other two runners: it reads the
+  # support tickets citizens filed over MCP and talks outward to OpenRouter and
+  # GitHub. Nothing on the internet reaches it.
+  support-triage-runner:
+    image: ${TRIAGE_IMAGE:-ghcr.io/kolonie-ai/kolonie-support-triage-runner:latest}
+    container_name: kolonie-support-triage-runner
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
+      BAN_MARK_SALT: ${BAN_MARK_SALT:?set BAN_MARK_SALT in .env — openssl rand -hex 32}
+      # **The same key again, third service to read it.** One account, one
+      # credential, one name — kolonie-infra#7's whole lesson. Defaulted to empty
+      # for the reason the moderation runner gives: an unset key has to degrade
+      # this service rather than take it down. It degrades quietly here, and the
+      # degradation is exactly the state that existed before this service did —
+      # tickets accumulate `open` and nobody reads them.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Which model triages. Unset means the code's own default.
+      TRIAGE_MODEL: ${TRIAGE_MODEL:-}
+      # The GitHub App this files issues as (kolonie-infra#55).
+      #
+      # **The id is not a secret and the key is**, so only the id is here. The id
+      # is in the App's public URL; the RSA private key is multi-line and has no
+      # business in a `.env`, so it lives in ./secrets — the directory Traefik's
+      # htpasswd already uses, which deploy.sh creates and .gitignore covers —
+      # and is mounted read-only below.
+      #
+      # Unset is a working configuration: the runner then reads tickets, matches
+      # them against nothing, and files nothing. That is worse than working and
+      # much better than a container that will not start.
+      GITHUB_TRIAGE_APP_ID: ${GITHUB_TRIAGE_APP_ID:-}
+      GITHUB_TRIAGE_APP_KEY_PATH: /secrets/kolonie-triage-app.pem
+      # Half an hour, against the moderation runner's minute. Nothing waits on a
+      # triage verdict the way a citizen waits on a moderation one — and a longer
+      # tick means two reports of the same thing usually land in one pass and
+      # produce one issue rather than two.
+      POLL_INTERVAL_MS: ${TRIAGE_POLL_INTERVAL_MS:-1800000}
+    volumes:
+      # Read-only, and the same directory Traefik reads its htpasswd from. A
+      # missing key is not an outage: the runner says so at startup and files
+      # nothing.
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Same shape and same reason as the other two runners': `process.exit(0)`
+      # reports healthy for a process wrapped around a dead polling loop (#11).
+      #
+      # The endpoint also serves the queue depth, and deliberately does not let a
+      # deep queue answer 503 — a backlog is the failure this service exists to
+      # prevent and restarting the container would do nothing about it. Read the
+      # body to see it; the status code is about the loop alone.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3003/health').then(r=>{console.log('health '+r.status);process.exit(r.ok?0:1)}).catch(e=>{console.log('health unreachable: '+(e.cause?.code||e.code||e.message));process.exit(1)})",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - full
+
   # === Website (kolonie-website, static Astro build behind nginx) ===
   #
   # Its own profile, not `full`. The reason has changed and the arrangement has
