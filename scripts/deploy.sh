@@ -1001,6 +1001,24 @@ REDEPLOY
 # Main
 log "=== Deployment started ==="
 trap ghcr_logout EXIT
+
+# Before any compose command, and the ordering is the whole point (#30).
+#
+# `docker-compose.yml` bind-mounts ./secrets into Traefik. **Docker creates a
+# missing bind-mount source itself, as a root-owned directory** — so on a host
+# that has never had one, the first `up -d` leaves /opt/kolonie/secrets owned by
+# root, and the operator instruction in .env.example
+#
+#   htpasswd -nbB user pw >> /opt/kolonie/secrets/pgadmin.htpasswd
+#
+# then fails with "Permission denied" for the person following it exactly. That
+# happened on the first real run of this. Creating it here means the deploy user
+# owns it and the documented command works as documented.
+#
+# 700 rather than 755: it holds password hashes. Traefik reads it as root.
+mkdir -p "${DEPLOY_DIR}/secrets" 2>/dev/null && chmod 700 "${DEPLOY_DIR}/secrets" 2>/dev/null || \
+    log "WARN: could not prepare ${DEPLOY_DIR}/secrets — a basicAuth middleware reading from it will be dropped"
+
 ghcr_login
 detect_profile
 # After detect_profile, so the snapshot includes the profiled services. Before
