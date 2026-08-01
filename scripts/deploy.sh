@@ -901,6 +901,31 @@ healthcheck() {
                     if docker inspect --format='{{.State.Running}}' "$container" 2>/dev/null | grep -q true; then
                         continue
                     fi
+
+                    # **A container that has never existed, for a service this
+                    # deploy does not touch.** The guard above exists to catch a
+                    # service this deploy *broke* — a migration dropping a column
+                    # an older build reads. A service that has never been created
+                    # cannot have been broken by anything, and asserting its health
+                    # makes the first deploy after adding one fail on whichever
+                    # service happens to go first.
+                    #
+                    # That is what happened on 2026-08-01: `support-triage-runner`
+                    # entered the `full` profile, `deploy.sh api` created only the
+                    # api, and the health check then waited 180s for a container
+                    # nobody had asked it to create and rolled the deploy back. It
+                    # is the same introduction problem as resolve_image's, one
+                    # layer further on.
+                    #
+                    # Narrow deliberately: *never created*, and *not this deploy's
+                    # service*. A container that existed and is gone still fails,
+                    # because that is a service somebody removed.
+                    if ! docker inspect "$container" >/dev/null 2>&1 \
+                       && [ "$SERVICE" != all ] && [ "$SERVICE" != "$svc" ]; then
+                        log "WARN: $svc has no container at all, and this deploy touches $SERVICE — not asserting its health"
+                        continue
+                    fi
+
                     pending="$pending $svc(not running)"
                     ;;
                 *) pending="$pending $svc($status)" ;;

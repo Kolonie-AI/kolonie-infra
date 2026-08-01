@@ -130,6 +130,18 @@ case "$1 ${2:-}" in
       # field is top-level), and a stub matching on the substring `RestartCount`
       # answered it happily. Real Docker answers it with a parse error. Keep
       # this list in step with `grep 'docker inspect' scripts/deploy.sh`.
+      # A container that has never existed fails *every* inspect, whatever the
+      # format — docker exits non-zero with "No such object". Answering the
+      # health format for it would report `unhealthy`, which is a different
+      # condition and the one the branch under test is not about.
+      for container in "$@"; do :; done
+      [ "${ABSENT_CONTAINER:-}" = "$container" ] && exit 1
+
+      # `docker inspect <name>` with no --format is deploy.sh asking whether the
+      # container exists at all — a different question from the three below, and
+      # the one that tells a service being introduced apart from one that broke.
+      if ! echo "$*" | grep -q -- "--format"; then exit 0; fi
+
       case "$*" in
         *"{{.State.Health.Status}}"*|*"{{.State.Running}}"*|*"{{.RestartCount}}"*) ;;
         *) echo "STUB: unknown docker inspect format: $*" >&2; exit 125 ;;
@@ -836,6 +848,36 @@ EOF
 out=$(run_deploy env TRIAGE_VERSION="" || true)
 contains "$out" "support-triage-runner: no version given and none recorded" "an all-deploy still refuses"
 absent "$(cat "$WORK/docker.log")" "up -d" "and nothing was recreated"
+
+echo "== 25. a container that has never existed does not fail a deploy of something else"
+# The third face of the introduction problem, and the one that reached production
+# on 2026-08-01: `support-triage-runner` entered the `full` profile, `deploy.sh
+# api` created only the api, and healthcheck() then waited 180s for a container
+# nobody had asked it to create — and rolled the whole deploy back.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy_service api env API_VERSION="$SHA" ABSENT_CONTAINER=kolonie-support-triage-runner)
+contains "$out" "support-triage-runner has no container at all, and this deploy touches api" "said what it skipped and why"
+contains "$out" "=== Deployment completed ===" "and the deploy it was asked for finished"
+absent "$out" "Rolling back" "nothing was rolled back"
+
+echo "== 25b. but a container that is merely unhealthy still fails"
+# The guard this must not remove: a migration that broke an older build is
+# exactly what checking every profiled service is for.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+# verifier-runner rather than moderation-runner: the stub's `config --services`
+# is the list healthcheck() iterates, and naming a service absent from it would
+# assert on a check that never runs.
+out=$(run_deploy_service api env API_VERSION="$SHA" UNHEALTHY_SERVICE=kolonie-verifier-runner || true)
+contains "$out" "ERROR: not healthy after 5s" "an existing unhealthy service still fails the deploy"
+contains "$out" "verifier-runner(unhealthy)" "and is named"
+
+echo "== 25c. and an all-deploy asserts everything, missing container or not"
+# With no service named, compose creates every container — so one that is absent
+# afterwards is a failure rather than a service nobody asked for.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env ABSENT_CONTAINER=kolonie-support-triage-runner || true)
+contains "$out" "ERROR: not healthy after 5s" "an all-deploy still asserts it"
+absent "$out" "not asserting its health" "and does not skip it"
 
 echo
 echo "passed $pass, failed $fail"
