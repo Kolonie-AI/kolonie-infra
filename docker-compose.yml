@@ -183,6 +183,22 @@ services:
       # guard one layer down, where no test can see it. Do not make this
       # conditional on the hCaptcha values.
       CAPABILITY_PAGE_URL: ${CAPABILITY_PAGE_URL:-https://challenge.kolonie.ai/browser/}
+      # The four stages above the entry rung, added 2026-08-01 with
+      # kolonie-platform#160-#164. Each stage resolves its own address and
+      # disables only itself when that address is unset, saying so in the startup
+      # line — which is the same lesson as the block above, one level further:
+      # one shared condition is how an unset third-party value took a whole
+      # branch down. A stage missing from here is a stage that refuses its own
+      # mints and leaves the rest of the ladder standing.
+      #
+      # Defaults rather than required values, because the pages are served by
+      # this same API container on paths it registers itself. There is no secret
+      # here and nothing a third party owns; the host name is configuration
+      # because kolonie-platform may hold none.
+      PERSISTENCE_PAGE_URL: ${PERSISTENCE_PAGE_URL:-https://challenge.kolonie.ai/persistence/}
+      PERCEPTION_PAGE_URL: ${PERCEPTION_PAGE_URL:-https://challenge.kolonie.ai/perception/}
+      INTERACTION_PAGE_URL: ${INTERACTION_PAGE_URL:-https://challenge.kolonie.ai/interaction/}
+      INTERSTITIAL_PAGE_URL: ${INTERSTITIAL_PAGE_URL:-https://challenge.kolonie.ai/interstitial/}
       # Academy Level 2, the mailbox rung. Same arrangement as the two page urls
       # above: kolonie-platform may hold no host name, so the domain challenge
       # addresses are minted under is configuration and arrives here.
