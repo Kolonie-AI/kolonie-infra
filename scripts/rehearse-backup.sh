@@ -175,6 +175,12 @@ case "$1" in
       echo "${KOLONIE_BACKUP_DIR:-/var/backups/kolonie}/kolonie.sql"
       [ "$2" = "0ldgr0up" ] && exit 0
       [ "${NO_ENV_IN_SNAPSHOT:-}" = 1 ] || echo "${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/.env"
+      # The credential files (kolonie-platform#105). NO_SECRETS_IN_SNAPSHOT is a
+      # snapshot written without them — invisible until a restore, which is why
+      # backup.sh reads the listing back instead of trusting the write's exit code.
+      if [ "${NO_SECRETS_IN_SNAPSHOT:-}" != 1 ] && [ -d "${KOLONIE_SECRETS_DIR:-${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/secrets}" ]; then
+        find "${KOLONIE_SECRETS_DIR:-${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/secrets}" -type f 2>/dev/null
+      fi
       exit 0 ;;
   unlock) exit 0 ;;
   cat) exit 0 ;;
@@ -446,6 +452,49 @@ contains "$out" "snapshot a1b2c3d4" "named the newest snapshot"
 absent "$out" "0ldgr0up" "not the newest of the old path group"
 contains "$(calls)" "restic snapshots latest" "asked for the repository's newest, not a per-group latest"
 absent "$(calls)" "snapshots --host kolonie --latest" "did not group by path"
+
+echo "== 20. the credential files go into the same snapshot (kolonie-platform#105)"
+# `.env` stopped being the whole of this host's secrets on 2026-08-01: the
+# Traefik htpasswd (#30) and the GitHub App's private key (#55) are files,
+# because neither fits in a `.env`. A restore without them brings back a host
+# that looks whole and has silently lost two capabilities — both degrade rather
+# than crash by design, so nothing would say so.
+mkdir -p "$WORK/secrets"
+printf 'gregor:$2y$05$notarealhash\n' > "$WORK/secrets/pgadmin.htpasswd"
+printf -- '-----BEGIN RSA PRIVATE KEY-----\nnot-a-real-key\n-----END RSA PRIVATE KEY-----\n' > "$WORK/secrets/kolonie-triage-app.pem"
+out=$(run_backup)
+check "the run succeeded" "$?" "0"
+contains "$out" "secrets: 2 file(s)" "counted them in preflight"
+contains "$out" "and 2 secret file(s)" "and said what it was sending"
+contains "$(calls)" "$WORK/secrets" "the directory is one of the paths"
+contains "$(calls)" "--tag kolonie-secrets" "tagged, so 'which snapshots have them' is one query"
+
+echo "== 20b. and their absence from the snapshot is caught, not assumed"
+# The same read-back `.env` has. `restic backup` exiting 0 says the command
+# worked, not that the paths are in the snapshot.
+out=$(run_backup NO_SECRETS_IN_SNAPSHOT=1)
+check "the run failed" "$?" "1"
+contains "$out" "does not contain $WORK/secrets" "named what was missing"
+contains "$out" "the App key and the htpasswd are not backed up" "and what that costs"
+
+echo "== 20c. a host with no secrets directory still backs up"
+# The half that must not become a check firing on a correct configuration. A
+# host with neither pgAdmin nor the App has no such directory, and the database
+# backup is not its hostage.
+rm -rf "$WORK/secrets"
+out=$(run_backup)
+check "the run succeeded" "$?" "0"
+contains "$out" "does not exist — nothing to include" "said so once"
+absent "$(calls)" "--tag kolonie-secrets" "and did not tag a snapshot that has none"
+contains "$out" "ok" "the backup completed"
+
+echo "== 20d. an empty secrets directory is the same case"
+mkdir -p "$WORK/secrets"
+out=$(run_backup)
+check "the run succeeded" "$?" "0"
+contains "$out" "is empty — nothing to include" "said so"
+absent "$(calls)" "--tag kolonie-secrets" "no tag"
+rm -rf "$WORK/secrets"
 
 echo
 echo "passed: $pass   failed: $fail"

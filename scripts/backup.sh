@@ -76,6 +76,29 @@
 # `restic diff` shows the day a secret changed, and a clobbered file is
 # recoverable from yesterday.
 #
+# ## Why `/opt/kolonie/secrets/` is in it too (kolonie-platform#105)
+#
+# `.env` stopped being the whole of the host's secrets on 2026-08-01. Two
+# credentials are files rather than variables, because neither fits in a `.env`:
+# the Traefik basicAuth htpasswd for `db.kolonie.ai` (#30) and the GitHub App's
+# RSA private key that the triage runner files issues with (#55). Both live in
+# `/opt/kolonie/secrets/`, mounted read-only into the containers that read them.
+#
+# The argument for including them is the one #45 made for `.env`, unchanged: part
+# of the backup would otherwise be conditional on a secret that is not in it.
+# Restore this host from a snapshot without that directory and `db.kolonie.ai`
+# answers nothing — Traefik drops the router whose `usersFile` is missing — and
+# the triage runner comes back unable to file anything, silently, because both
+# are *designed* to degrade rather than crash. A rebuild that looks complete and
+# is quietly missing two capabilities is the failure this repairs.
+#
+# **Absent is not an error, damaged is.** A host with neither pgAdmin nor the App
+# has no such directory, and refusing to back up a database over that would be a
+# check that fails on correct configurations — the thing this repository has
+# learned to avoid. So: if the directory has files, they go in and their presence
+# in the snapshot is read back; if it does not exist, the run says so once and
+# carries on.
+#
 # **What stays out is `backup.env` itself.** It holds the repository URL, its
 # password and the object-store credentials — backing it up inside the repository
 # it unlocks is circular and worthless during a restore. It belongs in the
@@ -153,6 +176,13 @@ ENV_FILE="${KOLONIE_ENV_FILE:-$DEPLOY_DIR/.env}"
 # no-secrets rule is AGENTS.md §11, and a backup script is exactly the place
 # where "just print it to debug" is tempting.
 ENV_MIN_ASSIGNMENTS="${KOLONIE_ENV_MIN_ASSIGNMENTS:-10}"
+
+# The credentials that are files rather than variables (kolonie-platform#105).
+#
+# Backed up in place, like `.env` and for the same reason: the path inside the
+# snapshot is then the path it has to be restored to, and a restore under
+# pressure should not have to know where a file used to live.
+SECRETS_DIR="${KOLONIE_SECRETS_DIR:-$DEPLOY_DIR/secrets}"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 die()  { echo "ERROR: $1" >&2; exit 1; }
@@ -248,6 +278,39 @@ check_env_file() {
     echo "env: $assignments assignments" >&2
 }
 
+# How many credential files the secrets directory holds, or nothing.
+#
+# **This never refuses a run**, and that is the difference from `check_env_file`
+# one function up. `.env` is required by every host that runs this stack, so a
+# damaged one is unambiguously a fault. The secrets directory is optional by
+# design: a host with neither pgAdmin nor the GitHub App has none, and failing
+# the database backup over its absence would be a check that fires on a correct
+# configuration.
+#
+# What it does instead is *count*, so the count reaches the log and the operator
+# who wonders later whether the key was in last night's snapshot has an answer
+# that is not "probably". Names only, never contents — AGENTS.md §11.
+SECRETS_COUNT=0
+check_secrets_dir() {
+    SECRETS_COUNT=0
+
+    if [ ! -d "$SECRETS_DIR" ]; then
+        echo "secrets: $SECRETS_DIR does not exist — nothing to include" >&2
+        return 0
+    fi
+
+    SECRETS_COUNT=$(find "$SECRETS_DIR" -type f 2>/dev/null | wc -l)
+    SECRETS_COUNT=${SECRETS_COUNT:-0}
+
+    if [ "$SECRETS_COUNT" -eq 0 ]; then
+        echo "secrets: $SECRETS_DIR is empty — nothing to include" >&2
+        return 0
+    fi
+
+    [ -r "$SECRETS_DIR" ] || die "$SECRETS_DIR exists but is not readable — run this as root"
+    echo "secrets: $SECRETS_COUNT file(s)" >&2
+}
+
 # Everything that can be known before a byte is written is checked here, because
 # the alternative is discovering it with a half-finished dump on a full disk.
 preflight() {
@@ -255,6 +318,7 @@ preflight() {
         || die "$PG_CONTAINER is not running — refusing to record a backup that did not happen"
 
     check_env_file
+    check_secrets_dir
 
     mkdir -p -m 755 "$WORK_DIR" || die "cannot create $WORK_DIR"
 
@@ -392,13 +456,25 @@ do_backup() {
     # `kolonie-db` stays on the snapshot so that the tag older snapshots carry
     # keeps meaning the same thing; `kolonie-env` is added so that "which
     # snapshots contain the secrets file" is one query.
-    log "backing up $(basename "$DUMP_PATH") and $(basename "$ENV_FILE")"
+    # The secrets directory joins the same snapshot when it has anything in it,
+    # for the reason the header gives: a restore that brings the database back
+    # without the App key and the htpasswd brings back a host that looks whole
+    # and has quietly lost two capabilities, both of which fail silently by
+    # design. The `kolonie-secrets` tag makes "which snapshots have them" one
+    # query, the way `kolonie-env` already does for `.env`.
+    local paths=("$DUMP_PATH" "$ENV_FILE")
+    local tags=(--tag kolonie-db --tag kolonie-env)
+    if [ "$SECRETS_COUNT" -gt 0 ]; then
+        paths+=("$SECRETS_DIR")
+        tags+=(--tag kolonie-secrets)
+    fi
+
+    log "backing up $(basename "$DUMP_PATH"), $(basename "$ENV_FILE") and $SECRETS_COUNT secret file(s)"
     if ! restic backup \
             --host "$RESTIC_HOST_LABEL" \
-            --tag kolonie-db \
-            --tag kolonie-env \
+            "${tags[@]}" \
             --quiet \
-            "$DUMP_PATH" "$ENV_FILE"; then
+            "${paths[@]}"; then
         die "restic backup failed — the previous snapshot is still the newest one"
     fi
 
@@ -431,6 +507,14 @@ do_backup() {
     # nothing until this line.
     if ! restic ls "$newest" 2>/dev/null | grep -qxF "$ENV_FILE"; then
         die "snapshot $newest does not contain $ENV_FILE — the secrets are not backed up"
+    fi
+
+    # The same read-back for the credential files, and it is asserted only when
+    # there were some to include. A host with an empty secrets directory is a
+    # working configuration; a host that had files and wrote a snapshot without
+    # them is the failure this line is for, and it is invisible until a restore.
+    if [ "$SECRETS_COUNT" -gt 0 ] && ! restic ls "$newest" 2>/dev/null | grep -q "^${SECRETS_DIR}/"; then
+        die "snapshot $newest does not contain $SECRETS_DIR — the App key and the htpasswd are not backed up"
     fi
 
     log "snapshot $newest"

@@ -4,21 +4,24 @@
 
 ### What exists
 
-A daily `pg_dump` of the Colony's database **and `/opt/kolonie/.env`**, stored in a
-[restic](https://restic.net) repository on an S3-compatible object store off this
-host (#4, 2026-07-30; the secrets file added in #45, 2026-07-31).
+A daily `pg_dump` of the Colony's database, **`/opt/kolonie/.env`**, and
+**`/opt/kolonie/secrets/`**, stored in a [restic](https://restic.net) repository
+on an S3-compatible object store off this host (#4, 2026-07-30; the secrets file
+added in #45, 2026-07-31; the credential *files* in kolonie-platform#105,
+2026-08-01).
 
-Both files go into **one** snapshot, not two. A restore needs them from the same
+They go into **one** snapshot, not three. A restore needs them from the same
 moment: the secrets that were live when the database was dumped are the ones that
-match what is inside it. Two snapshots drift apart by a night, and the pairing
-would have to be reconstructed by timestamp at exactly the wrong moment.
+match what is inside it. Separate snapshots drift apart by a night, and the
+pairing would have to be reconstructed by timestamp at exactly the wrong moment.
 
 | | |
 |---|---|
 | **Schedule** | `kolonie-backup.timer`, daily at 03:00, `Persistent=true` |
 | **Runs** | `scripts/backup.sh backup`, on the host — not in Compose |
 | **Working directory** | `/var/backups/kolonie` |
-| **In the snapshot** | `/var/backups/kolonie/kolonie.sql`, `/opt/kolonie/.env` |
+| **In the snapshot** | `/var/backups/kolonie/kolonie.sql`, `/opt/kolonie/.env`, `/opt/kolonie/secrets/` |
+| **Tags** | `kolonie-db`, `kolonie-env`, and `kolonie-secrets` when the directory has files |
 | **Retention** | every snapshot is kept; nothing prunes |
 | **Encryption** | restic, client-side, before anything leaves the host |
 | **Configuration** | `/opt/kolonie/backup.env`, root-only, `0600` |
@@ -102,6 +105,38 @@ yesterday. And a damaged `.env` now fails the whole run, database included, whic
 is the uncomfortable half: see *A damaged `.env` stops the database backup too*
 below.
 
+### Why the credential *files* are in here as well
+
+`.env` stopped being the whole of this host's secrets on 2026-08-01. Two
+credentials are files, because neither fits in a `.env`:
+
+| File | Read by | What its absence costs |
+|---|---|---|
+| `/opt/kolonie/secrets/pgadmin.htpasswd` | Traefik | `db.kolonie.ai` answers nothing — Traefik drops a router whose `usersFile` is missing |
+| `/opt/kolonie/secrets/kolonie-triage-app.pem` | `support-triage-runner` | the support queue is read and nothing is ever filed |
+
+**Both fail silently, and that is the argument.** Each is designed to degrade
+rather than crash — absent means shut, not open — so a host rebuilt from a
+snapshot without them comes back looking entirely healthy, passes every health
+check, and has quietly lost two capabilities. Nothing would say so until somebody
+opened `db.kolonie.ai` or wondered why no ticket had ever been triaged.
+
+That is the same hole #45 closed for `BAN_MARK_SALT`: part of the backup was
+conditional on a secret that was not in it.
+
+**Absent is not an error; damaged is.** A host with neither pgAdmin nor the
+GitHub App has no such directory, and the database backup is not hostage to it —
+the run says `secrets: … does not exist — nothing to include` and carries on. But
+a host that *has* the files and writes a snapshot without them fails the run,
+because `backup.sh` reads the snapshot's listing back rather than trusting the
+exit code of the write. Rehearsal cases 20 through 20d hold both halves.
+
+**What is still out is `backup.env`.** It holds the repository URL, its password
+and the object-store credentials, and backing it up inside the repository it
+unlocks is circular. It belongs in the maintainer's password manager. The rule:
+everything the host needs to come back goes into restic; what unlocks restic goes
+into the vault.
+
 ### Restoring
 
 Everything below assumes the credentials are loaded:
@@ -127,8 +162,25 @@ restic dump latest /opt/kolonie/.env > /opt/kolonie/.env
 chmod 600 /opt/kolonie/.env
 chown ubuntu:ubuntu /opt/kolonie/.env
 
+# The credential files. `restic dump` on a directory writes a tar, which is what
+# makes this one command rather than one per file — and it stays correct when a
+# third credential is added without anybody editing this runbook.
+mkdir -p /opt/kolonie/secrets
+restic dump latest /opt/kolonie/secrets | tar -x -C /opt/kolonie/secrets --strip-components=1
+chmod 700 /opt/kolonie/secrets
+chmod 600 /opt/kolonie/secrets/*
+chown -R ubuntu:ubuntu /opt/kolonie/secrets
+
 restic dump latest /var/backups/kolonie/kolonie.sql > /tmp/restore.sql
 ```
+
+**Traefik does not notice the htpasswd appearing.** It resolves `usersFile` when
+it builds the middleware and does not watch `/secrets`, so a file restored under
+a running Traefik is a file Traefik never looks for: it keeps the middleware it
+failed to build, drops the router, and `db.kolonie.ai` answers 404 with nothing
+in the log to say why. `docker restart kolonie-traefik` after restoring, and do
+not expect a reload — touching a file under `traefik/dynamic` does not do it
+either. Measured on 2026-08-01, not assumed.
 
 Restoring `.env` over a host that still has a working one is how you replace a
 current secret with an older one. On a host that is not a bare rebuild, dump it
