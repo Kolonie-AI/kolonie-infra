@@ -13,6 +13,9 @@ http:
       rule: "Host(`api.kolonie.ai`) || Host(`academy.kolonie.ai`)"
       entryPoints:
         - websecure
+      middlewares:
+        - security-headers
+        - rate-limit
       service: api
       tls:
         certResolver: cloudflare
@@ -28,6 +31,9 @@ http:
       rule: "Host(`mcp.kolonie.ai`)"
       entryPoints:
         - websecure
+      middlewares:
+        - security-headers
+        - rate-limit
       service: api
       tls:
         certResolver: cloudflare
@@ -46,6 +52,10 @@ http:
       rule: "Host(`challenge.kolonie.ai`)"
       entryPoints:
         - websecure
+      # security-headers but no rate-limit (#59): the abuse case for a page a
+      # browser loads is the CAPTCHA behind it, not request volume.
+      middlewares:
+        - security-headers
       service: api
       tls:
         certResolver: cloudflare
@@ -55,6 +65,9 @@ http:
       rule: "Host(`kolonie.ai`)"
       entryPoints:
         - websecure
+      # No rate-limit (#59): static and cached at the edge.
+      middlewares:
+        - security-headers
       service: website
       tls:
         certResolver: cloudflare
@@ -70,8 +83,12 @@ http:
       rule: "Host(`db.kolonie.ai`)"
       entryPoints:
         - websecure
+      # pgadmin-auth stays first, so authentication happens before anything else
+      # runs. The three security headers db.kolonie.ai already sent came from
+      # pgAdmin itself; served from here they survive replacing that container.
       middlewares:
         - pgadmin-auth
+        - security-headers
       service: pgadmin
       tls:
         certResolver: cloudflare

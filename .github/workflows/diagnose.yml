@@ -76,6 +76,14 @@ jobs:
             ./scripts/env-drift.sh . || echo "(drift reported above — this step does not fail the run)"
 
             echo
+            # The other list this repository hard-codes and Cloudflare owns (#56).
+            # Same rule as above: a stale list is a thing to notice, not a reason
+            # to break a diagnosis, so this does not fail the run either.
+            echo "=== Cloudflare range drift ==="
+            chmod +x scripts/cloudflare-ranges.sh
+            ./scripts/cloudflare-ranges.sh || echo "(reported above — this step does not fail the run)"
+
+            echo
             echo "=== containers ==="
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 

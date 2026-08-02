@@ -1,32 +1,46 @@
 # Traefik Dynamic Configuration — Middlewares
 # Kolonie AI
+#
+# Every middleware defined here is attached to at least one router in routes.yml.
+# That is the point of #59, not a coincidence to be maintained by hand: four
+# middlewares sat here attached to nothing until 2026-08-02, so this file read as
+# a correct answer to "do we set HSTS?" while every live host sent none. If you
+# add one here, attach it in the same commit or do not add it.
 
 http:
   middlewares:
-    # Rate limiting
+    # Rate limiting — api and mcp only (#59).
+    #
+    # `sourceCriterion.requestHeaderName: CF-Connecting-IP` rather than the
+    # default, and this is the load-bearing line. The default keys on the address
+    # Traefik believes the client has, which behind Cloudflare is the edge —
+    # fifteen published ranges shared by every visitor. Keyed that way the limit
+    # looks applied and is not.
+    #
+    # It is correct whether or not `forwardedHeaders.trustedIPs` is set (#56), so
+    # the two changes have no order between them.
     rate-limit:
       rateLimit:
         average: 100
         burst: 50
+        sourceCriterion:
+          requestHeaderName: CF-Connecting-IP
 
-    # Security headers
+    # Security headers — attached to every router (#59).
+    #
+    # `stsPreload` is off, deliberately. Preloading is a submission to a list
+    # browsers ship, and coming off it takes months: every present and future
+    # *.kolonie.ai would be HTTPS-only in every browser, including a subdomain
+    # somebody later wants plain for one afternoon. `stsSeconds` alone buys
+    # nearly all the protection and is reversible by lowering a number. Turning
+    # preload on is a new decision with a new issue, not a flag flip.
     security-headers:
       headers:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
-        stsPreload: true
+        stsPreload: false
         forceSTSHeader: true
         contentTypeNosniff: true
         browserXssFilter: true
         referrerPolicy: "strict-origin-when-cross-origin"
         frameDeny: true
-
-    # Compress responses
-    compress:
-      compress: {}
-
-    # Retry on transient errors
-    retry:
-      retry:
-        attempts: 3
-        initialInterval: 100ms

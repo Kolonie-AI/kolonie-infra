@@ -15,6 +15,54 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    # Trust Cloudflare's edge to have told the truth about the client (#56).
+    #
+    # Without this, Traefik discards the incoming X-Forwarded-For and writes the
+    # peer it accepted the connection from — always a Cloudflare address. A
+    # container behind it then sees the edge as the client. Nothing was broken by
+    # that; it broke pgAdmin instead, whose ProxyFix reads X-Forwarded-For and
+    # nothing else, pinned a session to an edge address, and failed every login
+    # with "The CSRF tokens do not match" (#30). An hour to find.
+    #
+    # With it, containers receive `X-Forwarded-For: <client>, <cloudflare-edge>`.
+    # pgAdmin still needs PROXY_X_FOR_COUNT: 2 — ProxyFix counts from the right,
+    # and the rightmost entry is still the edge. This makes the correct answer
+    # available; it does not make a naive configuration correct.
+    #
+    # **The trust is only safe because the origin refuses non-edge traffic** (#21,
+    # scripts/origin-firewall.sh). If that ever stops holding, anyone who can
+    # reach the origin directly can forge this header, and this block has to come
+    # out on the same day.
+    #
+    # The list is Cloudflare's published one, https://www.cloudflare.com/ips-v4
+    # and ips-v6, as of 2026-08-02: 15 IPv4 and 7 IPv6 ranges.
+    # `scripts/cloudflare-ranges.sh` compares it against the live lists and the
+    # Diagnose VPS workflow runs it, so a range added next year turns a row red
+    # rather than quietly reverting the behaviour.
+    forwardedHeaders:
+      trustedIPs:
+        - "173.245.48.0/20"
+        - "103.21.244.0/22"
+        - "103.22.200.0/22"
+        - "103.31.4.0/22"
+        - "141.101.64.0/18"
+        - "108.162.192.0/18"
+        - "190.93.240.0/20"
+        - "188.114.96.0/20"
+        - "197.234.240.0/22"
+        - "198.41.128.0/17"
+        - "162.158.0.0/15"
+        - "104.16.0.0/13"
+        - "104.24.0.0/14"
+        - "172.64.0.0/13"
+        - "131.0.72.0/22"
+        - "2400:cb00::/32"
+        - "2606:4700::/32"
+        - "2803:f800::/32"
+        - "2405:b500::/32"
+        - "2405:8100::/32"
+        - "2a06:98c0::/29"
+        - "2c0f:f248::/32"
   ping:
     address: ":8080"
 
