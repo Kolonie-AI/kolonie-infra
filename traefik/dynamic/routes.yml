@@ -137,7 +137,19 @@ http:
       rule: "Host(`www.kolonie.ai`)"
       entryPoints:
         - websecure
+      # security-headers before the redirect, for the reason the pgadmin router
+      # above spells out at length: a middleware that answers the request itself
+      # ends the chain, and nothing after it runs. `redirect-to-apex` answers
+      # every request here with a 301, so ordered second it would send a bare
+      # redirect carrying no HSTS — which is what this host did until #64.
+      #
+      # The protection gained is small: a browser follows the 301 and the apex
+      # sets HSTS a moment later. It is one line, and it makes the answer "every
+      # host we serve sends them" instead of "five of six, and here is why the
+      # sixth is fine" — the second sentence being the kind nobody re-derives
+      # correctly a year on.
       middlewares:
+        - security-headers
         - redirect-to-apex
       service: website
       tls:
