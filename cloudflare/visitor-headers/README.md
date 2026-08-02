@@ -42,26 +42,50 @@ reading, because a `GET` that fails tells you nothing about a token:
 | `GET /zones/{zone}/rulesets/phases/http_request_late_transform/entrypoint` | `request is not authorized` |
 | `GET`/`PATCH /zones/{zone}/managed_headers` | `request is not authorized` |
 
-The permission the token is missing is **Zone → Transform Rules**. Adding it to the
-existing token makes the `curl` below work; until then both changes are dashboard
-actions.
+**Zone → Transform Rules was added to the token that afternoon, and re-probed.**
+The ASN rule is applied and live; the managed transform is not, because it needs a
+*different* permission:
+
+| Call, after Transform Rules was granted | Result |
+|---|---|
+| `GET /zones/{zone}/rulesets/phases/http_request_late_transform/entrypoint` | `10003 could not find entrypoint ruleset in the http_request_late_transform phase` — a **state** error, so the permission is present and the zone simply had no such ruleset |
+| `POST /zones/{zone}/rulesets` with the transform phase | **success** |
+| `PATCH /zones/{zone}/managed_headers` with a real body | `request is not authorized` — **still** |
+
+So the two halves of this issue sit behind two permissions, not one. Transform
+Rules covers rulesets; the managed transforms endpoint does not move with it. In
+the token editor the remaining one is listed as **Zone → Managed Headers**.
+
+**Editing a Cloudflare token silently drops permissions it already had.** That has
+happened on this account: adding two scopes on 2026-07-29 removed Workers Scripts
+and Analytics, which had worked minutes earlier. Re-probe everything after any
+token change rather than assuming it is additive. Re-probed after this one — DNS,
+rulesets and the zone read all still answer.
 
 **Editing a Cloudflare token silently drops permissions it already had.** That has
 happened on this account: adding two scopes on 2026-07-29 removed Workers Scripts
 and Analytics, which had worked minutes earlier. Re-probe everything after any
 token change rather than assuming it is additive.
 
-### 1. The managed transform — dashboard only
+### 1. The managed transform — **not applied**
 
-There is an API for it (`PATCH /zones/{zone}/managed_headers`) and this token
-cannot reach it.
+There is an API for it (`PATCH /zones/{zone}/managed_headers`) and the token still
+cannot reach it, even with Transform Rules granted.
 
 > Cloudflare dashboard → **kolonie.ai** → Rules → **Settings** → Managed Transforms
 > → enable **Add visitor location headers** (request headers)
 
-### 2. The ASN header — `asn-header.json`
+Or add **Zone → Managed Headers** to the token and:
 
-With a token carrying Zone → Transform Rules:
+```bash
+curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/managed_headers" \
+  -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"managed_request_headers":[{"id":"add_visitor_location_headers","enabled":true}],"managed_response_headers":[]}'
+```
+
+### 2. The ASN header — **applied 2026-08-02**
+
+The file in this directory is the live configuration, and it was applied verbatim:
 
 ```bash
 # The zone id is not in this repository. Read it from the dashboard, or from
@@ -72,20 +96,32 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/rulesets" \
   --data @cloudflare/visitor-headers/asn-header.json
 ```
 
-If a `http_request_late_transform` entrypoint ruleset already exists, the zone will
-have one already and this `POST` will conflict — then `PUT` the rule into it
-instead:
-
-```bash
-curl -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/rulesets/phases/http_request_late_transform/entrypoint" \
-  -H "Authorization: Bearer $CF_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data @cloudflare/visitor-headers/asn-header.json
-```
-
 Measured 2026-08-02, the zone had three rulesets — `http_request_sanitize`,
 `http_request_firewall_managed` and `ddos_l7`, all managed — and no transform
-entrypoint, so the `POST` is the one to reach for first.
+entrypoint, so `POST` is the call. It is now four.
+
+**If a `http_request_late_transform` entrypoint already exists**, `POST` conflicts
+and the rules go in with `PUT` — but note two things that cost a round trip each
+when this was first applied:
+
+```bash
+# PUT to a phase entrypoint takes `rules` (and `description`) and REJECTS the
+# `kind` and `phase` fields the POST body carries:
+#   invalid JSON: unknown field "kind"
+python3 -c 'import json; d=json.load(open("cloudflare/visitor-headers/asn-header.json")); \
+  json.dump({k: d[k] for k in ("name","description","rules")}, open("/tmp/put-body.json","w"))'
+
+curl -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/rulesets/phases/http_request_late_transform/entrypoint" \
+  -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
+  --data @/tmp/put-body.json
+```
+
+**And a ruleset's name cannot be changed afterwards** — `the name field cannot be
+modified: got …, want …`. A ruleset created under a throwaway name keeps it until
+somebody deletes and recreates it, which is what happened here: the permission
+probe was a `POST` with `name: probe`, it succeeded the moment the permission
+landed, and the zone briefly had a production ruleset called `probe`. **Probe with
+a call that cannot create something**, or be ready to delete what the probe made.
 
 Equivalently, in the dashboard: Rules → **Transform Rules** → Modify Request Header
 → **Set dynamic** (not *Set static*), header name `x-kolonie-asn`, value
@@ -100,15 +136,43 @@ the rule itself is what makes it apply to everything.
 **Cloudflare rule changes are not immediate.** They have taken minutes on this zone
 before. Never conclude *it does not work* from one immediate retry.
 
-The headers arrive at the origin, so read them there rather than at the edge.
-`kolonie-website`'s Nginx logs `$http_x_forwarded_for` but not these, so the
-cheapest honest check is the API's access log or a one-off container that echoes
-what it received:
+The headers arrive at the origin, so read them there rather than at the edge — and
+**nothing on the host logs them**. `kolonie-website`'s Nginx logs
+`$http_x_forwarded_for` and no other header; `kolonie-api` logs one line at startup
+and nothing per request; Traefik's access log carries no arbitrary request header
+without a static-config change and a restart.
+
+So the check that works is a brief packet capture of the plain-HTTP hop between
+Traefik and a container, matched on a unique query string. It reads traffic and
+changes nothing:
 
 ```bash
-curl -s "https://kolonie.ai/?visitor-probe=$(date +%s)" >/dev/null
-ssh <host> 'docker logs --tail 20 kolonie-api'
+TS=$(date +%s)
+ssh <host> "sudo -n timeout 20 tcpdump -i any -A -s0 -l 'tcp port 80' > /tmp/cap-$TS.txt 2>/dev/null &"
+sleep 3
+curl -s -o /dev/null "https://kolonie.ai/?asn-probe=$TS"
+sleep 6
+ssh <host> "grep -iaA 22 'asn-probe=$TS' /tmp/cap-$TS.txt \
+  | grep -iaE 'GET /|cf-ip|cf-timezone|x-kolonie-asn|cf-connecting-ip|x-forwarded-for'; rm -f /tmp/cap-$TS.txt"
 ```
+
+Keep the window short and delete the capture. It is our own origin and a few
+seconds of it, but a packet capture of production traffic is not a thing to leave
+lying in `/tmp`.
+
+Observed 2026-08-02, right after the rule was applied:
+
+```
+GET /?asn-probe=1785669539 HTTP/1.1
+Cf-Connecting-Ip: 2a02:8109:…:c336
+Cf-Ipcountry: DE
+X-Forwarded-For: 2a02:8109:…:c336, 162.159.121.4
+X-Kolonie-Asn: 3209
+```
+
+`X-Kolonie-Asn` is there and correct — 3209 is the caller's ISP. **`cf-ipcity` and
+`cf-timezone` are not**, which is the managed transform in §1 still being off, and
+is what this file's two sections are separately about.
 
 What should be present, with non-empty values: `cf-ipcity`, `cf-timezone` and
 `x-kolonie-asn`.
