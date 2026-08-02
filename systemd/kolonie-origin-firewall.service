@@ -9,7 +9,29 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
+# **`RemainAfterExit=no`, and this is the whole of #65.**
+#
+# It was `yes`, which made the unit read `active (exited)` for as long as the
+# host stayed up — a nice signal that the firewall had been applied, and fatal to
+# the timer beside it. **systemd will not schedule the next elapse of a timer
+# whose triggered unit is still active.** So the service ran once at boot, never
+# went inactive, and `kolonie-origin-firewall.timer` reported `Trigger: n/a` with
+# an empty next elapse from then on. Measured 2026-08-02: last run 2026-07-30,
+# no next run, timer `active (running)` and `enabled` the entire time.
+#
+# The failure is silent twice over. The timer looks healthy — `is-active`,
+# `is-enabled` and the `timers.target.wants` symlink all say yes — and the rules
+# it installed stay in place and keep working, so nothing breaks until Cloudflare
+# changes a range and a slice of the world starts seeing 522 with nothing in any
+# log here to explain it. That is the exact outcome the timer's own unit file
+# describes and exists to prevent.
+#
+# What is given up by setting this to `no`: after a run the unit reads
+# `inactive (dead)` rather than `active (exited)`, so "is the firewall applied?"
+# is no longer answerable from `systemctl is-active`. It never really was —
+# an active unit meant *the script ran once*, not *the rules are present*. The
+# question is answered by `origin-firewall.sh status`, which reads the chain.
+RemainAfterExit=no
 ExecStart=/opt/kolonie/scripts/origin-firewall.sh apply
 # Never take the host off the network because Cloudflare's list endpoint was
 # briefly unreachable. The script refuses to build a chain it cannot trust, and
