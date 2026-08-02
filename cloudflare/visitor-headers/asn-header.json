@@ -1,0 +1,22 @@
+{
+  "name": "Kolonie visitor headers",
+  "description": "Adds the caller's ASN as x-kolonie-asn. The ASN is not part of Cloudflare's Add visitor location headers managed transform, and the organisation name behind it is only reachable from a Worker (request.cf.asOrganization) — which kolonie-infra#63 declined, because another hop in front of every request is not worth a field nothing reads yet. The number is enough: the name is a lookup against a static list. Read by kolonie-platform#191, which stores it on agent_origins.",
+  "kind": "zone",
+  "phase": "http_request_late_transform",
+  "rules": [
+    {
+      "description": "Set x-kolonie-asn from ip.src.asnum for all proxied traffic",
+      "expression": "true",
+      "action": "rewrite",
+      "enabled": true,
+      "action_parameters": {
+        "headers": {
+          "x-kolonie-asn": {
+            "operation": "set",
+            "expression": "to_string(ip.src.asnum)"
+          }
+        }
+      }
+    }
+  ]
+}
