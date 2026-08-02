@@ -13,8 +13,19 @@ or restored (`kolonie-infra#63`).
 
 | | What it adds |
 |---|---|
-| `Add visitor location headers` managed transform | `cf-ipcity`, `cf-ipcontinent`, `cf-iplatitude`, `cf-iplongitude`, `cf-ippostalcode`, `cf-region`, `cf-region-code`, `cf-timezone`, `cf-metro-code` |
+| `Add visitor location headers` managed transform | `cf-ipcity`, `cf-ipcontinent`, `cf-iplatitude`, `cf-iplongitude`, `cf-postal-code`, `cf-region`, `cf-region-code`, `cf-timezone` |
 | `asn-header.json` — a request-header transform rule | `x-kolonie-asn`, from the dynamic expression `ip.src.asnum` |
+
+**Two of those names are not what Cloudflare's own list says**, measured at the
+origin on 2026-08-02 rather than copied from the documentation:
+
+- the postal code arrives as **`cf-postal-code`**, not `cf-ippostalcode` — no `ip`
+  in it, and hyphenated where its neighbours are not
+- **`cf-metro-code` does not arrive at all.** It is a US metro/DMA code and is sent
+  for US visitors only, so a European request shows the set one header short
+
+Anything reading these should key on what arrives, not on the list. That is the
+whole reason the observed capture is pasted further down instead of a promise.
 
 **A Worker is deliberately not used.** `request.cf` would also give
 `asOrganization`, `clientTcpRtt`, `tlsVersion` and `tlsCipher`, at the cost of
@@ -29,9 +40,12 @@ Cloudflare send *more* of them. Neither substitutes for the other.
 
 ## Applying it
 
-**The API token in `~/.config/kolonie/secrets.env` cannot do either of these.**
-Measured 2026-08-02, and measured the way `#63` insists on — by writing, not by
-reading, because a `GET` that fails tells you nothing about a token:
+**Both are applied. The token can do both, and needed two separate grants to get
+there** — which is the part worth keeping, because the obvious guess is that one
+permission covers "transforms".
+
+Measured 2026-08-02 the way `#63` insists on — by writing, not by reading, because
+a `GET` that fails tells you nothing about a token. Starting state:
 
 | Call | Result |
 |---|---|
@@ -52,9 +66,24 @@ The ASN rule is applied and live; the managed transform is not, because it needs
 | `POST /zones/{zone}/rulesets` with the transform phase | **success** |
 | `PATCH /zones/{zone}/managed_headers` with a real body | `request is not authorized` — **still** |
 
-So the two halves of this issue sit behind two permissions, not one. Transform
+**Then Zone → Managed Headers was added as well**, and the endpoint answered:
+
+| Call, after Managed Headers was granted | Result |
+|---|---|
+| `GET /zones/{zone}/managed_headers` | **success** — six managed transforms listed, `add_visitor_location_headers` among them, **all `enabled: false`** |
+| `PATCH /zones/{zone}/managed_headers` enabling it | **success**, read back `enabled: true` |
+
+So the two halves of this issue sat behind two permissions, not one. Transform
 Rules covers rulesets; the managed transforms endpoint does not move with it. In
-the token editor the remaining one is listed as **Zone → Managed Headers**.
+the token editor they are **Zone → Transform Rules** and **Zone → Managed
+Headers**.
+
+**The `GET` also settled a question worth not re-asking:** every managed transform
+on this zone was off, including the response-side `add_security_headers`. The
+Colony sends its security headers from Traefik instead (`#59`), from configuration
+that lives in this repository and can be diffed. Two sources for one header set is
+the failure mode `#59` exists to close, so **do not turn that one on** without
+retiring the Traefik middleware in the same change.
 
 **Editing a Cloudflare token silently drops permissions it already had.** That has
 happened on this account: adding two scopes on 2026-07-29 removed Workers Scripts
@@ -67,21 +96,22 @@ happened on this account: adding two scopes on 2026-07-29 removed Workers Script
 and Analytics, which had worked minutes earlier. Re-probe everything after any
 token change rather than assuming it is additive.
 
-### 1. The managed transform — **not applied**
-
-There is an API for it (`PATCH /zones/{zone}/managed_headers`) and the token still
-cannot reach it, even with Transform Rules granted.
-
-> Cloudflare dashboard → **kolonie.ai** → Rules → **Settings** → Managed Transforms
-> → enable **Add visitor location headers** (request headers)
-
-Or add **Zone → Managed Headers** to the token and:
+### 1. The managed transform — **applied 2026-08-02**
 
 ```bash
 curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/managed_headers" \
   -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
   --data '{"managed_request_headers":[{"id":"add_visitor_location_headers","enabled":true}],"managed_response_headers":[]}'
 ```
+
+**Send `managed_response_headers` as an empty array, not omitted**, and send only
+the one request header you are changing — the endpoint merges rather than
+replacing, so the other five keep their state. Read it back with a `GET`
+afterwards; that is one call and it is the difference between "the API said
+success" and "the setting is on".
+
+Equivalently, in the dashboard: **kolonie.ai** → Rules → **Settings** → Managed
+Transforms → enable **Add visitor location headers** (request headers).
 
 ### 2. The ASN header — **applied 2026-08-02**
 
@@ -160,19 +190,41 @@ Keep the window short and delete the capture. It is our own origin and a few
 seconds of it, but a packet capture of production traffic is not a thing to leave
 lying in `/tmp`.
 
-Observed 2026-08-02, right after the rule was applied:
+Observed 2026-08-02 with both changes applied — everything a proxied request now
+carries at the origin. **Values that locate a person are masked here**; the header
+names and the shape are the finding, and this file is public:
 
 ```
-GET /?asn-probe=1785669539 HTTP/1.1
-Cf-Connecting-Ip: 2a02:8109:…:c336
-Cf-Ipcountry: DE
-X-Forwarded-For: 2a02:8109:…:c336, 162.159.121.4
-X-Kolonie-Asn: 3209
+GET /?visitor-probe=… HTTP/1.1
+Cf-Connecting-Ip: <caller>
+Cf-Ipcountry:     DE
+Cf-Ipcontinent:   EU
+Cf-Ipcity:        <city>
+Cf-Region:        <region>
+Cf-Region-Code:   <code>
+Cf-Postal-Code:   <postcode>
+Cf-Iplatitude:    <lat>
+Cf-Iplongitude:   <lon>
+Cf-Timezone:      Europe/Berlin
+Cf-Visitor:       {"scheme":"https"}
+Cf-Ray:           …-TXL
+X-Forwarded-For:  <caller>, <cloudflare-edge>
+X-Kolonie-Asn:    3209
 ```
 
-`X-Kolonie-Asn` is there and correct — 3209 is the caller's ISP. **`cf-ipcity` and
-`cf-timezone` are not**, which is the managed transform in §1 still being off, and
-is what this file's two sections are separately about.
+Three things this capture settles that the documentation would not have:
 
-What should be present, with non-empty values: `cf-ipcity`, `cf-timezone` and
-`x-kolonie-asn`.
+- **`cf-postal-code`, not `cf-ippostalcode`.** Cloudflare's own list gives the
+  second name
+- **No `cf-metro-code`.** It is a US metro/DMA code, sent for US visitors only
+- **`x-kolonie-asn` is correct** — 3209 is the caller's ISP, and it is the field
+  that distinguishes a home connection from a rented VPS, which is the whole reason
+  for the rule
+
+`X-Forwarded-For` carrying two entries is `#56`, not this change, and it is here
+because the same capture shows it.
+
+Note that a location this precise is now on every request. That is a fact for
+whatever stores it (`kolonie-platform#191`) to decide about — lat/long and postal
+code are not the same class of data as a country, and the Colony choosing to
+receive them is not the same as choosing to keep them.
