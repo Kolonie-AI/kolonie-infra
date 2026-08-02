@@ -214,6 +214,31 @@ services:
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
       CLOUDFLARE_EMAIL_SEND_TOKEN: ${CLOUDFLARE_EMAIL_SEND_TOKEN:-}
       ACADEMY_SENDER_ADDRESS: ${ACADEMY_SENDER_ADDRESS:-}
+      # The wake-up rhythm bounds (#61, kolonie-platform#142). Optional: absent
+      # means the default compiled into the API — 6 / 12 / 24 hours — and a
+      # deployment that sets none of the three is not diminished, which is why
+      # they carry `:-` and are not in REQUIRED_ENV.
+      #
+      # **They are listed here because otherwise .env cannot reach them.** This
+      # service has no `env_file`, so a variable that is not named in this block
+      # is invisible to the container however carefully an operator sets it. That
+      # was the state until 2026-08-02: `apps/api/src/rhythm.ts` read three
+      # variables that nothing in this repository passed, so the configuration
+      # #142 built existed and could not be used.
+      #
+      # RHYTHM_MIN_HOURS is the one expected to fall, once Quests give a citizen
+      # a reason to come back more often than the Academy does. Lowering it is a
+      # deploy setting rather than a release plus four skill re-publications, and
+      # that is the whole point of #142.
+      #
+      # A contradictory range — a minimum above the maximum, or a default outside
+      # the range — makes the API throw at startup. Deliberately: it is a
+      # configuration mistake that otherwise produces a Colony behaving strangely
+      # rather than one visibly broken, and startup is where an operator is
+      # watching.
+      RHYTHM_MIN_HOURS: ${RHYTHM_MIN_HOURS:-}
+      RHYTHM_DEFAULT_HOURS: ${RHYTHM_DEFAULT_HOURS:-}
+      RHYTHM_MAX_HOURS: ${RHYTHM_MAX_HOURS:-}
       PORT: 3000
     depends_on:
       postgres:

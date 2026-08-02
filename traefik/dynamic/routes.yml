@@ -83,12 +83,24 @@ http:
       rule: "Host(`db.kolonie.ai`)"
       entryPoints:
         - websecure
-      # pgadmin-auth stays first, so authentication happens before anything else
-      # runs. The three security headers db.kolonie.ai already sent came from
-      # pgAdmin itself; served from here they survive replacing that container.
+      # **security-headers before pgadmin-auth, and this order was measured.**
+      # #59 specified the reverse — authentication first, so nothing runs ahead
+      # of it — and the deploy on 2026-08-02 showed what that costs: basicAuth
+      # answers an unauthenticated request itself, short-circuiting the chain, so
+      # the 401 never reached security-headers and carried no HSTS, no nosniff and
+      # no frame-deny. That 401 is what nearly every visitor to db.kolonie.ai
+      # receives. The other five hosts had their headers; this one did not.
+      #
+      # Putting security-headers first is safe in a way a general "auth first"
+      # rule cannot see: it reads nothing from the request and grants nothing —
+      # it decorates the response. The rule exists to keep middleware that can
+      # *act* on an unauthenticated request from doing so, and this one cannot.
+      #
+      # The three headers db.kolonie.ai already sent came from pgAdmin itself;
+      # served from here they survive replacing that container.
       middlewares:
-        - pgadmin-auth
         - security-headers
+        - pgadmin-auth
       service: pgadmin
       tls:
         certResolver: cloudflare
