@@ -60,6 +60,33 @@ http:
       tls:
         certResolver: cloudflare
 
+    # The quest console — the same api container again, and a fifth host rather
+    # than a path prefix on api.kolonie.ai (#60, kolonie-platform#179).
+    #
+    # **A cookie is scoped to a host, and that is the whole reason for the extra
+    # name.** Serving a session-bearing surface under api.kolonie.ai would put a
+    # browser session cookie on the same origin as the machine API — ambient
+    # authority on endpoints that were designed to be reached with an API key and
+    # nothing else.
+    #
+    # rate-limit is attached from the first request, not once there is something
+    # to protect: this is the surface where a sign-in form will live, and its
+    # per-IP throttle is only honest because #56 made X-Forwarded-For carry the
+    # client rather than a Cloudflare edge.
+    #
+    # It answers before the console exists, deliberately. A host that 404s is a
+    # smaller problem than a feature nobody can test.
+    console:
+      rule: "Host(`console.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - rate-limit
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"
