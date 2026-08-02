@@ -161,6 +161,18 @@ docker exec kolonie-postgres pg_isready -U kolonie
 curl -sI https://kolonie.ai
 ```
 
+### Is the Academy actually being completed?
+
+A different question from *is it up*, and the one nobody was asking
+(`kolonie-docs#21`). `./scripts/academy-report.sh` answers it in one command:
+submissions, passes, failures and pass rate per rung, plus the active rungs
+nobody has submitted to at all — because a rung nobody reaches looks identical to
+one nobody fails until you ask both halves.
+
+Reads only, safe against production, and that is where it is useful. It is a SQL
+query and not a dashboard on purpose: if it gets run often enough to be annoying,
+that is the signal to build one.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)
