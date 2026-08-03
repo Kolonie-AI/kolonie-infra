@@ -92,8 +92,12 @@ jobs:
             # week.
             #
             # `GET /api/v1/key` answers as the key that asked. **The key is sent
-            # and never printed**: only the label OpenRouter knows it by, and
-            # whether the call was authorised. Same rule as everything above.
+            # and never printed** — and neither is the label, because OpenRouter
+            # defaults it to a masked fragment of the key itself
+            # (`sk-or-v1-ad8...029`) when none was set by hand. A truncated value
+            # is still a value, and this workflow's rule is names only. So the
+            # label is reported as *set* or *unnamed* rather than quoted; whether
+            # it says who spends is a question for the dashboard.
             echo "=== OpenRouter keys, one per consumer (#70) ==="
             set -a; . ./.env; set +a
             for v in OPENROUTER_API_KEY_VERIFIER OPENROUTER_API_KEY_MODERATION OPENROUTER_API_KEY_TRIAGE; do
@@ -103,8 +107,11 @@ jobs:
               label=$(printf '%s' "$body" | jq -r '.data.label // "?"' 2>/dev/null || echo "?")
               limit=$(printf '%s' "$body" | jq -r '.data.limit // "none"' 2>/dev/null || echo "?")
               used=$(printf '%s' "$body" | jq -r '.data.usage // "?"' 2>/dev/null || echo "?")
-              if [ "$label" = "?" ]; then echo "$v: REFUSED — the key does not authenticate"
-              else echo "$v: ok, OpenRouter calls it '$label', spent $used against a limit of $limit"; fi
+              case "$label" in
+                "?")        echo "$v: REFUSED — the key does not authenticate" ;;
+                sk-or-v1-*) echo "$v: ok, unnamed on OpenRouter (label is a masked key), spent $used against a limit of $limit" ;;
+                *)          echo "$v: ok, named on OpenRouter, spent $used against a limit of $limit" ;;
+              esac
             done
 
             echo
