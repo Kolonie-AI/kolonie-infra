@@ -310,14 +310,29 @@ services:
       # than failing anyone.
       SOLANA_RPC_URL: ${SOLANA_RPC_URL:-}
       # The image rung (kolonie-platform#60) hands a picture to a vision model.
-      # **The same key the moderation runner uses**, deliberately: one account,
-      # one credential, one name. Two names for one key is kolonie-infra#7.
+      #
+      # **Its own OpenRouter key, mapped onto the name the code reads**
+      # (kolonie-infra#70). This used to be the shared `OPENROUTER_API_KEY`, on
+      # the grounds that one account means one credential and one name — and the
+      # reason to split is not security but **attribution**: OpenRouter reports
+      # spend per key, so *"is triage or moderation burning the money"* had no
+      # answer while three services spent through one. Two further effects
+      # follow: a leak forces one consumer to rotate rather than four, and a
+      # per-key credit limit means a runaway loop can only exhaust its own
+      # budget.
+      #
+      # **This does not reverse kolonie-infra#7.** That was two variable *names*
+      # for one credential, where the second name was a synonym nobody could see
+      # was a synonym. These are five different credentials, each named for who
+      # spends it, and the application still reads exactly one name.
       #
       # Defaulted to empty for the reason spelled out on the moderation runner
       # below — an unset key has to degrade this service rather than take it
       # down. It degrades differently here, and worse: image submissions verdict
       # `pending` and wait, so the rung is seeded `draft` until this is set.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Per-service now, which keeps that property where it matters most: a typo
+      # in one of these names degrades one service instead of failing the stack.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_VERIFIER:-}
       # Which model looks at the image. Unset means the code's own default, the
       # same arrangement OPENROUTER_MODEL has one service down. It has to accept
       # an image *and* honour a JSON schema, which rules out most cheap vision
@@ -398,12 +413,16 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
+      # This service's own OpenRouter key, mapped onto the name the code reads
+      # (kolonie-infra#70). The reasoning is on the verifier runner above; the
+      # short version is that spend is only attributable per key.
+      #
       # Defaulted to empty rather than required. An unset key degrades this
       # service and stops nothing: entries stay `pending`, pending entries are
       # never served, and the read endpoints answer empty arrays. Compose
       # refusing to interpolate would instead take the container down, and the
       # health endpoint is how anyone would find out it was missing.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_MODERATION:-}
       # Which model judges is a decision that will be revisited against a real
       # corpus, so it is configuration. Unset means the code's own default.
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
@@ -451,13 +470,17 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       BAN_MARK_SALT: ${BAN_MARK_SALT:?set BAN_MARK_SALT in .env — openssl rand -hex 32}
-      # **The same key again, third service to read it.** One account, one
-      # credential, one name — kolonie-infra#7's whole lesson. Defaulted to empty
-      # for the reason the moderation runner gives: an unset key has to degrade
-      # this service rather than take it down. It degrades quietly here, and the
-      # degradation is exactly the state that existed before this service did —
-      # tickets accumulate `open` and nobody reads them.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # **The third of three, and the one the split was argued over.**
+      # kolonie-platform#229 asked what triage costs, and it was unanswerable
+      # while this service and the two above spent through one key
+      # (kolonie-infra#70). Reasoning on the verifier runner.
+      #
+      # Defaulted to empty for the reason the moderation runner gives: an unset
+      # key has to degrade this service rather than take it down. It degrades
+      # quietly here, and the degradation is exactly the state that existed
+      # before this service did — tickets accumulate `open` and nobody reads
+      # them.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_TRIAGE:-}
       # Which model triages. Unset means the code's own default.
       TRIAGE_MODEL: ${TRIAGE_MODEL:-}
       # The GitHub App this files issues as (kolonie-infra#55).
