@@ -51,7 +51,14 @@ if [[ ! -r "$ENV_FILE" ]]; then
     exit 2
 fi
 
-SECRET="$(grep -E '^DEPOSIT_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+# `|| true`, and it is load-bearing rather than defensive. `set -o pipefail`
+# above makes a pipeline carry the rightmost non-zero status, and grep answers 1
+# when it matches nothing — which is exactly the case the next branch exists to
+# handle. Without this the script exits 1 before reaching it, and a deliberate
+# configuration reports as a failed unit every hour. Found by the first run on
+# the host: `Result=exit-code`, no output, on a box where the variable was
+# legitimately unset.
+SECRET="$(grep -E '^DEPOSIT_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
 
 if [[ -z "$SECRET" ]]; then
     # Not a failure. Without the secret the route is not mounted at all, which
