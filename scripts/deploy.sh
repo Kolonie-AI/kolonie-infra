@@ -547,7 +547,72 @@ migrate() {
         log "ERROR: the database may be partly migrated. See docs/disaster-recovery.md, Scenario 5."
         exit 1
     fi
+    verify_migrations
     log "Migrations: done"
+}
+
+# Did the migrations that shipped in this image actually reach the database?
+#
+# **The migrator answers this too, and this asks it a second way on purpose.**
+# The migrator compares the journal against the
+# bookkeeping table by hash and exits non-zero when they disagree — which covers
+# every path, including a developer's laptop. What it cannot cover is the case
+# where the *image* is not the one this deploy pulled: a container built two
+# commits ago is internally consistent, reports `none pending`, and is wrong
+# about the only thing that matters here.
+#
+# So this compares the `.sql` files in the image against the rows in the
+# database, from outside both. It costs one `ls` and one `select` on a step that
+# already takes half a minute.
+#
+# It happened on 2026-08-03: five migrations never ran, three deploys reported
+# success, and the fourth failed in the seed — two steps from the cause. See
+# docs/disaster-recovery.md, Scenario 6.
+verify_migrations() {
+    local in_image in_database
+    in_image=$(docker compose "${PROFILE_ARGS[@]}" run --rm -T --entrypoint sh api \
+        -c 'ls /app/packages/db/drizzle/*.sql 2>/dev/null | wc -l' 2>/dev/null | tr -dc '0-9')
+    # The credentials come from inside the container rather than from this
+    # shell: `.env` is read by compose and never sourced here, so
+    # `${POSTGRES_USER}` out here is an empty string that psql would quietly
+    # turn into a connection as `root`.
+    in_database=$(docker compose "${PROFILE_ARGS[@]}" exec -T postgres sh -c \
+        'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from drizzle.__drizzle_migrations"' \
+        2>/dev/null | tr -dc '0-9')
+
+    # Either number missing means the check could not run — a container that is
+    # not up, a psql that is not there. That is not a failed migration and must
+    # not be reported as one; the migrator has already had its say.
+    if [ -z "$in_image" ] || [ -z "$in_database" ]; then
+        log "WARN: could not count migrations (image='$in_image' database='$in_database') — skipping the cross-check"
+        return
+    fi
+
+    # **Asymmetric, and the asymmetry is the whole design.**
+    #
+    # More in the image than in the database means migrations that shipped in
+    # this build did not run. That is the failure this exists for, and it stops
+    # the deploy.
+    #
+    # More in the database than in the image is the ordinary case on a board two
+    # agents work: somebody else's migration landed and this build predates it.
+    # The schema is ahead of the code, every migration here is additive, and a
+    # deploy refused for that would block the normal interleaving of two
+    # contributors. It is worth a line in the log and nothing more.
+    if [ "$in_image" -gt "$in_database" ]; then
+        log "ERROR: the image carries $in_image migrations and the database has applied $in_database."
+        log "ERROR: the deploy stops here — the schema this build expects is not the schema that exists."
+        log "ERROR: no new container was started; the previous ones are still serving."
+        log "ERROR: see docs/disaster-recovery.md, Scenario 6, for how to find and repair the gap."
+        exit 1
+    fi
+
+    if [ "$in_image" -lt "$in_database" ]; then
+        log "Migrations: $in_database applied, $in_image in this image — the database is ahead, which is somebody else's migration having landed first"
+        return
+    fi
+
+    log "Migrations: $in_database applied, matching the $in_image this image carries"
 }
 
 # Put the Academy tasks in the database — same window as migrate(), same reason.
