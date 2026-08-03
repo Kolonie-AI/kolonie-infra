@@ -545,23 +545,44 @@ Take a dump first — it is one command, above — although this touches only
 bookkeeping and the migrations themselves are the same ones the deploy would
 have run.
 
-**What stops it recurring.** Three things, in the order they would catch it:
+**Repair the row, not only the migrations it hid.** This is the half that was
+missed on 2026-08-03 and it is why the incident had two dates. Running the
+skipped migrations makes the deploy green and leaves the future stamp sitting in
+the table, where it hides nothing at all until the next migration is authored
+below it — nine days, in the recorded case, between a repair that looked complete
+and the second failure it guaranteed. The `update` above is the repair; applying
+the migrations is the consequence of it. If you have already run the migrator and
+the row still carries its old value, you are not finished.
 
-1. `packages/db/src/migrate.test.ts` in `kolonie-platform` fails if the
-   journal's timestamps are not strictly increasing, so the commit that writes
-   one cannot reach `main`.
+**What stops it recurring.** Four things, in the order they would catch it:
+
+1. `packages/db/src/journal.test.ts` in `kolonie-platform` fails if the journal's
+   timestamps are not strictly increasing in `idx` order — along with the three
+   other invariants that make the journal safe to merge — so the commit that
+   writes one cannot reach `main`. It reads the journal from disk and needs no
+   database, so it runs on the machine doing the merging.
 2. The migrator itself compares the journal against `__drizzle_migrations` after
    migrating and exits non-zero naming what is missing — **matched on the
    timestamp and not on the hash**, because a migration whose file was edited
    after it ran would otherwise look exactly like one that never ran. This
    repository has such a file (`0039_backfill_task_attempts`).
-3. `deploy.sh` counts the `.sql` files in the image against the rows in the
+3. `npm run check:drift -w @kolonie-ai/db` compares each recorded `created_at`
+   against the journal `when` for the same migration, matched **by hash** —
+   which is the question none of the others asks, and the one whose answer was
+   wrong for nine days while every other signal read healthy. Rows that hash to
+   no file cannot be checked and are counted rather than reported, so
+   `0039_backfill_task_attempts` does not cry wolf; the count is printed, and a
+   second unmatched row is worth asking about. The migrator runs the same check
+   and refuses the deploy on a finding, but **this one runs without a deploy**,
+   which is the whole point: the state is dormant, so nothing prompts anybody to
+   look for it.
+4. `deploy.sh` counts the `.sql` files in the image against the rows in the
    database, from outside both, which is the one thing the migrator cannot see:
    an image that is not the one this deploy pulled reports `none pending`
    perfectly consistently and is wrong about the only thing that matters.
 
-The first two protect the repository. The third and this scenario are for a
-database that has already drifted, which no test in a repository can reach.
+The first protects the repository. The rest are for a database that has already
+drifted, which no test reading only the repository can reach.
 
 ## Recovery Time Objectives
 
