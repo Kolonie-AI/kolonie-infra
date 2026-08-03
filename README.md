@@ -173,6 +173,45 @@ Reads only, safe against production, and that is where it is useful. It is a SQL
 query and not a dashboard on purpose: if it gets run often enough to be annoying,
 that is the signal to build one.
 
+### Step 8: The deposit reconciliation timer
+
+A sponsor's USDC arrives through a webhook, and a webhook that is not delivered
+is money the Colony never sees. `kolonie-reconcile.timer` re-reads every deposit
+address hourly and credits what the webhook missed — which is what makes a
+missed delivery a delay rather than a loss (`kolonie-infra#72`).
+
+**Two things have to be true before it is worth enabling**, and it says so
+rather than failing when they are not:
+
+| | |
+|---|---|
+| `DEPOSIT_WEBHOOK_SECRET` in `.env` | otherwise the routes are not mounted at all and the pass exits 0, saying it skipped |
+| `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
+
+Units are **copied, not symlinked**, and a change to one in this repository does
+not reach the host on deploy — the same convention as `kolonie-backup`, and for
+the same reason. Copy out of the checkout, never create files in it as root:
+`/opt/kolonie` is a git checkout the deploy resets as `ubuntu`, and a root-owned
+file inside it breaks every deploy at the git step.
+
+```bash
+sudo install -m 644 systemd/kolonie-reconcile.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-reconcile.timer
+
+# Prove it — a pass by hand, then the schedule
+sudo systemctl start kolonie-reconcile.service
+journalctl -u kolonie-reconcile.service -n 20
+
+# `NEXT` must not be empty. An empty next elapse is the failure kolonie-infra#66
+# is about: every other signal reads healthy while the timer schedules nothing.
+systemctl list-timers kolonie-reconcile.timer
+```
+
+The journal line is one per pass. `recovered` is the number worth reading: it
+counts deposits the webhook **missed**, so a zero means the webhook is working
+and a number that keeps recurring means it is not.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)
@@ -407,7 +446,7 @@ kolonie-infra/
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
-├── systemd/                        ← Host units: origin firewall, backup timer
+├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation
 │
 └── .github/
     └── workflows/

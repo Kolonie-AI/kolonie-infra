@@ -1,0 +1,28 @@
+[Unit]
+Description=Ask the API to credit deposits the webhook missed (kolonie-infra#72)
+# The pass runs inside the API container, so there has to be one. On a boot where
+# Docker is slow to come up this orders the run after it rather than racing it.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# **`RemainAfterExit` is left at its default of `no`, and that is #65.**
+# systemd will not schedule the next elapse of a timer whose triggered unit is
+# still active, so a `yes` here would give a timer that reads healthy on every
+# signal anybody thinks to check and never fires again. That failure cost
+# `kolonie-origin-firewall.timer` three days and was found by hand.
+ExecStart=/opt/kolonie/scripts/reconcile-deposits.sh
+
+# It reads one file, talks to one container and writes nothing on this host.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A pass that cannot reach the RPC endpoint is not an incident: the webhook is
+# still crediting and the next hour will try again. What must not happen is a
+# unit that retries in a tight loop against an endpoint that is rate-limiting it.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

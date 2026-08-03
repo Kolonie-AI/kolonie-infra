@@ -262,10 +262,14 @@ services:
       #     that is a decision rather than a deploy step
       #   - no CONSOLE_URL, and no console is served at all — rather than one
       #     served at the API's own host, where nothing expects a form
+      #   - no RPC_URL, and the reconciliation pass reports zeros. The webhook
+      #     still credits; what is lost is the recovery of a delivery it missed,
+      #     which is the difference between a delay and a loss (#72)
       DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
       QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}
+      RPC_URL: ${RPC_URL:-}
       PORT: 3000
     depends_on:
       postgres:
