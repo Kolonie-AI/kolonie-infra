@@ -92,30 +92,35 @@ jobs:
             # week.
             #
             # `GET /api/v1/key` answers as the key that asked. **The key is sent
-            # and never printed** — and neither is the label, because OpenRouter
-            # defaults it to a masked fragment of the key itself
-            # (`sk-or-v1-ad8...029`) when none was set by hand. A truncated value
-            # is still a value, and this workflow's rule is names only. So the
-            # label is reported as *set* or *unnamed* rather than quoted; whether
-            # it says who spends is a question for the dashboard.
+            # and never printed.**
+            #
+            # **It cannot tell you which key it is, and do not add a check that
+            # claims otherwise.** Measured 2026-08-03: the response carries no
+            # `name` field — the whole set is `byok_usage*`, `creator_user_id`,
+            # `expires_at`, `include_byok_in_limit`, `is_free_tier`,
+            # `is_management_key`, `is_provisioning_key`, `label`, `limit`,
+            # `limit_remaining`, `limit_reset`, `rate_limit`, `usage*` — and
+            # `label` comes back as a masked fragment of the key itself
+            # (`sk-or-v1-ad8...029`), not the name the key was created with.
+            #
+            # An earlier version of this step read `label`, saw that, and
+            # reported all three keys as unnamed. **They are named**; the
+            # endpoint just does not expose it. The names live in the account,
+            # readable only through the provisioning API, which needs a
+            # provisioning key — a credential #70 declined to store for exactly
+            # this class of cosmetic question. So this reports what it can
+            # actually see: whether the key authenticates, and what it has spent.
             echo "=== OpenRouter keys, one per consumer (#70) ==="
             set -a; . ./.env; set +a
             for v in OPENROUTER_API_KEY_VERIFIER OPENROUTER_API_KEY_MODERATION OPENROUTER_API_KEY_TRIAGE; do
               key=$(eval "printf '%s' \"\${$v:-}\"")
               if [ -z "$key" ]; then echo "$v: not set"; continue; fi
               body=$(curl -s -m 15 -H "Authorization: Bearer $key" https://openrouter.ai/api/v1/key || true)
-              fields=$(printf '%s' "$body" | jq -r '.data | keys | join(",")' 2>/dev/null || echo "?")
+              ok=$(printf '%s' "$body" | jq -r 'if .data then "yes" else "no" end' 2>/dev/null || echo "no")
               limit=$(printf '%s' "$body" | jq -r '.data.limit // "none"' 2>/dev/null || echo "?")
               used=$(printf '%s' "$body" | jq -r '.data.usage // "?"' 2>/dev/null || echo "?")
-              if [ "$fields" = "?" ]; then echo "$v: REFUSED — the key does not authenticate"; continue; fi
+              if [ "$ok" != "yes" ]; then echo "$v: REFUSED — the key does not authenticate"; continue; fi
               echo "$v: ok, spent $used against a limit of $limit"
-              # Which field carries the human name is a question this step got
-              # wrong once: it read `label`, found `sk-or-v1-ad8...029` and
-              # reported the key as unnamed, when the account says otherwise.
-              # So print the field *names* the endpoint returns — never their
-              # values, the rule everywhere else here — and let the log say what
-              # the response actually contains.
-              echo "    fields returned: $fields"
             done
 
             echo
