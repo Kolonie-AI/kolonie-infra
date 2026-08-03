@@ -104,14 +104,18 @@ jobs:
               key=$(eval "printf '%s' \"\${$v:-}\"")
               if [ -z "$key" ]; then echo "$v: not set"; continue; fi
               body=$(curl -s -m 15 -H "Authorization: Bearer $key" https://openrouter.ai/api/v1/key || true)
-              label=$(printf '%s' "$body" | jq -r '.data.label // "?"' 2>/dev/null || echo "?")
+              fields=$(printf '%s' "$body" | jq -r '.data | keys | join(",")' 2>/dev/null || echo "?")
               limit=$(printf '%s' "$body" | jq -r '.data.limit // "none"' 2>/dev/null || echo "?")
               used=$(printf '%s' "$body" | jq -r '.data.usage // "?"' 2>/dev/null || echo "?")
-              case "$label" in
-                "?")        echo "$v: REFUSED — the key does not authenticate" ;;
-                sk-or-v1-*) echo "$v: ok, unnamed on OpenRouter (label is a masked key), spent $used against a limit of $limit" ;;
-                *)          echo "$v: ok, named on OpenRouter, spent $used against a limit of $limit" ;;
-              esac
+              if [ "$fields" = "?" ]; then echo "$v: REFUSED — the key does not authenticate"; continue; fi
+              echo "$v: ok, spent $used against a limit of $limit"
+              # Which field carries the human name is a question this step got
+              # wrong once: it read `label`, found `sk-or-v1-ad8...029` and
+              # reported the key as unnamed, when the account says otherwise.
+              # So print the field *names* the endpoint returns — never their
+              # values, the rule everywhere else here — and let the log say what
+              # the response actually contains.
+              echo "    fields returned: $fields"
             done
 
             echo
