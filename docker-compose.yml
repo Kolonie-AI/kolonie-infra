@@ -239,6 +239,33 @@ services:
       RHYTHM_MIN_HOURS: ${RHYTHM_MIN_HOURS:-}
       RHYTHM_DEFAULT_HOURS: ${RHYTHM_DEFAULT_HOURS:-}
       RHYTHM_MAX_HOURS: ${RHYTHM_MAX_HOURS:-}
+      # The seal on the secret half of every deposit address
+      # (kolonie-platform#219). `:?` and not `:-`, which puts it in the small
+      # company of BAN_MARK_SALT above, for the same reason: the API reads it at
+      # startup and **refuses to boot without it**, deliberately — a process that
+      # cannot protect a keypair must not generate one. Failing here rather than
+      # in the container turns that into a message an operator can act on
+      # instead of a restart loop.
+      DEPOSIT_SEALING_KEY: ${DEPOSIT_SEALING_KEY:?set DEPOSIT_SEALING_KEY in .env — openssl rand -hex 32}
+      # The rest of the quest programme's configuration, all optional and all
+      # failing closed (kolonie-infra#72). They are named here because otherwise
+      # `.env` cannot reach them: this service has no `env_file`, which is the
+      # trap #142 fell into — three variables the API read and nothing passed.
+      #
+      # Absent, each one withholds a feature rather than breaking one:
+      #   - no DEPOSIT_WEBHOOK_SECRET, and the deposit webhook route is not
+      #     mounted at all. The rule EMAIL_INBOUND_SECRET follows, for the same
+      #     reason: the endpoint turns *money arrived* into a balance
+      #   - no QUEST_AUDIT_ENABLED, and a quest with a non-zero reward cannot be
+      #     published (kolonie-platform#221). Correct for the pilot, which pays
+      #     nothing; it has to become `true` before the first paying quest, and
+      #     that is a decision rather than a deploy step
+      #   - no CONSOLE_URL, and no console is served at all — rather than one
+      #     served at the API's own host, where nothing expects a form
+      DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
+      QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
+      QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
+      CONSOLE_URL: ${CONSOLE_URL:-}
       PORT: 3000
     depends_on:
       postgres:
@@ -302,6 +329,17 @@ services:
       # real bio is certified on the structural bar alone, and the verdict
       # records that nobody read it. An outage of ours must not close the door.
       BIO_MODEL: ${BIO_MODEL:-}
+      # Which model reads a quest report against the sponsor's own questions
+      # (kolonie-platform#177). Unset means the code's own default, like the two
+      # above.
+      #
+      # **An unreachable judge parks a report; it never fails one.** The verifier
+      # answers `pending` and the runner retries until the quest's timeout, which
+      # is #170's rule: the Colony's own latency must not be recorded as the
+      # citizen's failure. That is the opposite of BIO_MODEL's degradation one
+      # line up, and deliberately so — there the door must not close, here money
+      # may depend on the verdict.
+      QUEST_JUDGE_MODEL: ${QUEST_JUDGE_MODEL:-}
       POLL_INTERVAL_MS: ${VERIFIER_POLL_INTERVAL_MS:-5000}
     depends_on:
       postgres:
