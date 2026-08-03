@@ -489,6 +489,68 @@ dump taken *now* rather than at 03:00, and it is one command:
 sudo /opt/kolonie/scripts/backup.sh backup
 ```
 
+### Scenario 6: `migrations: none pending` and the tables are not there
+
+**What it looks like.** A deploy reports `Migrations: done`, the migrator says
+`none pending, N already applied`, and the schema the new code needs is absent.
+The deploy then fails somewhere downstream — the seed, or a container that
+cannot start — and the message names that step rather than the cause.
+
+**Why it happens.** Drizzle's migrator does not track migrations individually.
+It reads the newest `created_at` in `drizzle.__drizzle_migrations` and applies
+every journal entry whose `when` is greater than that. One entry stamped in the
+future therefore swallows **every migration generated after it** until the wall
+clock catches up, silently, while reporting that there is nothing to do.
+
+`drizzle-kit` takes `when` from the clock of whichever machine generated the
+file, so two contributors on two machines are enough to produce it. It happened
+on 2026-08-03: `0079` was stamped twenty-two hours ahead, five later migrations
+never ran, and three deploys reported success before the fourth failed in the
+seed.
+
+**How to confirm it.** Compare what the image carries with what the database
+believes:
+
+```bash
+docker run --rm --entrypoint sh ghcr.io/kolonie-ai/kolonie-api:latest \
+    -c 'ls /app/packages/db/drizzle/*.sql | wc -l'
+docker exec -i kolonie-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c 'select count(*) from drizzle.__drizzle_migrations'
+```
+
+Two different numbers with `none pending` is this. Then find the offender —
+any row whose `created_at` is not between its neighbours':
+
+```bash
+docker exec -i kolonie-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+    'select id, left(hash,16), created_at,
+            to_timestamp(created_at/1000) at time zone '"'"'UTC'"'"' as ts
+       from drizzle.__drizzle_migrations order by id desc limit 10'
+```
+
+**The repair.** Move the offending row's `created_at` to one millisecond after
+its predecessor's, so that file order and timestamp order agree again. Identify
+the row **by hash** and not by position — `sha256sum` of the `.sql` file matches
+the `hash` column — and state the old value in the `where` clause so the update
+cannot hit a row that has since changed:
+
+```sql
+update drizzle.__drizzle_migrations
+   set created_at = <predecessor + 1>
+ where id = <id> and hash like '<first 16 of the hash>%' and created_at = <the future value>;
+```
+
+Then run the migrator again; it applies everything that was skipped, in order.
+Take a dump first — it is one command, above — although this touches only
+bookkeeping and the migrations themselves are the same ones the deploy would
+have run.
+
+**What stops it recurring.** `packages/db/src/migrate.test.ts` in
+`kolonie-platform` fails if the journal's timestamps are not strictly
+increasing, so the commit that introduces one cannot reach `main`. That guard
+protects the repository and not a database that has already drifted — hence
+this scenario.
+
 ## Recovery Time Objectives
 
 | Scenario | Target Recovery Time |
