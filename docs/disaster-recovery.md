@@ -545,11 +545,23 @@ Take a dump first — it is one command, above — although this touches only
 bookkeeping and the migrations themselves are the same ones the deploy would
 have run.
 
-**What stops it recurring.** `packages/db/src/migrate.test.ts` in
-`kolonie-platform` fails if the journal's timestamps are not strictly
-increasing, so the commit that introduces one cannot reach `main`. That guard
-protects the repository and not a database that has already drifted — hence
-this scenario.
+**What stops it recurring.** Three things, in the order they would catch it:
+
+1. `packages/db/src/migrate.test.ts` in `kolonie-platform` fails if the
+   journal's timestamps are not strictly increasing, so the commit that writes
+   one cannot reach `main`.
+2. The migrator itself compares the journal against `__drizzle_migrations` after
+   migrating and exits non-zero naming what is missing — **matched on the
+   timestamp and not on the hash**, because a migration whose file was edited
+   after it ran would otherwise look exactly like one that never ran. This
+   repository has such a file (`0039_backfill_task_attempts`).
+3. `deploy.sh` counts the `.sql` files in the image against the rows in the
+   database, from outside both, which is the one thing the migrator cannot see:
+   an image that is not the one this deploy pulled reports `none pending`
+   perfectly consistently and is wrong about the only thing that matters.
+
+The first two protect the repository. The third and this scenario are for a
+database that has already drifted, which no test in a repository can reach.
 
 ## Recovery Time Objectives
 
