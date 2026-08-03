@@ -84,6 +84,30 @@ jobs:
             ./scripts/cloudflare-ranges.sh || echo "(reported above — this step does not fail the run)"
 
             echo
+            # #70 split one OpenRouter key into one per consumer, and left a
+            # question the sections above cannot answer: a name can be present,
+            # non-empty and interpolated, and still be a key that does not work.
+            # The failure is silent by construction — an unauthorised runner
+            # leaves entries `pending`, which is indistinguishable from a quiet
+            # week.
+            #
+            # `GET /api/v1/key` answers as the key that asked. **The key is sent
+            # and never printed**: only the label OpenRouter knows it by, and
+            # whether the call was authorised. Same rule as everything above.
+            echo "=== OpenRouter keys, one per consumer (#70) ==="
+            set -a; . ./.env; set +a
+            for v in OPENROUTER_API_KEY_VERIFIER OPENROUTER_API_KEY_MODERATION OPENROUTER_API_KEY_TRIAGE; do
+              key=$(eval "printf '%s' \"\${$v:-}\"")
+              if [ -z "$key" ]; then echo "$v: not set"; continue; fi
+              body=$(curl -s -m 15 -H "Authorization: Bearer $key" https://openrouter.ai/api/v1/key || true)
+              label=$(printf '%s' "$body" | jq -r '.data.label // "?"' 2>/dev/null || echo "?")
+              limit=$(printf '%s' "$body" | jq -r '.data.limit // "none"' 2>/dev/null || echo "?")
+              used=$(printf '%s' "$body" | jq -r '.data.usage // "?"' 2>/dev/null || echo "?")
+              if [ "$label" = "?" ]; then echo "$v: REFUSED — the key does not authenticate"
+              else echo "$v: ok, OpenRouter calls it '$label', spent $used against a limit of $limit"; fi
+            done
+
+            echo
             echo "=== containers ==="
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
