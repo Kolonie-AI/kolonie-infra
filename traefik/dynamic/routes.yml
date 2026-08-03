@@ -201,6 +201,3 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-pgadmin:80"
-
-  bad-indent:
-   - [unclosed
