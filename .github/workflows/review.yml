@@ -1,0 +1,69 @@
+name: Reviewer Agent
+
+# The review a pull request gets here without waiting for the operator
+# (kolonie-docs#42, extended to this repository by kolonie-docs#123). The rules
+# live once, in kolonie-docs, same as `triage.yml` beside this file.
+#
+# ## Why the trigger is available now and was not on 2026-08-02
+#
+# kolonie-docs#123 found the reviewer running in `kolonie-platform` alone, and
+# said it could not simply be copied: it hangs off a workflow named `CI`, and
+# this repository had only `Rehearse`, path-filtered to `scripts/**` and
+# `docker-compose.yml`. A pull request touching `traefik/` ran nothing, so there
+# was no build for a reviewer to wait on.
+#
+# **kolonie-docs#124 is what changed the answer.** It added a `CI` here without a
+# path filter, as an acceptance criterion rather than an oversight. Measured
+# 2026-08-03, `CI` runs on every pull request to this repository, which is the
+# property `kolonie-website` was singled out for having.
+#
+# `secrets: inherit` rather than naming one: the called workflow declares
+# `OPENROUTER_API_KEY` as optional, and the organisation secret of that name is
+# granted to this repository (measured 2026-08-03), so the reviewer runs with a
+# model rather than logging that it has none. It reads no other secret here —
+# `VPS_SSH_KEY` and `VPS_HOST` are `deploy.yml`'s, and nothing in the called
+# workflow asks for them.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  actions: read
+
+jobs:
+  review:
+    uses: Kolonie-AI/kolonie-docs/.github/workflows/review-pull-request.yml@main
+    secrets: inherit
+    # The callee's default names verifier packages, the ledger and erasure paths.
+    # None of that is here, and what is here is different in kind: this
+    # repository is the only one where a merged pull request can take the whole
+    # Colony off the air, so the list is drawn around *what a deploy touches*
+    # rather than around what a rule says.
+    #
+    # `docker-compose.yml` and its dev sibling, because that file is the running
+    # system — services, secrets interpolation, healthchecks, retention.
+    # `traefik/`, because it terminates TLS and is what makes anything reachable
+    # at all. `scripts/` and `systemd/`, because they run on the host, as root or
+    # near enough. `cloudflare/`, because it is DNS and a wrong record is an
+    # outage nobody can see the cause of. `.env`, in any form, because a pull
+    # request that edits it is a pull request about credentials — the example
+    # file included, since it is the only checked-in record of what the host
+    # needs. `.github/`, because a workflow edit changes what runs with this
+    # repository's token, and `deploy.yml` is downstream of that.
+    #
+    # That is close to everything in the repository, and deliberately so: a
+    # match forces COMMENT rather than a refusal, the review is still written,
+    # and a person decides. Here that is the right default rather than a
+    # concession.
+    with:
+      sensitive_paths: "docker-compose(\\.dev)?\\.yml|(^|/)traefik/|(^|/)scripts/|(^|/)systemd/|(^|/)cloudflare/|(^|/)pgadmin/|\\.env|(^|/)\\.github/"
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
