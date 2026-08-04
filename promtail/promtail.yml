@@ -1,0 +1,114 @@
+# Promtail — the agent that ships container logs into Loki (#68)
+#
+# **It reads Docker's log files. It does not mount the Docker socket.** Mounting
+# the socket into a container gives that container root on the host: anything
+# that can talk to the socket can start a privileged container with / bind-
+# mounted. Promtail's `docker_sd_configs` wants exactly that, for the sake of
+# discovering container names — and the same names are available from the log
+# lines themselves, see below. A log shipper is not worth a root-equivalent
+# credential.
+#
+# The read is `/var/lib/docker/containers:ro`, which is Docker's own json-file
+# output. Rotation is Docker's (`x-logging` in docker-compose.yml, 50 MB × 3);
+# what Loki adds is retention across a container being recreated, search across
+# services, and an answer without an SSH session.
+
+server:
+  http_listen_port: 9080
+  # Promtail's gRPC server has no consumer here. 0 disables it rather than
+  # binding a port nothing connects to.
+  grpc_listen_port: 0
+  log_level: info
+
+# How far into each file Promtail has read. On a named volume, not the container
+# filesystem: without it, a recreated Promtail re-reads every file from the start
+# and every line already in Loki arrives a second time.
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  # The internal network name. Loki is not reachable from outside the host except
+  # through Traefik, and Promtail does not go that way — it would be asking the
+  # public edge for a service sitting beside it.
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: containers
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: containers
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # 1. Unwrap Docker's own envelope.
+      #
+      # Every line in a json-file log is `{"log": "<the line>\n", "stream":
+      # "stdout", "attrs": {...}, "time": "<RFC3339Nano>"}`. The application's
+      # own line is a *string* inside it, and that string is what has to reach
+      # Loki intact — kolonie-platform#230 made those lines JSON precisely so
+      # `| json` can be used at query time.
+      - json:
+          expressions:
+            line: log
+            attrs: attrs
+            time: time
+
+      # 2. Where the `service` label comes from, without the socket.
+      #
+      # This is the whole reason the socket is not needed. Docker's json-file
+      # driver copies any container label named in `--log-opt labels=` into an
+      # `attrs` object on every line it writes, and Compose sets
+      # `com.docker.compose.service` on every container it starts. So the file
+      # already carries the service name, and `x-logging` in docker-compose.yml
+      # is what asks for it — remove that option and this stage silently
+      # produces nothing, which is the one coupling between the two files.
+      #
+      # The container *id* is deliberately not used, although it is right there
+      # in the path. It changes on every recreation, so it is a new stream on
+      # every deploy: the textbook way to make a Loki index unusable.
+      - json:
+          source: attrs
+          expressions:
+            service: '"com.docker.compose.service"'
+
+      # 3. Docker's timestamp, not the moment Promtail read the file. After a
+      # restart Promtail catches up on a backlog in seconds, and without this
+      # every one of those lines would be stamped with the catch-up.
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+
+      # 4. `level` off the application's own line. It is a label because it is
+      # the one field every query filters on and it has five possible values;
+      # everything else in that line stays inside it, searchable with `| json`
+      # and costing no index.
+      - json:
+          source: line
+          expressions:
+            level: level
+
+      - labels:
+          service:
+          level:
+
+      # 5. **The cardinality rule, enforced rather than stated.**
+      #
+      # `filename` is attached automatically by the file target and its value is
+      # `/var/lib/docker/containers/<64-hex-id>/<64-hex-id>-json.log`. Left on,
+      # every container recreation creates a fresh stream for every service, and
+      # the index grows with the deploy count forever. This is the single most
+      # common way a Loki install becomes unusable and it is invisible until it
+      # is severe.
+      #
+      # The permitted set is `job`, `service`, `level`. Anything identifying a
+      # request, an agent, a ticket or a container belongs *inside* the JSON
+      # line, where `| json` finds it at read time for no index cost.
+      - labeldrop:
+          - filename
+
+      # 6. Forward the application's line exactly as it was written, with
+      # Docker's envelope stripped and nothing reformatted.
+      - output:
+          source: line

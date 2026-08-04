@@ -75,12 +75,14 @@ jobs:
               status=1
             fi
           done < <({ ls docker-compose.yml docker-compose.dev.yml
-                     find traefik -type f \( -name '*.yml' -o -name '*.yaml' \); } | sort -u)
+                     find traefik loki promtail -type f \( -name '*.yml' -o -name '*.yaml' \); } | sort -u)
 
           echo "$count YAML files parsed"
-          # Four, against the six that exist on 2026-08-03. The floor is for a
-          # broken finder, not for a legitimately deleted Traefik file — set at
-          # the count and it would go red the first time somebody removes one on
+          # Four, against the eight that exist on 2026-08-04 — six until #68
+          # added loki/loki.yml and promtail/promtail.yml, which are configuration
+          # this repository ships and a container refuses to start on. The floor
+          # is for a broken finder, not for a legitimately deleted Traefik file —
+          # set at the count and it would go red the first time somebody removes one on
           # purpose, which teaches people to ignore it.
           if [ "$count" -lt 4 ]; then
             echo "::error::only $count YAML files were found — this repository has more, so the check is broken rather than the files"

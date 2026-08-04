@@ -132,6 +132,42 @@ http:
       tls:
         certResolver: cloudflare
 
+    # Loki — the log store's read API, and the only reason it is on the public
+    # edge at all (#68).
+    #
+    # **The consumer runs off this host on purpose.** kolonie-docs#133's Watch
+    # Agent lives in GitHub Actions, because a monitor that dies with the thing
+    # it monitors is the failure the whole logging programme exists to catch. So
+    # the query API has to be reachable from outside the box, and that means a
+    # router here rather than a port on the internal network.
+    #
+    # **Second only to pgadmin in what it exposes, and it carries the same kind
+    # of lock.** Every line every service has written is readable through this
+    # host: startup exceptions, request paths, whatever a process printed on a
+    # bad day. It is a read of the Colony's whole interior, so it is behind
+    # loki-auth below and it is refused without it.
+    #
+    # security-headers first, then the auth — the order pgadmin's comment argues
+    # at length, and for the same reason: basicAuth answers an unauthenticated
+    # request itself and ends the chain, so an auth-first order would send the
+    # 401 that nearly every visitor here receives with no HSTS and no nosniff.
+    #
+    # rate-limit is attached as well, and this is the one router where it guards
+    # something other than abuse: a LogQL query over thirty days is expensive to
+    # answer, so a loop with a stolen token could exhaust the host rather than
+    # merely read it.
+    loki:
+      rule: "Host(`logs.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - rate-limit
+        - loki-auth
+      service: loki
+      tls:
+        certResolver: cloudflare
+
     # www → apex, so the canonical URL is unambiguous
     website-www:
       rule: "Host(`www.kolonie.ai`)"
@@ -180,6 +216,34 @@ http:
         # interpret.
         removeHeader: true
 
+    # The lock on the log store (#68).
+    #
+    # **`usersFile` for the reason pgadmin-auth spells out above** — Traefik
+    # interpolates nothing under /dynamic, so a credential here would be a hash
+    # in a public repository. The file is written by hand on the host into
+    # /opt/kolonie/secrets/, which is .gitignore'd and mounted read-only into
+    # Traefik by docker-compose.yml:
+    #
+    #   htpasswd -nbB watch <token> >> /opt/kolonie/secrets/loki.htpasswd
+    #   chmod 600 /opt/kolonie/secrets/loki.htpasswd
+    #
+    # **A credential of its own, never one that already exists.** It grants a
+    # read across every service's logs, so anything else it were attached to
+    # would silently inherit that reach. The consumer is kolonie-docs#133, which
+    # holds it as a repository secret and sends it as ordinary basic auth.
+    #
+    # Missing, this middleware is invalid and Traefik drops the loki router
+    # alone: logs.kolonie.ai stops answering and every other host keeps serving.
+    # Absent means shut, which is the right failure for a lock.
+    #
+    # `removeHeader` because Loki has `auth_enabled: false` and would otherwise
+    # be handed an Authorization header it has no use for.
+    loki-auth:
+      basicAuth:
+        usersFile: "/secrets/loki.htpasswd"
+        realm: "Kolonie"
+        removeHeader: true
+
     redirect-to-apex:
       redirectRegex:
         regex: "^https://www\\.kolonie\\.ai/(.*)"
@@ -201,3 +265,8 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-pgadmin:80"
+
+    loki:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-loki:3100"

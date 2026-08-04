@@ -1,0 +1,117 @@
+# Loki — the queryable log store (#68)
+#
+# Single-binary mode with filesystem storage: no object store, no separate
+# index, no ring beyond an in-memory one. At this host's volume the scaling
+# story is irrelevant and every part of it is a part that can fail.
+#
+# **No Grafana.** LogQL over HTTP is the interface, because the requirement is
+# that an *agent* can ask — the daily Watch Agent in kolonie-docs#133 and anyone
+# with the token and a curl. A dashboard is the component nobody opens and
+# everybody maintains.
+#
+# **This file is mounted read-only and interpolates nothing.** Loki does not
+# expand environment variables unless started with -config.expand-env, and it is
+# not. Nothing secret belongs here: the credential that guards the data is the
+# basicAuth line in traefik/dynamic/routes.yml, on the host, outside this
+# repository.
+
+# No multi-tenancy. One tenant, no X-Scope-OrgID header on reads or writes —
+# which is what lets the Watch Agent be a curl with a token rather than a client
+# that knows Loki's tenancy model. `limits_config` below still applies: in
+# single-tenant mode the per-tenant limits are the global ones.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # gRPC is used by Loki's internal components talking to each other, which in
+  # single-binary mode means in-process. It listens anyway; it is not routed and
+  # not published, and the container is on the internal network only.
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    # TSDB and schema v13 — the current pair, and the only one worth starting a
+    # new store on. `from` is the day this shipped: a schema entry applies from
+    # its date forward, so a dated-in-the-past entry would claim to describe data
+    # that does not exist.
+    - from: 2026-08-04
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# **Retention is a component, not a setting.** `limits_config.retention_period`
+# below is only enforced if the compactor is running with retention enabled —
+# without this block Loki accepts the number, reports it, and deletes nothing.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+  compaction_interval: 10m
+  # The gap between a chunk falling out of retention and being deleted. Short,
+  # because nothing here issues delete requests a human might want to cancel.
+  retention_delete_delay: 1h
+  retention_delete_worker_count: 50
+
+limits_config:
+  # **30 days.** Measured 2026-08-04 across the eight running containers: about
+  # 24 KB of log in ten minutes, so roughly 3.5 MB a day uncompressed and less
+  # than that on disk once Loki has compressed it. Thirty days of that is around
+  # 100 MB. The window is chosen for what it is worth to a reader — an incident
+  # found a fortnight later still has its evidence — rather than to save a disk
+  # that is not under pressure.
+  retention_period: 720h
+
+  # **The cap, and what it actually caps.** Loki has no bytes-on-disk quota;
+  # there is no setting that stops the store at N gigabytes. What it has is a
+  # per-tenant ingestion ceiling, and with a fixed retention window that is what
+  # bounds the footprint: nothing can arrive faster than this, so nothing can
+  # accumulate faster than this times the window.
+  #
+  # 4 MB/s is a thousand times the measured rate. It is not a budget, it is a
+  # ceiling on a runaway process — a container in a crash loop printing a stack
+  # trace per millisecond gets throttled with a 429 and says so in Loki's own
+  # log, instead of writing until the partition is gone. That failure is #37,
+  # and it took every service on the host down at once.
+  ingestion_rate_mb: 4
+  ingestion_burst_size_mb: 8
+
+  # The other half of the same guard, and the one that matters more in practice.
+  # A Loki install dies of cardinality long before it dies of volume: a label
+  # whose value is a request id creates a stream per request, and each stream
+  # costs an index entry and an open chunk. promtail/promtail.yml keeps the
+  # label set to `service` and `level`, which is at most a few dozen streams;
+  # 500 is far above that and far below anything that hurts.
+  max_global_streams_per_user: 500
+
+  # A log line older than the window cannot be queried within retention anyway,
+  # and accepting it writes into an already-compacted period. Refusing is the
+  # honest answer and it is visible in promtail's log rather than silent.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+  # Lets `/loki/api/v1/index/volume` answer "how much is each service logging",
+  # which is the query that notices a service has started shouting — cheaply,
+  # without reading a single line.
+  volume_enabled: true
+
+# **Loki does not phone home from this host.** Off deliberately: the Colony's own
+# infrastructure does not report its usage to a third party, and this is the only
+# component here that offers to.
+analytics:
+  reporting_enabled: false

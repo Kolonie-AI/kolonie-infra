@@ -142,7 +142,21 @@ jobs:
 
             echo
             echo "=== containers ==="
-            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+            # `-a` and a name filter, not a bare `docker ps` (#68). A bare
+            # `docker ps` lists what is *running*, so a container that exited is
+            # reported by being absent — and absence is exactly what a reader
+            # scanning a table does not notice.
+            #
+            # That gap is now load-bearing rather than theoretical: kolonie-loki
+            # ships with no health check, because its image is distroless and
+            # holds no shell to run one with (docker-compose.yml says so at
+            # length). Its container state is therefore the only thing that
+            # reports it, and this is where that is read.
+            #
+            # The name filter keeps the noise out: every container this project
+            # runs is `kolonie-*`, and an unrelated exited container from some
+            # afternoon's debugging is not what this table is for.
+            docker ps -a --filter name=kolonie- --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
             echo
             echo "=== repository checkout ==="

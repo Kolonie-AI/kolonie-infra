@@ -18,11 +18,26 @@
 #
 # **This takes effect when a container is recreated, not when the file changes.**
 # A running container keeps the policy it started with.
+#
+# **`labels:` is not cosmetic — it is what lets Promtail work without the Docker
+# socket** (#68). Named here, the json-file driver copies that container label
+# into an `attrs` object on every line it writes, and Compose sets
+# `com.docker.compose.service` on everything it starts. So the log file itself
+# carries the service name, and `promtail/promtail.yml` reads it from there.
+#
+# The alternative is Promtail's `docker_sd_configs`, which discovers the same
+# names over `/var/run/docker.sock` — a mount that gives that container root on
+# the host. This option is what makes refusing that mount free rather than a
+# trade. Remove it and Promtail's `service` label silently becomes empty: every
+# container's lines merge into one unlabelled stream and every query in
+# kolonie-docs#133 stops distinguishing services. That is the one coupling
+# between this file and that one.
 x-logging: &logging
   driver: json-file
   options:
     max-size: "50m"
     max-file: "3"
+    labels: "com.docker.compose.service"
 
 networks:
   kolonie:
@@ -33,6 +48,15 @@ volumes:
   postgres_data:
   traefik_certs:
   pgadmin_data:
+  # Loki's chunks, its TSDB index and the compactor's working directory (#68).
+  # Named, so it survives a container being recreated — which is the whole point
+  # of the store: Docker's own json-file logs are lost the moment a deploy
+  # replaces the container that wrote them.
+  loki_data:
+  # Promtail's read positions. Also named, and for a sharper reason: without it
+  # a recreated Promtail re-reads every log file from byte zero and every line
+  # already in Loki arrives a second time.
+  promtail_positions:
 
 services:
   # === Traefik Reverse Proxy ===
@@ -733,3 +757,130 @@ services:
       start_period: 60s
     profiles:
       - admin
+
+  # === Loki — the queryable log store (#68) ===
+  #
+  # One place every container's logs land, askable over HTTP by any agent that
+  # holds the token. Single-binary, filesystem storage, no object store, no
+  # Grafana. The configuration and the reasoning behind each number are in
+  # loki/loki.yml; what belongs here is what compose decides.
+  #
+  # **Retention is 30 days and the ingestion ceiling is 4 MB/s** (loki.yml,
+  # `limits_config`). Measured on this host 2026-08-04: about 3.5 MB of log a day
+  # across all eight containers, so thirty days is roughly 100 MB before
+  # compression. The root filesystem is 96 GB with 56 GB free — #68 was written
+  # against 20 GB, which is what it was before the disk was grown, and the
+  # numbers here are chosen against the measurement rather than that sentence.
+  # Loki has no bytes-on-disk quota; the rate ceiling times the window is what
+  # bounds it, and 4 MB/s exists to stop a crash-looping container rather than to
+  # budget the ordinary case. #37 is the incident where logs took the host down.
+  #
+  # **No `profiles:`, so it is infrastructure like Traefik and Postgres.** The
+  # pgAdmin service below is gated on a host variable because its container
+  # refuses to start without one, and a service that cannot start turns every
+  # kolonie-platform deploy into a rollback. Nothing here needs a host variable:
+  # the image is third-party and always pullable, the configuration is a mounted
+  # file, and the credential lives in Traefik. So there is no window of the #7 or
+  # #93 shape to gate against.
+  #
+  # **Loki's own logs go to Docker's json-file driver, not to Loki.** They arrive
+  # there anyway through Promtail, which is fine and not the point — the point is
+  # that the record of Loki failing must not depend on Loki. `docker logs
+  # kolonie-loki` answers when the store is the thing that is broken.
+  #
+  # **It is not the answer to "is the host alive".** It lives on the box it
+  # observes, so if the box goes the evidence goes with it. That question is
+  # kolonie-infra#69, and ARCHITECTURE.md records the split.
+  #
+  # Pinned to a version rather than `:latest`, for the reason pgAdmin's comment
+  # spells out: deploy.sh pins the images it knows about to a digest, and this is
+  # not one of them, so the pin has to be in the tag.
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.6.13}
+    container_name: kolonie-loki
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    # No `ports:`. Loki is reached from inside the network by Promtail and from
+    # outside through Traefik's authenticated route only — publishing 3100 on the
+    # host would put an unauthenticated read of every service's logs on the
+    # origin address, behind nothing.
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    # **No healthcheck, and this is a measured limitation rather than an
+    # oversight.** grafana/loki:3.6.13 is a distroless image: its entire
+    # filesystem contains `/usr/bin/loki` and no shell, no wget and no curl
+    # (verified by exporting the image on 2026-08-04). A Docker healthcheck runs
+    # *inside* the container, so there is nothing available to ask `/ready` with.
+    # The two ways round it are both worse than the gap: baking a custom image
+    # adds a build step this repository does not have, and bind-mounting a static
+    # binary from the host puts the check in host state nothing here can see,
+    # which is what #42 is about.
+    #
+    # What covers it instead, and it is more than it sounds:
+    #   - `scripts/health-triage.sh` judges a container by its *state* first and
+    #     its health second, so a Loki that has stopped is reported `gone` or
+    #     `exited` by Health Watch exactly like any other service. Health `none`
+    #     on a running container is treated as fine, which is the correct reading
+    #     here.
+    #   - the Diagnose VPS workflow lists it — with `docker ps -a` since this
+    #     issue, because a container reported by its absence is one nobody sees.
+    #   - Traefik reports the route as down.
+    #   - kolonie-docs#133's silent-service check notices when lines stop
+    #     arriving at all, which is the failure that actually matters.
+    #
+    # There is a second, deliberate effect. healthcheck() in scripts/deploy.sh
+    # rolls the **whole stack** back when any service in the active profiles is
+    # unhealthy — so a container with no health check cannot take the Colony down
+    # over its log store. For this service that is the right trade.
+
+  # === Promtail — the shipper (#68) ===
+  #
+  # Reads Docker's json-file logs off disk and pushes them to Loki. The pipeline,
+  # the label set and the cardinality rule are in promtail/promtail.yml.
+  #
+  # **`/var/lib/docker/containers:ro`, and never `/var/run/docker.sock`.** The
+  # socket is root on the host for whoever holds it; the files carry the same
+  # lines, and since `x-logging` above names `com.docker.compose.service` they
+  # carry the service name too. This is a review checklist item: a change that
+  # adds the socket mount here is rejected on sight.
+  #
+  # Deprecation, stated because it will not announce itself: Grafana has put
+  # Promtail into maintenance in favour of Alloy. It is not urgent — the agent
+  # does one thing and the format it pushes is Loki's stable API — but it is the
+  # reason to expect a follow-up issue rather than a surprise.
+  promtail:
+    image: ${PROMTAIL_IMAGE:-grafana/promtail:3.6.11}
+    container_name: kolonie-promtail
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/promtail
+    depends_on:
+      - loki
+    healthcheck:
+      # Promtail's image is Debian-based and has bash but no wget and no curl, so
+      # the check speaks HTTP through bash's own /dev/tcp rather than through a
+      # tool that is not there. It asks Promtail's `/ready`, which is true once
+      # its targets are attached — i.e. it is actually tailing files.
+      #
+      # It deliberately does **not** ask Loki's `/ready` as well, although from
+      # here it could. deploy.sh rolls the whole stack back on an unhealthy
+      # service, so checking Loki from here would let the log store take a
+      # kolonie-platform deploy down — a monitor larger than the thing it
+      # monitors, which is the failure this whole programme exists to catch. A
+      # Loki that is down is a Promtail that buffers and retries, and that is not
+      # an outage.
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/9080; printf "GET /ready HTTP/1.0\r\n\r\n" >&3; grep -qm1 "200 OK" <&3']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
