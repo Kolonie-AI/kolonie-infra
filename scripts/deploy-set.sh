@@ -31,7 +31,11 @@ set -euo pipefail
 # and behind the api for the same reason they do: it reads and writes
 # `support_tickets` through packages/db, so a build started before the api has
 # been started against a schema that has not moved yet.
-readonly ORDER=(api verifier-runner moderation-runner support-triage-runner website)
+# `badge-runner` (kolonie-platform#241) goes with the runners and behind the api
+# for the same reason: it reads and writes badge rows through packages/db, so a
+# build started before the api has been started against a schema that has not
+# moved yet.
+readonly ORDER=(api verifier-runner moderation-runner support-triage-runner badge-runner website)
 
 usage() {
     echo "usage: $(basename "$0") all|<service>[,<service>...]" >&2

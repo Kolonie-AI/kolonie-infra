@@ -231,6 +231,7 @@ jobs:
                   verifier-runner)       export RUNNER_VERSION="$VERSION" ;;
                   moderation-runner)     export MODERATION_VERSION="$VERSION" ;;
                   support-triage-runner) export TRIAGE_VERSION="$VERSION" ;;
+                  badge-runner)          export BADGE_VERSION="$VERSION" ;;
                   website)               export WEBSITE_VERSION="$VERSION" ;;
                   # `all` is not a service and takes no version, which is what
                   # the paragraph above already argues: five images built by five

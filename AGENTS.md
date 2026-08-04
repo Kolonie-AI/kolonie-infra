@@ -39,6 +39,8 @@ Internet → Cloudflare → Traefik (80/443) → Docker Network
                                             ├── kolonie-api (api + academy + mcp + challenge)
                                             ├── kolonie-verifier-runner (no ingress)
                                             ├── kolonie-moderation-runner (no ingress)
+                                            ├── kolonie-support-triage-runner (no ingress)
+                                            ├── kolonie-badge-runner (no ingress, no outbound)
                                             ├── kolonie-website (kolonie.ai)
                                             └── postgres (internal only)
 ```
@@ -194,9 +196,12 @@ The deploy is serialised at two levels:
 - **`flock`** in `deploy.sh` itself — defence in depth against concurrent SSH
   sessions.
 
-### Adding a sixth image
+### Adding another image
 
-Five files, and the fifth is the one that has no API and no test. A service added
+Five files, and the fifth is the one that has no API and no test. The sixth image
+— `badge-runner`, `kolonie-infra#76` — went through all four of them on
+2026-08-04 and the list held; what it added is the rehearsal cases 23h–23n, which
+is the shape any seventh should copy. A service added
 on 2026-08-01 (`kolonie-platform#105`) failed to deploy four times, each with a
 message pointing somewhere other than the file that was wrong.
 
@@ -237,8 +242,8 @@ back exactly as it was — the grant, the dashboard, and nothing that checks it.
 
 ### Profiles
 
-`--profile full` deploys `api`, `verifier-runner`, `moderation-runner` and
-`support-triage-runner`.
+`--profile full` deploys `api`, `verifier-runner`, `moderation-runner`,
+`support-triage-runner` and `badge-runner`.
 `--profile website` deploys the website. `detect_profile()` probes the registry
 for each image and includes only what is reachable, so one missing image degrades
 to a warning rather than taking the others down.
