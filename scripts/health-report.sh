@@ -30,6 +30,19 @@
 #
 #   backup  ok|never  -  0  <seconds since the last successful backup>  -
 #
+# And one row per systemd timer the Colony installs, on the same hosts:
+#
+#   timer:<unit>  ok|not-scheduled  -  0  <seconds until the next elapse>  -
+#
+# **The field is the next elapse, and deliberately not whether the unit is
+# active** (#66). `kolonie-origin-firewall.timer` had not scheduled anything for
+# three days while reporting `is-active: active`, `is-enabled: enabled`,
+# `Result=success` and a present `timers.target.wants` symlink (#65). Every
+# signal anyone would think to check said it was healthy; the only one that did
+# not was `NextElapseUSecRealtime`, empty, which nobody reads. It was found by
+# hand while verifying something else, and the rules it maintains had simply
+# stopped being refreshed in the meantime.
+#
 # A backup that quietly stops is the failure this catches, and it is the one
 # failure mode a backup system reliably has. Nothing else on the host notices:
 # the timer keeps firing, the unit keeps failing into the journal, every
@@ -193,6 +206,59 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # Say nothing rather than report 0%. An unreadable df reported as an
         # empty disk is the direction that hides the problem.
         printf 'disk\tunknown\t-\t0\t0\t-\n'
+    fi
+
+    # One row per timer (#66). Both of the Colony's timers maintain something
+    # whose absence is invisible for a while and expensive later — a backup
+    # nobody took, an allowlist nobody refreshed — which is the same instinct as
+    # the backup row above, one level down: that row checks the artefact, this
+    # one checks the thing that produces it.
+    #
+    # **Enumerated, not named.** Listing `kolonie-backup.timer` and
+    # `kolonie-origin-firewall.timer` here would cover a third timer on the day
+    # somebody remembered this comment rather than the day it landed.
+    #
+    # **The pattern is the Colony's own prefix and not every timer on the host.**
+    # A stock Ubuntu carries `apt-daily`, `fstrim`, `man-db` and more; several
+    # are legitimately unscheduled, none of them is this repository's to
+    # maintain, and reporting them would drown the two rows that matter. The
+    # prefix is the naming convention the units in this repository already
+    # follow, so a third one is covered by existing.
+    if command -v systemctl >/dev/null 2>&1; then
+        timers=0
+        while read -r unit _rest; do
+            [ -z "$unit" ] && continue
+            timers=$((timers + 1))
+
+            # The one field that told the truth during #65. Empty is the
+            # failure; `systemctl is-active` was `active` throughout and is
+            # exactly what makes the obvious version of this check useless.
+            next="$(systemctl show "$unit" -p NextElapseUSecRealtime --value 2>/dev/null)"
+            if [ -z "$next" ]; then
+                printf 'timer:%s\tnot-scheduled\t-\t0\t0\t-\n' "$unit"
+                continue
+            fi
+
+            # An unparseable value is reported as scheduled with an unknown
+            # distance rather than as broken: what was asked is whether a next
+            # elapse exists, and it does. The alternative direction would file a
+            # fault against a working timer because `date` did not like a
+            # locale, which is how a watcher gets muted.
+            next_epoch="$(date -d "$next" +%s 2>/dev/null || echo "")"
+            if [ -n "$next_epoch" ]; then
+                until_next=$((next_epoch - $(date +%s)))
+                [ "$until_next" -lt 0 ] && until_next=0
+            else
+                until_next=0
+            fi
+            printf 'timer:%s\tok\t-\t0\t%s\t-\n' "$unit" "$until_next"
+        done < <(systemctl list-unit-files --type=timer --no-legend \
+                     "${KOLONIE_TIMER_PATTERN:-kolonie-*.timer}" 2>/dev/null)
+
+        # Same reasoning as NO_CONTAINERS. A host that has lost its timer units
+        # altogether reports nothing at all here, and silence is what this whole
+        # row exists to stop being an answer.
+        [ "$timers" -eq 0 ] && printf 'timer\tnone\t-\t0\t0\t-\n'
     fi
 fi
 

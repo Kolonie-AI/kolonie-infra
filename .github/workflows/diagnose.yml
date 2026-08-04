@@ -124,6 +124,23 @@ jobs:
             done
 
             echo
+            # The two rows health-report.sh now carries (#66), in the form a
+            # person reads rather than the form the triage parses — this is the
+            # step somebody opens *after* the watcher has said something is
+            # wrong, and `list-timers` shows the last run beside the next one.
+            #
+            # It does not fail the run, same rule as the two drift checks above:
+            # a timer that has stopped scheduling is a thing to notice, and a
+            # diagnosis that aborts halfway through is worth less than the
+            # remaining sections it did not print.
+            echo "=== timers (the next elapse, not is-active — #65, #66) ==="
+            systemctl list-timers --all --no-pager || echo "(reported above — this step does not fail the run)"
+            for t in $(systemctl list-unit-files --type=timer --no-legend 'kolonie-*.timer' 2>/dev/null | awk '{print $1}'); do
+              next=$(systemctl show "$t" -p NextElapseUSecRealtime --value 2>/dev/null)
+              echo "$t: NextElapseUSecRealtime=${next:-EMPTY — this one has stopped scheduling}"
+            done
+
+            echo
             echo "=== containers ==="
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 

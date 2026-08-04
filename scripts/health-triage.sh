@@ -77,6 +77,7 @@ fingerprint_parts=()
 container_problems=()
 backup_problems=()
 disk_problems=()
+timer_problems=()
 
 while IFS=$'\t' read -r name state health streak approx image; do
     [ -z "${name:-}" ] && continue
@@ -129,6 +130,27 @@ while IFS=$'\t' read -r name state health streak approx image; do
         fi
         continue
     fi
+
+    # A timer is not a container either, and the question asked of it is not the
+    # one asked of a service: not *is it running* — it is not, almost all of the
+    # time, and that is correct — but *is it going to run again* (#66).
+    case "$name" in
+        timer|timer:*)
+            unit="${name#timer:}"
+            if [ "$state" = "none" ]; then
+                problems+=("| _timers_ | none | - | - | the host installs no Colony timers at all |")
+                timer_problems+=("none")
+                fingerprint_parts+=("timer:none")
+            elif [ "$state" = "not-scheduled" ]; then
+                problems+=("| \`$unit\` | not scheduled | - | - | no next elapse — it has stopped scheduling, whatever it reports about being active |")
+                timer_problems+=("$unit")
+                fingerprint_parts+=("timer:$unit:not-scheduled")
+            else
+                healthy+=("$unit (next in $duration)")
+            fi
+            continue
+            ;;
+    esac
 
     if [ "$state" = "gone" ]; then
         problems+=("| \`$name\` | gone | - | - | named in the project, not present on the host |")
@@ -199,6 +221,25 @@ if [ "${#backup_problems[@]}" -gt 0 ]; then
     echo "journalctl -u kolonie-backup.service -n 50"
     echo "/opt/kolonie/scripts/backup.sh verify"
     echo '```'
+fi
+
+if [ "${#timer_problems[@]}" -gt 0 ]; then
+    echo
+    echo "A timer that has stopped scheduling reports itself healthy by every signal"
+    echo "except one: \`is-active\` says active, \`is-enabled\` says enabled, the last"
+    echo "run says success, and the \`timers.target.wants\` symlink is there (#65)."
+    echo "Read the next elapse and nothing else, then look at the unit file rather"
+    echo "than the service — this failure has been a unit-file defect once already:"
+    echo
+    echo '```'
+    echo "systemctl list-timers --all"
+    echo "systemctl show <timer> -p NextElapseUSecRealtime -p OnCalendar -p Unit"
+    echo "sudo systemctl reenable <timer> && sudo systemctl restart <timer>"
+    echo '```'
+    echo
+    echo "Nothing is necessarily broken yet: what these timers maintain — a backup, an"
+    echo "allowlist — stays correct for a while after the refresh stops, which is why"
+    echo "this is worth catching before the thing it refreshes goes stale."
 fi
 
 if [ "${#disk_problems[@]}" -gt 0 ]; then
