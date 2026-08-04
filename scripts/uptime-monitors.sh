@@ -166,6 +166,17 @@ cmd_report() {
     monitors=$(call getMonitors "logs=0" "alert_contacts=1") || return 2
     total=$(printf '%s' "$monitors" | jq -r '.monitors | length')
 
+    echo "== what the plan allows =="
+    # The plan is the thing that decides which of the settings below are even
+    # sayable — `newMonitor` answers `access_denied` for a feature above the
+    # tier and does not say which setting it meant. `monitor_interval` is the
+    # floor INTERVAL has to respect; the e-mail address is masked.
+    call getAccountDetails | jq -r '
+        .account
+        | "plan \(.user_type // "?")  monitors \(.up_monitors + .down_monitors + .paused_monitors)/\(.monitor_limit)" +
+          "  minimum interval \(.monitor_interval)s"'
+    echo
+
     echo "== the five endpoints =="
     printf '%s\n' "$DESIRED" | while IFS='|' read -r name url; do
         [ -n "$url" ] || continue
