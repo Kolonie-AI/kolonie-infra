@@ -31,6 +31,7 @@ on:
         type: choice
         options:
           - report
+          - probe
           - check
           - apply
   schedule:
@@ -60,4 +61,4 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/uptime-monitors.sh
-          ./scripts/uptime-monitors.sh "$MODE"
+          if [ "$MODE" = probe ]; then bash scripts/uptime-probe.sh; else ./scripts/uptime-monitors.sh "$MODE"; fi
