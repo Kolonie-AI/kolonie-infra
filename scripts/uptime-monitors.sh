@@ -158,13 +158,18 @@ cmd_report() {
     echo "== the five endpoints =="
     printf '%s\n' "$DESIRED" | while IFS='|' read -r name url; do
         [ -n "$url" ] || continue
+        # `[…][0]`, not `first(…)` and not a bare `.monitors[] | select(…)`.
+        # An empty jq stream produces no output at all, so a missing monitor
+        # printed nothing and read as a blank line — the report said least
+        # exactly when it had most to say. Indexing an array yields null, and
+        # null is a value the `if` can see.
         printf '%s' "$monitors" | jq -r --arg url "$url" --arg name "$name" '
-            (.monitors[] | select(.url == $url)) as $m
-            | if $m then
+            ([.monitors[] | select(.url == $url)][0]) as $m
+            | if $m == null then "\($name)\n  MISSING"
+              else
                 "\($name)\n  id \($m.id)  type \($m.type)  keyword \($m.keyword_value // "none")" +
                 "  every \($m.interval)s  status \($m.status)  contacts \([$m.alert_contacts[]?.id] | length)"
-              else "\($name)\n  MISSING" end' 2>/dev/null ||
-            echo "$name"$'\n'"  MISSING"
+              end'
     done
 
     ours=$(printf '%s' "$monitors" | jq -r '[.monitors[] | select(.url | test("^https://[a-z]+\\.kolonie\\.ai/health$"))] | length')
@@ -183,6 +188,15 @@ cmd_report() {
     call getAlertContacts | jq -r '
         .alert_contacts[]
         | "\(.id)  type \(.type)  status \(.status)  \(.value | if length > 4 then .[0:2] + "…" + .[-2:] else "…" end)"'
+
+    echo
+    echo "== what this account can be asked about TLS (probe) =="
+    printf 'getMonitors ssl=1 keys: '
+    call getMonitors "logs=0" "ssl=1" | jq -r '[.monitors[] | keys] | add | unique | join(" ")'
+    printf 'v3 /monitors: '
+    curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}\n' \
+        -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
+        "https://api.uptimerobot.com/v3/monitors?limit=1"
 
     echo
     echo "== fields the account's API returns on a monitor (names only) =="
