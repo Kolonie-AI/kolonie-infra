@@ -159,6 +159,25 @@ case "$1 ${2:-}" in
         exit 0
       fi
       if echo "$*" | grep -qF '{{.State.Running}}'; then echo true; exit 0; fi
+
+      # A container that has **no health check at all**, which is what
+      # `kolonie-loki` is (#68). This is not "unknown state" and not "absent" —
+      # it is a running container whose `.State` has no `Health` key, and Docker
+      # answers it in a way no other case here does: it writes the rendered
+      # prefix to stdout — an empty line — and *then* fails with a parse error on
+      # stderr.
+      #
+      # Both halves are reproduced deliberately. The empty line is the whole
+      # defect: it is what turned `|| echo missing` in deploy.sh into a status of
+      # newline-plus-missing, matching no `case` arm, and rolled a deploy back
+      # 180 seconds later on 2026-08-04. A stub that only exited 1 would let the
+      # broken version pass.
+      if [ -n "${NO_HEALTHCHECK_SERVICE:-}" ] && echo "$*" | grep -q "${NO_HEALTHCHECK_SERVICE}"; then
+        echo ""
+        echo 'template parsing error: template: :1:9: executing "" at <.State.Health.Status>: map has no entry for key "Health"' >&2
+        exit 1
+      fi
+
       if [ "${UNHEALTHY:-}" = 1 ]; then echo "unhealthy"
       elif [ -n "${UNHEALTHY_SERVICE:-}" ] && echo "$*" | grep -q "${UNHEALTHY_SERVICE}"; then echo "unhealthy"
       else echo "healthy"
@@ -878,6 +897,38 @@ seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
 out=$(run_deploy env ABSENT_CONTAINER=kolonie-support-triage-runner || true)
 contains "$out" "ERROR: not healthy after 5s" "an all-deploy still asserts it"
 absent "$out" "not asserting its health" "and does not skip it"
+
+echo "== 26. a running container with no health check at all does not fail a deploy"
+# #68 put the first such service on this host: `kolonie-loki` ships without a
+# health check, because its image is distroless and holds no shell to run one
+# with. healthcheck()'s `missing` branch was written for exactly this and was
+# never reached — Docker writes an empty line to stdout *before* failing on the
+# template, so `|| echo missing` produced a two-line status matching no `case`
+# arm, and the service stayed pending until the timeout took the whole stack
+# back. It cost a rolled-back deploy on 2026-08-04, with every container in it
+# healthy.
+#
+# Fails on main before the fix with "ERROR: not healthy after 5s: loki(", which
+# is that two-line status printed into a message.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env NO_HEALTHCHECK_SERVICE=kolonie-verifier-runner || true)
+absent "$out" "ERROR: not healthy" "a container with no health check is not read as unhealthy"
+absent "$out" "Rolling back" "and nothing was rolled back over it"
+contains "$out" "=== Deployment completed ===" "the deploy finished"
+
+echo "== 26b. and it is reported as such rather than as a blank"
+# The summary loop reads the same field the same way, so it had the same defect —
+# cosmetic, but a line that renders as two is how somebody concludes the deploy
+# did something strange.
+contains "$out" "OK: verifier-runner (no health check)" "the summary names it"
+
+echo "== 26c. but a container that is genuinely gone still fails"
+# The guard this must not remove. Both cases read as "no health status"; what
+# tells them apart is whether the container runs, and that distinction is the
+# whole of the `missing` branch.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env ABSENT_CONTAINER=kolonie-verifier-runner || true)
+contains "$out" "ERROR: not healthy after 5s" "an absent container still fails an all-deploy"
 
 echo
 echo "passed $pass, failed $fail"

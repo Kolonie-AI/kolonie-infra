@@ -965,7 +965,33 @@ healthcheck() {
         crashed=""
         for svc in $services; do
             container="kolonie-${svc}"
-            status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "missing")
+            # **`|| echo missing` does not do what it reads as, and #68 is where
+            # that stopped being harmless.**
+            #
+            # A container with no health check at all makes this template fail:
+            # `.State` has no `Health` key, and Docker answers with a parse error
+            # on stderr — *after* having already written the rendered prefix, an
+            # empty line, to stdout. Both streams are inside the command
+            # substitution, so `|| echo missing` appends to the empty line rather
+            # than replacing it and `$status` becomes a newline followed by
+            # `missing`. No `case` arm matches that, so the service is read as
+            # pending forever.
+            #
+            # It cost a rolled-back deploy on 2026-08-04: `kolonie-loki` ships
+            # without a health check on purpose (its image is distroless and
+            # holds no shell to run one with — docker-compose.yml says so at
+            # length), the branch below was written for exactly that case, and it
+            # was never reached. 180 seconds later the whole stack went back.
+            #
+            # `head -1` takes the rendered prefix and discards whatever follows;
+            # empty then means what it always meant here — no health status to
+            # read — and the branch below distinguishes "no health check" from
+            # "no container" the way it always did, by asking whether it runs.
+            # Deliberately not a cleverer template: `{{if .State.Health}}` is the
+            # obvious fix and it fails the same way, because the missing key is
+            # the error and testing for it is reading it.
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null | head -1 || true)
+            [ -n "$status" ] || status="missing"
 
             case "$status" in
                 healthy) continue ;;
@@ -1054,7 +1080,13 @@ healthcheck() {
 
     for svc in $services; do
         container="kolonie-${svc}"
-        status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "no health check")
+        # Same shape as the read above, and the same fix: without `head -1` a
+        # service with no health check is reported as a blank line followed by
+        # the fallback. Cosmetic here — this loop only runs once everything has
+        # already passed — but a summary line that renders as two is how somebody
+        # concludes the deploy did something strange.
+        status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null | head -1 || true)
+        [ -n "$status" ] || status="no health check"
         log "OK: $svc ($status)"
     done
 }
