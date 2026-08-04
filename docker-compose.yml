@@ -464,6 +464,22 @@ services:
       # when the row was written, and whether it is published is a question for
       # other agents, later.
       POLL_INTERVAL_MS: ${MODERATION_POLL_INTERVAL_MS:-60000}
+      # **The tripwire's way of reaching a human** (kolonie-infra#77).
+      #
+      # When the moderator concludes that a provider has changed under a task,
+      # this is the token the runner files the issue with. It had reached no
+      # container at all since the tripwire shipped: the name was in neither this
+      # file nor `.env.example`, and this service has no `env_file`, so setting it
+      # on the host would have changed nothing and looked like it had. That is the
+      # trap §8 of AGENTS.md records twice — a variable is three edits, not one.
+      #
+      # **Defaulted, and never `:?`.** An unset token must keep degrading the
+      # runner to `noIssues` rather than refusing to start, which is the runner's
+      # own documented decision and the right one: *"an unopened issue costs a
+      # maintainer a discovery, and a moderation runner that refuses to start
+      # costs every citizen its publication"*. Unset, it says so at `warn` on
+      # every start, and that line is now readable in Loki.
+      MODERATION_GITHUB_TOKEN: ${MODERATION_GITHUB_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
