@@ -57,17 +57,28 @@ kolonie challenge /health|https://challenge.kolonie.ai/health
 kolonie console /health|https://console.kolonie.ai/health
 EOF
 
-# Type 2 is a keyword monitor, and the extra field is worth the trouble.
+# Type 1 is a plain HTTP monitor: it alerts on a non-2xx, a TLS failure or a
+# timeout, and it reads no part of the answer.
 #
-# All five endpoints answer `{"status":"ok"}`. A plain HTTP monitor (type 1)
-# alerts on a non-2xx or a timeout and would call a 200 saying `"degraded"` a
-# pass. Asking for the string means the check fails on the answer as well as on
-# the connection, for no extra cost and no extra request.
-MONITOR_TYPE=2
-KEYWORD_VALUE='"status":"ok"'
-# 2 = alert when the keyword is *absent*. 1 is the opposite and is the easy
-# mistake here: it would page only while everything was fine.
-KEYWORD_TYPE=2
+# **A keyword monitor was tried first and this account cannot have one.** All
+# five endpoints answer `{"status":"ok"}`, so type 2 with `keyword_type=2` on
+# `"status":"ok"` would also catch a 200 that says `"degraded"` — and
+# `newMonitor` refused it on 2026-08-04 with
+# `access_denied: You are not allowed to use some settings with your current
+# plan.` Keyword monitoring is a paid feature; the free tier this issue chose is
+# status codes and reachability.
+#
+# What that leaves uncovered is a service answering 200 while being wrong inside
+# — and that is deliberately not this check's question. It belongs to Loki and to
+# `kolonie-docs#133`, which read what the applications actually say. This one
+# answers *is the host there*, which is the question nothing on the host can
+# answer about itself.
+MONITOR_TYPE=1
+# Kept as the values to restore if the account is ever upgraded — a paid plan
+# makes the two lines below the whole change, and the drift check already
+# compares both fields. 0 is what a type-1 monitor reports for them.
+KEYWORD_TYPE=0
+KEYWORD_VALUE=""
 
 # Five minutes, because that is the free tier's floor and this account is on it.
 # Better Stack's 30 seconds was the argument for the other provider and lost to
@@ -190,21 +201,23 @@ cmd_report() {
         | "\(.id)  type \(.type)  status \(.status)  \(.value | if length > 4 then .[0:2] + "…" + .[-2:] else "…" end)"'
 
     echo
-    echo "== what this account can be asked about TLS (probe) =="
-    printf 'getMonitors ssl=1 keys: '
-    call getMonitors "logs=0" "ssl=1" | jq -r '[.monitors[] | keys] | add | unique | join(" ")'
-    printf 'v3 /monitors: '
-    curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}\n' \
-        -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
-        "https://api.uptimerobot.com/v3/monitors?limit=1"
-
-    echo
-    echo "== fields the account's API returns on a monitor (names only) =="
-    # Names, never values — a foreign monitor's URL is not ours to print. It is
-    # here because UptimeRobot's v2 documentation and its answers do not entirely
-    # agree about which SSL fields exist, and a list read off the live account
-    # settles that in one line instead of by argument.
-    printf '%s' "$monitors" | jq -r '[.monitors[] | keys] | add | unique | join(" ")'
+    echo "== the certificate, per endpoint =="
+    # `ssl=1` is a separate request and not a field on the ordinary one: the
+    # monitor object carries no certificate information until it is asked for.
+    # Measured 2026-08-04 — `getMonitors` returns
+    # `create_datetime friendly_name http_password http_username id interval
+    #  keyword_case_type keyword_type keyword_value port status sub_type timeout
+    #  type url` and no ssl key at all without it.
+    #
+    # An expired certificate takes everything down as thoroughly as a dead host
+    # while every container reports healthy, which is why this is asked at all
+    # rather than assumed from the monitor being green: a TLS failure does make
+    # the monitor go down, but only on the day it happens.
+    call getMonitors "logs=0" "ssl=1" | jq -r '
+        .monitors[]
+        | select(.url | test("^https://[a-z]+\\.kolonie\\.ai/health$"))
+        | "\(.friendly_name)  expires \(.ssl.expires // 0 | if . == 0 then "unknown"
+              else (. | todate) end)  brand \(.ssl.brand // "?")"'
 }
 
 cmd_apply() {
@@ -215,6 +228,14 @@ cmd_apply() {
 
     local current
     current=$(current_monitors) || return 2
+
+    # The keyword fields are sent only by a keyword monitor. On a type-1 monitor
+    # they are not merely redundant — `newMonitor` reads them as asking for a
+    # feature the plan does not have and refuses the whole call.
+    local keyword_args=()
+    if [ "$MONITOR_TYPE" = "2" ]; then
+        keyword_args=("keyword_type=${KEYWORD_TYPE}" "keyword_value=${KEYWORD_VALUE}")
+    fi
 
     local name url row id type ktype kvalue interval status contacts reasons
     while IFS='|' read -r name url; do
@@ -231,8 +252,7 @@ cmd_apply() {
                 "friendly_name=${name}" \
                 "url=${url}" \
                 "type=${MONITOR_TYPE}" \
-                "keyword_type=${KEYWORD_TYPE}" \
-                "keyword_value=${KEYWORD_VALUE}" \
+                "${keyword_args[@]}" \
                 "interval=${INTERVAL}" \
                 "alert_contacts=${want_contacts}" | jq -r '.monitor.id') || return 2
             echo "created  $name  (id $id)"
@@ -266,8 +286,7 @@ cmd_apply() {
             "id=${id}" \
             "friendly_name=${name}" \
             "type=${MONITOR_TYPE}" \
-            "keyword_type=${KEYWORD_TYPE}" \
-            "keyword_value=${KEYWORD_VALUE}" \
+            "${keyword_args[@]}" \
             "interval=${INTERVAL}" \
             "status=1" \
             "alert_contacts=${want_contacts}" >/dev/null || return 2
