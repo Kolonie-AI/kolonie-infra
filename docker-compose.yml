@@ -338,6 +338,14 @@ services:
       # an image *and* honour a JSON schema, which rules out most cheap vision
       # models rather than a few.
       VISION_MODEL: ${VISION_MODEL:-}
+      # Which model judges the second image rung (kolonie-platform#216).
+      # Deliberately a different variable from VISION_MODEL above, because the
+      # two rungs ask different questions: `raster` asks whether the background
+      # is blue, which a cheap vision model answers well, and `image-model` asks
+      # how many otters are in a picture, which a small one gets wrong often
+      # enough to fail work that was right. One shared variable would price both
+      # at whichever is more demanding. Unset means the code's own default.
+      SCENE_VISION_MODEL: ${SCENE_VISION_MODEL:-}
       # Which model reads a citizen's bio at Academy Level 0
       # (kolonie-platform#137). A text model, not the vision one: the question
       # has no image in it. Unset means the code's own default.
