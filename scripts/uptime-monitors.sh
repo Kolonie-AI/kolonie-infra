@@ -307,7 +307,41 @@ cmd_apply() {
     return $rc
 }
 
+# TEMPORARY (#69): narrow down which argument newMonitor is refusing. Removed
+# once the answer is known and written into the comments above.
+cmd_probe() {
+    local id
+    id=$(call getAlertContacts | jq -r '[.alert_contacts[] | select(.status == 2) | .id][0]')
+    local url="https://api.kolonie.ai/health"
+    local -a sets=(
+        "type=1|interval=300|alert_contacts=${id}_0_0"
+        "type=1|interval=300|alert_contacts=${id}"
+        "type=1|interval=300"
+        "type=1"
+    )
+    local s
+    for s in "${sets[@]}"; do
+        local -a args=(--silent --max-time 30
+            --data-urlencode "api_key=${UPTIMEROBOT_API_KEY}"
+            --data-urlencode "format=json"
+            --data-urlencode "friendly_name=kolonie api /health"
+            --data-urlencode "url=${url}")
+        local part parts
+        IFS='|' read -ra parts <<<"$s"
+        for part in "${parts[@]}"; do args+=(--data-urlencode "$part"); done
+        local out
+        out=$(curl "${args[@]}" "${API}/newMonitor" 2>/dev/null)
+        echo "$s -> $(printf '%s' "$out" | jq -c '{stat, error: (.error.message // .error.type // null), id: (.monitor.id // null)}')"
+        if [ "$(printf '%s' "$out" | jq -r '.stat')" = "ok" ]; then
+            echo "first set that worked: $s"
+            return 0
+        fi
+    done
+    return 1
+}
+
 case "${1:-report}" in
+probe) cmd_probe ;;
 report) cmd_report ;;
 check) cmd_apply check ;;
 apply) cmd_apply apply ;;
