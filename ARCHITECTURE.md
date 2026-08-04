@@ -135,12 +135,46 @@ exists to prevent.
 |---|---|
 | Did a service error, and what did it say? | Loki, `logs.kolonie.ai` |
 | Has a service stopped logging entirely? | Loki, via `kolonie-docs#133`'s silent-service check |
-| Is the host up at all? Is TLS about to expire? | The external check, `kolonie-infra#69` |
+| Is the host up at all? Has TLS broken? | The external check, below |
 | Is a container unhealthy right now? | `health-watch.yml`, and Docker's own health state |
+
+## The external check (UptimeRobot)
+
+Decided 2026-08-03 and built 2026-08-04, `kolonie-infra#69`. **The one monitor
+that runs neither on the host nor in this repository's Actions**, because both
+die with the thing they watch — a scheduled workflow is also disabled by GitHub
+after 60 days of repository inactivity, and a liveness check is the one thing
+that must not quietly stop.
+
+| | |
+|---|---|
+| What is watched | `api`, `academy`, `mcp`, `challenge`, `console` — each `/health`, separately |
+| How | Keyword monitors: the answer must contain `"status":"ok"`, so a 200 that says something else is a failure |
+| How often | Every 5 minutes, the free tier's floor |
+| TLS | An invalid or expired certificate is a failure within 5 minutes. The *reminder days beforehand* is a paid feature this account does not have — see the script's comment |
+| Where the alert goes | E-mail, to the maintainer's own address, from the maintainer's own UptimeRobot account |
+| Who holds the account | The maintainer. It predates the Colony and holds unrelated monitors, which is why nothing here ever deletes a monitor it did not create |
+| The credential | `UPTIMEROBOT_API_KEY`, a repository secret in `kolonie-infra` and nowhere else |
+
+**Not the apex.** `kolonie.ai` is a static site and answers long after the API,
+the database or the runners have stopped; a check on the front door reports green
+through the outage it exists to catch.
+
+**The configuration is in Git even though the service is not.**
+`scripts/uptime-monitors.sh` holds the endpoints, the keyword and the interval;
+`.github/workflows/uptime-monitors.yml` runs it. `apply` makes the account match
+the file, `check` runs weekly and **fails rather than repairing** — a monitor
+somebody paused by hand is a decision, and silently undoing it loses the reason.
+`drill` breaks one monitor's keyword on purpose, waits for the incident, and
+restores it: the alert path is a thing that stops working silently, so it is
+re-runnable rather than proved once.
+
+**Switching it off** is pausing the five monitors in the dashboard, or deleting
+the secret so nothing here can write. Neither takes anything else down.
 
 ## Open Questions
 
 - ~~**Prisma vs Drizzle?**~~ Decided 2026-07-27: Drizzle. Plain-SQL migrations are auditable, which matters under a double-entry ledger. See kolonie-docs/ARCHITECTURE.md.
 - **Container registry?** GitHub Container Registry (ghcr.io) is free and integrated.
 - ~~**Log aggregation?**~~ Decided 2026-08-04: Loki and Promtail, no Grafana. See above and `kolonie-infra#68`.
-- **Monitoring?** Health checks now, plus an external liveness check — `kolonie-infra#69`.
+- ~~**Monitoring?**~~ Decided 2026-08-04: Docker health checks and `health-watch.yml` on the inside, UptimeRobot on the outside. See above and `kolonie-infra#69`.
