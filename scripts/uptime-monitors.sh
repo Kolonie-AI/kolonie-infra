@@ -11,8 +11,8 @@
 # The service is external and its state is not in Git — which is the failure this
 # file exists against. `kolonie-infra#69`: *"An external dependency nobody can
 # find the login for is worse than none, because it is believed in."* So the
-# **desired** state is here, in DESIRED below, and the script is the only thing
-# that writes it.
+# **desired** state is here, in DESIRED and the constants beside it, and this
+# script is the only thing that writes it.
 #
 #   ./scripts/uptime-monitors.sh report   what the account currently holds
 #   ./scripts/uptime-monitors.sh check    does it match DESIRED — writes nothing
@@ -22,11 +22,30 @@
 # kolonie-infra and lives nowhere else; run this through
 # `.github/workflows/uptime-monitors.yml` rather than pasting the key anywhere.
 #
-# **Nothing here ever deletes a monitor, and that is deliberate.** The account is
-# the maintainer's own and holds unrelated monitors. A reconciler that removes
-# what is not in its list would take those with it the first time it ran. So the
-# rule is: a monitor whose URL is not in DESIRED is not this script's business,
-# is never edited, is never deleted, and is reported only as a count.
+# ## Why the v3 API and not the documented v2 one
+#
+# Measured 2026-08-04, and it cost four runs to find, so it is written down here
+# rather than left to be rediscovered: **this account's key reads over v2 and
+# cannot write over it.** Every `newMonitor` call — with alert contacts, without
+# them, with an interval, with nothing but a URL and a type — answers:
+#
+#     access_denied: You are not allowed to use some settings with your current plan.
+#
+# The obvious conclusion is wrong. The key is not read-only (a read-only key is
+# prefixed `ur`; this one is not) and the plan is not the limit either: the same
+# key creates the same monitor over the v3 API in one call. What v2 refuses is
+# writing at all, and it refuses it with a message about settings.
+#
+# v3 is also the only one of the two that can say what this issue asks for.
+# `sslExpirationReminder` and `keywordType` are v3 fields; the v2 monitor object
+# carries no SSL key at all unless `ssl=1` is passed, and no way to set one.
+#
+# ## Nothing here ever deletes a monitor, and that is deliberate
+#
+# The account is the maintainer's own and holds unrelated monitors. A reconciler
+# that removes what is not in its list would take those with it the first time it
+# ran. The rule: a monitor whose URL is not in DESIRED is not this script's
+# business, is never edited, is never deleted, and is reported only as a count.
 #
 # Exit status: 0 when the account matches DESIRED (or was made to), 1 when it
 # does not and `check` was asked, 2 when the API could not be reached or refused.
@@ -35,7 +54,7 @@
 
 set -uo pipefail
 
-API="https://api.uptimerobot.com/v2"
+API="https://api.uptimerobot.com/v3"
 
 # Five endpoints, each asked separately.
 #
@@ -57,34 +76,39 @@ kolonie challenge /health|https://challenge.kolonie.ai/health
 kolonie console /health|https://console.kolonie.ai/health
 EOF
 
-# Type 1 is a plain HTTP monitor: it alerts on a non-2xx, a TLS failure or a
-# timeout, and it reads no part of the answer.
-#
-# **A keyword monitor was tried first and this account cannot have one.** All
-# five endpoints answer `{"status":"ok"}`, so type 2 with `keyword_type=2` on
-# `"status":"ok"` would also catch a 200 that says `"degraded"` — and
-# `newMonitor` refused it on 2026-08-04 with
-# `access_denied: You are not allowed to use some settings with your current
-# plan.` Keyword monitoring is a paid feature; the free tier this issue chose is
-# status codes and reachability.
-#
-# What that leaves uncovered is a service answering 200 while being wrong inside
-# — and that is deliberately not this check's question. It belongs to Loki and to
-# `kolonie-docs#133`, which read what the applications actually say. This one
-# answers *is the host there*, which is the question nothing on the host can
-# answer about itself.
-MONITOR_TYPE=1
-# Kept as the values to restore if the account is ever upgraded — a paid plan
-# makes the two lines below the whole change, and the drift check already
-# compares both fields. 0 is what a type-1 monitor reports for them.
-KEYWORD_TYPE=0
-KEYWORD_VALUE=""
+# A keyword monitor, because all five answer `{"status":"ok"}` and a plain HTTP
+# monitor would call a 200 saying `"degraded"` a pass. `ALERT_NOT_EXISTS` alerts
+# when the string is *absent*; `ALERT_EXISTS` is the opposite and is the easy
+# mistake here, since it would page only while everything was fine.
+MONITOR_TYPE="KEYWORD"
+KEYWORD_TYPE="ALERT_NOT_EXISTS"
+KEYWORD_VALUE='"status":"ok"'
+KEYWORD_CASE="CaseSensitive"
 
-# Five minutes, because that is the free tier's floor and this account is on it.
-# Better Stack's 30 seconds was the argument for the other provider and lost to
-# the account already existing (#69, 2026-08-03). Five minutes to notice a dead
-# host is far inside the time it takes anyone to do anything about it.
+# Five minutes, the free tier's floor. Better Stack's 30 seconds was the argument
+# for the other provider and lost to the account already existing (#69,
+# 2026-08-03); five minutes to notice a dead host is well inside the time it
+# takes anyone to act on it.
 INTERVAL="${UPTIME_INTERVAL:-300}"
+
+# Thirty seconds, against a `/health` that answers in tens of milliseconds. Long
+# enough that a slow moment is not an outage, short enough that a hung endpoint
+# is reported within the interval rather than the one after it.
+TIMEOUT=30
+
+# **The certificate, and the two halves of it that are not the same question.**
+#
+# `checkSSLErrors` makes an expired or invalid certificate a *down* — the alert
+# arrives when it has already broken. `sslExpirationReminder` is the warning some
+# days before, which is the one that lets anybody do something about it. An
+# expired certificate takes everything down as thoroughly as a dead host while
+# every container reports healthy, so both are on.
+#
+# Domain expiry is deliberately left alone: the registration is not renewed by
+# anything in this repository, five identical reminders for one domain is noise,
+# and `#69` asks for TLS.
+CHECK_SSL_ERRORS=true
+SSL_EXPIRATION_REMINDER=true
 
 die() {
     echo "ERROR: $*" >&2
@@ -94,194 +118,169 @@ die() {
 command -v jq >/dev/null || die "jq is not installed"
 [ -n "${UPTIMEROBOT_API_KEY:-}" ] || die "UPTIMEROBOT_API_KEY is not set"
 
-# Every call is a POST with the key in the body — UptimeRobot's v2 API has no
-# other shape. `--data-urlencode` rather than `-d` because the keyword carries
-# quotes and a colon.
-call() {
-    local endpoint="$1"
-    shift
-    local args=(--silent --show-error --max-time 30
-        --data-urlencode "api_key=${UPTIMEROBOT_API_KEY}"
-        --data-urlencode "format=json")
-    local a
-    for a in "$@"; do args+=(--data-urlencode "$a"); done
+# Every call carries the key as a bearer token and answers JSON. The body is
+# printed on failure but the request never is — the key is in the header, and a
+# workflow log is not a private place.
+api() {
+    local method="$1" path="$2" body="${3:-}"
+    local -a args=(--silent --show-error --max-time 30
+        -w '\n%{http_code}'
+        -X "$method"
+        -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}"
+        -H "Content-Type: application/json")
+    [ -n "$body" ] && args+=(-d "$body")
 
-    local out
-    out=$(curl "${args[@]}" "${API}/${endpoint}") || die "${endpoint}: curl failed"
+    local out code
+    out=$(curl "${args[@]}" "${API}${path}") || die "${method} ${path}: curl failed"
+    code=$(printf '%s' "$out" | tail -n1)
+    out=$(printf '%s' "$out" | sed '$d')
 
-    # A refused key answers 200 with stat=fail, so the HTTP status proves
-    # nothing. Check what it said.
-    local stat
-    stat=$(printf '%s' "$out" | jq -r '.stat // "unparseable"')
-    if [ "$stat" != "ok" ]; then
-        # The error message can quote the request back, so print only the
-        # structured error and never the raw body — the key was in the request.
-        printf '%s' "$out" | jq -r '.error | "\(.type // "?"): \(.message // "?")"' >&2
-        die "${endpoint}: the API refused the call"
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        printf '%s\n' "$out" | head -c 500 >&2
+        echo >&2
+        die "${method} ${path}: HTTP ${code}"
     fi
     printf '%s' "$out"
 }
 
-# Alert contacts, as UptimeRobot wants them on a monitor: id_threshold_recurrence
-# joined by dashes. Threshold 0 and recurrence 0 mean "tell me once, immediately".
+# Every monitor on the account. `limit` is 50 against an account holding 15 on
+# 2026-08-04 — sized to be unreachable rather than sized to the account, for the
+# reason `kolonie-docs/AGENTS.md` §6 gives about `--limit`: a page boundary below
+# the real count does not fail, it answers a shorter and plausible lie. The
+# response carries `nextLink` when there is more, and this asserts there is not
+# rather than paginating a list that should never need it.
+all_monitors() {
+    local out
+    out=$(api GET "/monitors?limit=50") || return 2
+    if [ "$(printf '%s' "$out" | jq -r '.nextLink // "" | length')" != "0" ]; then
+        die "the account holds more than 50 monitors — this script would only see the first page"
+    fi
+    printf '%s' "$out"
+}
+
+# Which alert contacts a monitor should carry: every *active* one on the account,
+# at threshold 0 and recurrence 0, which is "tell me once, immediately".
 #
-# Every *active* contact on the account is attached rather than a hard-coded id.
-# The account is the maintainer's, its contacts are where the maintainer reads,
-# and an id written down here would be a number that goes stale silently — the
-# alert would keep being configured and stop arriving.
-alert_contact_args() {
-    local contacts
-    contacts=$(call getAlertContacts) || return 1
-    printf '%s' "$contacts" |
-        jq -r '[.alert_contacts[] | select(.status == 2) | "\(.id)_0_0"] | join("-")'
+# Read from the account rather than written down here. The account is the
+# maintainer's, its contacts are where the maintainer reads, and a contact id
+# pinned in this file would be a number that goes stale silently — the alert
+# would go on being configured and stop arriving.
+want_contacts_json() {
+    api GET "/alert-contacts" |
+        jq -c '[.data[] | select(.status == "Active")
+               | {alertContactId: .id, threshold: 0, recurrence: 0}]'
 }
 
-# What the account holds for our five URLs, one TSV row each:
-#   url  id  friendly_name  type  keyword_type  keyword_value  interval  status
-current_monitors() {
-    call getMonitors "logs=0" "alert_contacts=1" |
-        jq -r '.monitors[] | [.url, (.id|tostring), .friendly_name, (.type|tostring),
-                              ((.keyword_type // 0)|tostring), (.keyword_value // ""),
-                              (.interval|tostring), (.status|tostring),
-                              ([.alert_contacts[]?.id] | sort | join(","))]
-                             | @tsv'
+# The body of a create or an edit. Identical for both, which is the point: there
+# is one description of a correct monitor and both paths write it.
+desired_body() {
+    local name="$1" url="$2" contacts="$3"
+    jq -n -c \
+        --arg name "$name" --arg url "$url" --arg type "$MONITOR_TYPE" \
+        --arg ktype "$KEYWORD_TYPE" --arg kvalue "$KEYWORD_VALUE" --arg kcase "$KEYWORD_CASE" \
+        --argjson interval "$INTERVAL" --argjson timeout "$TIMEOUT" \
+        --argjson ssl_errors "$CHECK_SSL_ERRORS" --argjson ssl_reminder "$SSL_EXPIRATION_REMINDER" \
+        --argjson contacts "$contacts" \
+        '{friendlyName: $name, url: $url, type: $type,
+          keywordType: $ktype, keywordValue: $kvalue, keywordCaseType: $kcase,
+          interval: $interval, timeout: $timeout,
+          checkSSLErrors: $ssl_errors, sslExpirationReminder: $ssl_reminder,
+          assignedAlertContacts: $contacts}'
 }
 
-# Does this monitor already say what DESIRED says. Compared field by field rather
-# than by a digest so the report can name which one drifted.
+# What is wrong with the monitor as it stands, field by field rather than as a
+# digest, so the report can name what drifted instead of only that something did.
 drift_reasons() {
-    local type="$1" ktype="$2" kvalue="$3" interval="$4" contacts="$5" want_contacts="$6"
-    local reasons=""
-    add() { reasons="${reasons:+$reasons, }$1"; }
-    [ "$type" = "$MONITOR_TYPE" ] || add "type $type≠$MONITOR_TYPE"
-    [ "$ktype" = "$KEYWORD_TYPE" ] || add "keyword_type $ktype≠$KEYWORD_TYPE"
-    [ "$kvalue" = "$KEYWORD_VALUE" ] || add "keyword ${kvalue:-none}≠${KEYWORD_VALUE}"
-    [ "$interval" = "$INTERVAL" ] || add "interval ${interval}s≠${INTERVAL}s"
-    [ "$contacts" = "$want_contacts" ] || add "alert contacts ${contacts:-none}≠${want_contacts:-none}"
-    printf '%s' "$reasons"
+    local monitor="$1" contacts="$2"
+    printf '%s' "$monitor" | jq -r \
+        --arg type "$MONITOR_TYPE" --arg ktype "$KEYWORD_TYPE" --arg kvalue "$KEYWORD_VALUE" \
+        --argjson interval "$INTERVAL" --argjson timeout "$TIMEOUT" \
+        --argjson ssl_errors "$CHECK_SSL_ERRORS" --argjson ssl_reminder "$SSL_EXPIRATION_REMINDER" \
+        --argjson contacts "$contacts" '
+        [ if .type != $type then "type \(.type)≠\($type)" else empty end,
+          if .keywordType != $ktype then "keywordType \(.keywordType // "none")≠\($ktype)" else empty end,
+          if .keywordValue != $kvalue then "keyword \(.keywordValue // "none")≠\($kvalue)" else empty end,
+          if .interval != $interval then "interval \(.interval)s≠\($interval)s" else empty end,
+          if .timeout != $timeout then "timeout \(.timeout)s≠\($timeout)s" else empty end,
+          if .checkSSLErrors != $ssl_errors then "checkSSLErrors \(.checkSSLErrors)≠\($ssl_errors)" else empty end,
+          if .sslExpirationReminder != $ssl_reminder then "sslExpirationReminder \(.sslExpirationReminder)≠\($ssl_reminder)" else empty end,
+          # A monitor somebody paused is drift too, and the worst kind: the
+          # dashboard shows it, nothing else does, and a paused check reports
+          # green for ever.
+          if .status == "PAUSED" then "paused" else empty end,
+          ( ([.assignedAlertContacts[]?.alertContactId] | sort) as $have
+          | ([$contacts[].alertContactId] | sort) as $want
+          | if $have != $want then "alert contacts \($have)≠\($want)" else empty end )
+        ] | join(", ")'
 }
 
 cmd_report() {
     local monitors total ours
-    monitors=$(call getMonitors "logs=0" "alert_contacts=1") || return 2
-    total=$(printf '%s' "$monitors" | jq -r '.monitors | length')
-
-    echo "== what the plan allows =="
-    # The plan is the thing that decides which of the settings below are even
-    # sayable — `newMonitor` answers `access_denied` for a feature above the
-    # tier and does not say which setting it meant. `monitor_interval` is the
-    # floor INTERVAL has to respect; the e-mail address is masked.
-    call getAccountDetails | jq -r '
-        .account
-        | "plan \(.user_type // "?")  monitors \(.up_monitors + .down_monitors + .paused_monitors)/\(.monitor_limit)" +
-          "  minimum interval \(.monitor_interval)s"'
-    echo
+    monitors=$(all_monitors) || return 2
+    total=$(printf '%s' "$monitors" | jq -r '.data | length')
 
     echo "== the five endpoints =="
-    printf '%s\n' "$DESIRED" | while IFS='|' read -r name url; do
+    while IFS='|' read -r name url; do
         [ -n "$url" ] || continue
-        # `[…][0]`, not `first(…)` and not a bare `.monitors[] | select(…)`.
-        # An empty jq stream produces no output at all, so a missing monitor
-        # printed nothing and read as a blank line — the report said least
-        # exactly when it had most to say. Indexing an array yields null, and
+        # `[…][0]`, not a bare `.data[] | select(…)`. An empty jq stream produces
+        # no output at all, so a missing monitor printed a blank line — the report
+        # said least exactly when it had most to say. Indexing yields null, and
         # null is a value the `if` can see.
         printf '%s' "$monitors" | jq -r --arg url "$url" --arg name "$name" '
-            ([.monitors[] | select(.url == $url)][0]) as $m
+            ([.data[] | select(.url == $url)][0]) as $m
             | if $m == null then "\($name)\n  MISSING"
-              else
-                "\($name)\n  id \($m.id)  type \($m.type)  keyword \($m.keyword_value // "none")" +
-                "  every \($m.interval)s  status \($m.status)  contacts \([$m.alert_contacts[]?.id] | length)"
+              else "\($name)\n  id \($m.id)  \($m.type)  \($m.status)  every \($m.interval)s" +
+                   "  keyword \($m.keywordValue // "none") (\($m.keywordType // "-"))" +
+                   "  contacts \([$m.assignedAlertContacts[]?.alertContactId] | join(","))" +
+                   "\n  TLS: errors alert \($m.checkSSLErrors)  expiry reminder \($m.sslExpirationReminder)" +
+                   "  certificate expires \($m.sslExpiryDateTime // "unknown") (\($m.sslBrand // "?"))"
               end'
-    done
+    done <<<"$DESIRED"
 
-    ours=$(printf '%s' "$monitors" | jq -r '[.monitors[] | select(.url | test("^https://[a-z]+\\.kolonie\\.ai/health$"))] | length')
+    ours=$(printf '%s' "$monitors" | jq -r '[.data[] | select(.url | test("^https://[a-z]+\\.kolonie\\.ai/health$"))] | length')
     echo
     echo "== the rest of the account =="
-    # Names and URLs of monitors that are not ours are the maintainer's private
-    # business and a workflow log is not a private place. The count is the whole
+    # The names and URLs of monitors that are not ours are the maintainer's
+    # private business, and this runs in public CI. The count is the whole
     # report: it exists to say "this account is shared, do not reconcile by
     # deletion", which is a number and not a list.
     echo "$((total - ours)) monitor(s) on this account are not the Colony's — never touched by this script"
 
     echo
     echo "== where an alert goes =="
-    # Type 2 is e-mail, 11 is a webhook, and the rest are chat integrations. The
-    # *value* is an address; it is masked because this runs in public CI.
-    call getAlertContacts | jq -r '
-        .alert_contacts[]
-        | "\(.id)  type \(.type)  status \(.status)  \(.value | if length > 4 then .[0:2] + "…" + .[-2:] else "…" end)"'
-
-    echo
-    echo "== the certificate, per endpoint =="
-    # `ssl=1` is a separate request and not a field on the ordinary one: the
-    # monitor object carries no certificate information until it is asked for.
-    # Measured 2026-08-04 — `getMonitors` returns
-    # `create_datetime friendly_name http_password http_username id interval
-    #  keyword_case_type keyword_type keyword_value port status sub_type timeout
-    #  type url` and no ssl key at all without it.
-    #
-    # An expired certificate takes everything down as thoroughly as a dead host
-    # while every container reports healthy, which is why this is asked at all
-    # rather than assumed from the monitor being green: a TLS failure does make
-    # the monitor go down, but only on the day it happens.
-    call getMonitors "logs=0" "ssl=1" | jq -r '
-        .monitors[]
-        | select(.url | test("^https://[a-z]+\\.kolonie\\.ai/health$"))
-        | "\(.friendly_name)  expires \(.ssl.expires // 0 | if . == 0 then "unknown"
-              else (. | todate) end)  brand \(.ssl.brand // "?")"'
+    # The address is masked. Which contact, and that it is active, is the fact
+    # worth reporting; the address itself is the maintainer's.
+    api GET "/alert-contacts" | jq -r '
+        .data[] | "\(.id)  \(.type)  \(.status)  \(.value // "" | if length > 4 then .[0:2] + "…" + .[-2:] else "…" end)"'
 }
 
 cmd_apply() {
     local write="$1" # "apply" or "check"
-    local want_contacts rc=0
-    want_contacts=$(alert_contact_args) || return 2
-    [ -n "$want_contacts" ] || die "the account has no active alert contact — an alert nobody receives is not a check"
+    local contacts rc=0
+    contacts=$(want_contacts_json) || return 2
+    [ "$(printf '%s' "$contacts" | jq -r 'length')" != "0" ] ||
+        die "the account has no active alert contact — an alert nobody receives is not a check"
 
-    local current
-    current=$(current_monitors) || return 2
+    local monitors
+    monitors=$(all_monitors) || return 2
 
-    # The keyword fields are sent only by a keyword monitor. On a type-1 monitor
-    # they are not merely redundant — `newMonitor` reads them as asking for a
-    # feature the plan does not have and refuses the whole call.
-    local keyword_args=()
-    if [ "$MONITOR_TYPE" = "2" ]; then
-        keyword_args=("keyword_type=${KEYWORD_TYPE}" "keyword_value=${KEYWORD_VALUE}")
-    fi
-
-    local name url row id type ktype kvalue interval status contacts reasons
+    local name url monitor id reasons
     while IFS='|' read -r name url; do
         [ -n "$url" ] || continue
-        row=$(printf '%s\n' "$current" | awk -F'\t' -v u="$url" '$1 == u {print; exit}')
+        monitor=$(printf '%s' "$monitors" | jq -c --arg url "$url" '[.data[] | select(.url == $url)][0]')
 
-        if [ -z "$row" ]; then
+        if [ "$monitor" = "null" ]; then
             if [ "$write" = "check" ]; then
                 echo "MISSING  $name"
                 rc=1
                 continue
             fi
-            id=$(call newMonitor \
-                "friendly_name=${name}" \
-                "url=${url}" \
-                "type=${MONITOR_TYPE}" \
-                "${keyword_args[@]}" \
-                "interval=${INTERVAL}" \
-                "alert_contacts=${want_contacts}" | jq -r '.monitor.id') || return 2
+            id=$(api POST "/monitors" "$(desired_body "$name" "$url" "$contacts")" | jq -r '.id') || return 2
             echo "created  $name  (id $id)"
             continue
         fi
 
-        IFS=$'\t' read -r _ id _ type ktype kvalue interval status contacts <<<"$row"
-        reasons=$(drift_reasons "$type" "$ktype" "$kvalue" "$interval" \
-            "$(printf '%s' "$contacts" | tr ',' '\n' | sort | paste -sd, -)" \
-            "$(printf '%s' "$want_contacts" | tr '-' '\n' | cut -d_ -f1 | sort | paste -sd, -)")
-
-        # status 0 is a monitor somebody paused. That is drift too, and the worst
-        # kind: the dashboard shows it, nothing else does, and a paused check
-        # reports green forever.
-        if [ "$status" = "0" ]; then
-            reasons="paused${reasons:+, $reasons}"
-        fi
-
+        reasons=$(drift_reasons "$monitor" "$contacts")
         if [ -z "$reasons" ]; then
             echo "ok       $name"
             continue
@@ -293,89 +292,15 @@ cmd_apply() {
             continue
         fi
 
-        call editMonitor \
-            "id=${id}" \
-            "friendly_name=${name}" \
-            "type=${MONITOR_TYPE}" \
-            "${keyword_args[@]}" \
-            "interval=${INTERVAL}" \
-            "status=1" \
-            "alert_contacts=${want_contacts}" >/dev/null || return 2
+        id=$(printf '%s' "$monitor" | jq -r '.id')
+        api PATCH "/monitors/${id}" "$(desired_body "$name" "$url" "$contacts")" >/dev/null || return 2
         echo "fixed    $name  ($reasons)"
     done <<<"$DESIRED"
 
     return $rc
 }
 
-# TEMPORARY (#69): narrow down which argument newMonitor is refusing. Removed
-# once the answer is known and written into the comments above.
-cmd_probe() {
-    local v3="https://api.uptimerobot.com/v3"
-    local h=(-H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" -H "Content-Type: application/json")
-
-    echo "alert contacts (v3):"
-    curl --silent --max-time 30 "${h[@]}" "${v3}/alert-contacts" |
-        jq -r '.data[]? | "\(.id)  \(.type)  \(.status // "?")  \(.friendlyName // "")"'
-
-    echo "POST KEYWORD:"
-    curl --silent --max-time 30 "${h[@]}" -X POST "${v3}/monitors" \
-        -d '{"type":"KEYWORD","url":"https://api.kolonie.ai/health","friendlyName":"kolonie api /health","interval":300,"timeout":30,"keywordType":"NOT_EXISTS","keywordValue":"\"status\":\"ok\"","checkSSLErrors":true}' | head -c 500
-    echo
-    echo "POST HTTP:"
-    curl --silent --max-time 30 "${h[@]}" -X POST "${v3}/monitors" \
-        -d '{"type":"HTTP","url":"https://academy.kolonie.ai/health","friendlyName":"kolonie academy /health","interval":300,"timeout":30,"checkSSLErrors":true}' | head -c 500
-    echo
-    return 0
-
-    local id
-    case "${UPTIMEROBOT_API_KEY}" in
-    ur*) echo "key kind: read-only (ur…) — get* only" ;;
-    m*) echo "key kind: monitor-specific (m…)" ;;
-    u*) echo "key kind: account-specific (u…) — read and write" ;;
-    *) echo "key kind: unrecognised prefix" ;;
-    esac
-    echo "v3 GET /monitors — the shape of a monitor, values replaced by their type:"
-    curl --silent --max-time 30 -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
-        "https://api.uptimerobot.com/v3/monitors?limit=1" |
-        jq -r '[paths(scalars) as $p | ($p | map(tostring) | join(".")) + " : " + (getpath($p) | type)] | unique | .[]'
-    echo -n "v3 POST /monitors: "
-    curl --silent --show-error --max-time 30 -w ' (http %{http_code})\n' \
-        -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"type":"HTTP","url":"https://api.kolonie.ai/health","friendlyName":"kolonie api /health","interval":300}' \
-        "https://api.uptimerobot.com/v3/monitors" | head -c 400
-    echo
-    id=$(call getAlertContacts | jq -r '[.alert_contacts[] | select(.status == 2) | .id][0]')
-    local url="https://api.kolonie.ai/health"
-    local -a sets=(
-        "type=1|interval=300|alert_contacts=${id}_0_0"
-        "type=1|interval=300|alert_contacts=${id}"
-        "type=1|interval=300"
-        "type=1"
-    )
-    local s
-    for s in "${sets[@]}"; do
-        local -a args=(--silent --max-time 30
-            --data-urlencode "api_key=${UPTIMEROBOT_API_KEY}"
-            --data-urlencode "format=json"
-            --data-urlencode "friendly_name=kolonie api /health"
-            --data-urlencode "url=${url}")
-        local part parts
-        IFS='|' read -ra parts <<<"$s"
-        for part in "${parts[@]}"; do args+=(--data-urlencode "$part"); done
-        local out
-        out=$(curl "${args[@]}" "${API}/newMonitor" 2>/dev/null)
-        echo "$s -> $(printf '%s' "$out" | jq -c '{stat, error: (.error.message // .error.type // null), id: (.monitor.id // null)}')"
-        if [ "$(printf '%s' "$out" | jq -r '.stat')" = "ok" ]; then
-            echo "first set that worked: $s"
-            return 0
-        fi
-    done
-    return 1
-}
-
 case "${1:-report}" in
-probe) cmd_probe ;;
 report) cmd_report ;;
 check) cmd_apply check ;;
 apply) cmd_apply apply ;;

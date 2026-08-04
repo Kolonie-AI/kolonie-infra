@@ -31,7 +31,6 @@ on:
         type: choice
         options:
           - report
-          - probe
           - check
           - apply
   schedule:
