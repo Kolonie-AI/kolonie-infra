@@ -1,0 +1,63 @@
+name: Uptime Monitors
+
+# The one check that runs nowhere near the thing it checks (#69).
+#
+# This workflow does not do the monitoring. UptimeRobot does, from outside both
+# this repository and the VPS — which is the entire point, because a monitor that
+# dies with the host reports a dead host as a quiet week. What runs here is the
+# *configuration*: `scripts/uptime-monitors.sh` holds the five endpoints, the
+# keyword and the interval, and this is how they reach an account whose API key
+# is a repository secret.
+#
+# **Why the weekly run is a `check` and not an `apply`.** The monitor set is
+# external state. Somebody can pause a monitor in the dashboard, or change an
+# interval, and nothing in Git would know — the check would go on being believed
+# in while reporting green from a paused monitor. So once a week this asks
+# whether the account still says what this repository says, and fails the run if
+# it does not. It does not quietly repair it: a monitor that drifted was changed
+# by somebody, and silently changing it back is how the reason gets lost.
+#
+# GitHub disables scheduled workflows after 60 days of repository inactivity. That
+# would take this weekly comparison with it — and it is the reason the *monitoring*
+# is not built here. Losing this run loses the audit, not the alerts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report (read only) · check (compare, no writes) · apply (make it match)'
+        required: true
+        default: report
+        type: choice
+        options:
+          - report
+          - check
+          - apply
+  schedule:
+    # Mondays, 07:00 UTC. Weekly because the thing being caught — a monitor
+    # paused or retuned by hand — is rare and does not become more urgent by
+    # being found on a Tuesday.
+    - cron: '0 7 * * 1'
+
+concurrency:
+  group: uptime-monitors
+  cancel-in-progress: false
+
+jobs:
+  monitors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ${{ inputs.mode || 'check' }}
+        env:
+          UPTIMEROBOT_API_KEY: ${{ secrets.UPTIMEROBOT_API_KEY }}
+          MODE: ${{ inputs.mode || 'check' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/uptime-monitors.sh
+          ./scripts/uptime-monitors.sh "$MODE"
