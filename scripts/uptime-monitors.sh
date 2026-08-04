@@ -302,6 +302,26 @@ cmd_apply() {
         fi
 
         id=$(printf '%s' "$monitor" | jq -r '.id')
+
+        # **The one case where this script deletes, and the fence around it.**
+        #
+        # `PATCH` answers `009-015 Monitor type cannot be changed after creation`,
+        # so a monitor of the wrong type cannot be fixed in place — it has to go
+        # and come back. That is a delete, which everything else here refuses to
+        # do, and the fence is that the URL is one of DESIRED's five: this
+        # script only ever deletes something it would create in the next line.
+        # A monitor it did not put there is still never touched.
+        #
+        # What is lost is that monitor's uptime history. That is the real cost
+        # and it is accepted: a monitor of the wrong type is measuring the wrong
+        # thing, so its history is a record of the wrong question.
+        if [[ "$reasons" == *"type "* ]]; then
+            api DELETE "/monitors/${id}" >/dev/null || return 2
+            id=$(api POST "/monitors" "$(desired_body "$name" "$url" "$contacts")" | jq -r '.id') || return 2
+            echo "recreated $name  (id $id — $reasons; the type cannot be changed in place)"
+            continue
+        fi
+
         api PATCH "/monitors/${id}" "$(desired_body "$name" "$url" "$contacts")" >/dev/null || return 2
         echo "fixed    $name  ($reasons)"
     done <<<"$DESIRED"
