@@ -98,17 +98,26 @@ TIMEOUT=30
 
 # **The certificate, and the two halves of it that are not the same question.**
 #
-# `checkSSLErrors` makes an expired or invalid certificate a *down* — the alert
-# arrives when it has already broken. `sslExpirationReminder` is the warning some
-# days before, which is the one that lets anybody do something about it. An
-# expired certificate takes everything down as thoroughly as a dead host while
-# every container reports healthy, so both are on.
+# `checkSSLErrors` makes an expired or otherwise invalid certificate a *down*, so
+# the alert arrives when it breaks. `sslExpirationReminder` is the warning some
+# days *before* — and this account cannot have it: `PATCH` with that one field
+# and nothing else answers `403 009-005 You are not allowed to use some settings
+# with your current plan`, measured 2026-08-04 by changing one setting at a time.
+# Every other field in this file was accepted in the same run, which is how it is
+# known to be that one and not the shape of the request.
 #
-# Domain expiry is deliberately left alone: the registration is not renewed by
-# anything in this repository, five identical reminders for one domain is noise,
-# and `#69` asks for TLS.
+# So what is covered is *the certificate has failed*, within five minutes, on all
+# five endpoints. What is not is *it will fail on Friday*. Traefik renews from
+# Let's Encrypt automatically at 30 days remaining, so the gap is the case where
+# renewal itself is broken — which this catches, late, as an outage rather than
+# as a warning. Upgrading the plan is the only way to close it, and it is not
+# worth an upgrade; the line to change is one boolean below if that ever changes.
+#
+# Domain expiry is deliberately left alone: the registration is renewed by
+# nothing in this repository, and five identical reminders for one domain is
+# noise.
 CHECK_SSL_ERRORS=true
-SSL_EXPIRATION_REMINDER=true
+SSL_EXPIRATION_REMINDER=false
 
 die() {
     echo "ERROR: $*" >&2
