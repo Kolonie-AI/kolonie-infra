@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'report (read only) · check (compare, no writes) · apply (make it match)'
+        description: 'report · check (compare, no writes) · apply (make it match) · drill (break one on purpose, then restore)'
         required: true
         default: report
         type: choice
@@ -33,6 +33,7 @@ on:
           - report
           - check
           - apply
+          - drill
   schedule:
     # Mondays, 07:00 UTC. Weekly because the thing being caught — a monitor
     # paused or retuned by hand — is rare and does not become more urgent by
@@ -46,7 +47,7 @@ concurrency:
 jobs:
   monitors:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:

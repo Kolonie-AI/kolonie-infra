@@ -329,10 +329,74 @@ cmd_apply() {
     return $rc
 }
 
+# Break one monitor on purpose, watch it go down, and put it back.
+#
+# `#69`'s definition of done is *"a deliberate failure produced a real alert"* —
+# and that is not a one-off. An alert path is exactly the kind of thing that
+# stops working silently: a contact deactivated, an address that started
+# bouncing, a plan change. This is the drill, re-runnable, so the answer can be
+# taken again rather than remembered from the day it was built.
+#
+# **It breaks the keyword, not the service and not the URL.** The endpoint keeps
+# answering `{"status":"ok"}` to everybody else; this monitor is simply told to
+# look for a string that is not there, so it fails its check and opens a real
+# incident down the real alert path. Nothing in production is touched, and the
+# blast radius if this script dies mid-drill is one monitor watching for the
+# wrong word — which the weekly `check` reports as drift and `apply` repairs.
+cmd_drill() {
+    local url="https://console.kolonie.ai/health"
+    local name="kolonie console /health"
+    local contacts monitor id
+    contacts=$(want_contacts_json) || return 2
+    monitor=$(all_monitors | jq -c --arg url "$url" '[.data[] | select(.url == $url)][0]')
+    [ "$monitor" != "null" ] || die "no monitor for ${url} — run apply first"
+    id=$(printf '%s' "$monitor" | jq -r '.id')
+
+    # Read back through the list rather than a per-monitor GET: the list is the
+    # one read this script already knows answers, and one endpoint fewer to be
+    # wrong about.
+    monitor_status() {
+        all_monitors | jq -r --arg id "$id" '[.data[] | select((.id|tostring) == $id)][0].status // "?"'
+    }
+
+    echo "drill: monitor $id ($name) is being told to look for a keyword that is not there"
+    api PATCH "/monitors/${id}" '{"keywordValue":"\"status\":\"this-is-a-drill\""}' >/dev/null || return 2
+
+    # Up to twelve minutes: the check interval is five, UptimeRobot confirms a
+    # failure with a second attempt before opening an incident, and the poll
+    # below is the only thing here that can be slow.
+    local waited=0 status=""
+    while [ "$waited" -lt 720 ]; do
+        sleep 30
+        waited=$((waited + 30))
+        status=$(monitor_status)
+        echo "  ${waited}s: $status"
+        [ "$status" = "DOWN" ] && break
+    done
+
+    echo "incident:"
+    all_monitors | jq -c --arg id "$id" '[.data[] | select((.id|tostring) == $id)][0] | {status, lastIncident, lastIncidentId}'
+
+    echo "restoring"
+    api PATCH "/monitors/${id}" "$(desired_body "$name" "$url" "$contacts")" >/dev/null || return 2
+    waited=0
+    while [ "$waited" -lt 720 ]; do
+        sleep 30
+        waited=$((waited + 30))
+        status=$(monitor_status)
+        echo "  ${waited}s: $status"
+        [ "$status" = "UP" ] && break
+    done
+
+    [ "$status" = "UP" ] || die "the drill monitor did not come back up — fix it before trusting the check"
+    echo "drill complete, $name is UP again"
+}
+
 case "${1:-report}" in
 report) cmd_report ;;
 check) cmd_apply check ;;
 apply) cmd_apply apply ;;
+drill) cmd_drill ;;
 *)
     echo "usage: $0 [report|check|apply]" >&2
     exit 2
