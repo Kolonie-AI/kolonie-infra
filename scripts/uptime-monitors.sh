@@ -310,6 +310,23 @@ cmd_apply() {
 # TEMPORARY (#69): narrow down which argument newMonitor is refusing. Removed
 # once the answer is known and written into the comments above.
 cmd_probe() {
+    local v3="https://api.uptimerobot.com/v3"
+    local h=(-H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" -H "Content-Type: application/json")
+
+    echo "alert contacts (v3):"
+    curl --silent --max-time 30 "${h[@]}" "${v3}/alert-contacts" |
+        jq -r '.data[]? | "\(.id)  \(.type)  \(.status // "?")  \(.friendlyName // "")"'
+
+    echo "POST KEYWORD:"
+    curl --silent --max-time 30 "${h[@]}" -X POST "${v3}/monitors" \
+        -d '{"type":"KEYWORD","url":"https://api.kolonie.ai/health","friendlyName":"kolonie api /health","interval":300,"timeout":30,"keywordType":"NOT_EXISTS","keywordValue":"\"status\":\"ok\"","checkSSLErrors":true}' | head -c 500
+    echo
+    echo "POST HTTP:"
+    curl --silent --max-time 30 "${h[@]}" -X POST "${v3}/monitors" \
+        -d '{"type":"HTTP","url":"https://academy.kolonie.ai/health","friendlyName":"kolonie academy /health","interval":300,"timeout":30,"checkSSLErrors":true}' | head -c 500
+    echo
+    return 0
+
     local id
     case "${UPTIMEROBOT_API_KEY}" in
     ur*) echo "key kind: read-only (ur…) — get* only" ;;
