@@ -317,6 +317,10 @@ cmd_probe() {
     u*) echo "key kind: account-specific (u…) — read and write" ;;
     *) echo "key kind: unrecognised prefix" ;;
     esac
+    echo "v3 GET /monitors — the shape of a monitor, values replaced by their type:"
+    curl --silent --max-time 30 -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
+        "https://api.uptimerobot.com/v3/monitors?limit=1" |
+        jq -r '[paths(scalars) as $p | ($p | map(tostring) | join(".")) + " : " + (getpath($p) | type)] | unique | .[]'
     echo -n "v3 POST /monitors: "
     curl --silent --show-error --max-time 30 -w ' (http %{http_code})\n' \
         -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
