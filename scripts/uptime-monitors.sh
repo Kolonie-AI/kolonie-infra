@@ -311,6 +311,19 @@ cmd_apply() {
 # once the answer is known and written into the comments above.
 cmd_probe() {
     local id
+    case "${UPTIMEROBOT_API_KEY}" in
+    ur*) echo "key kind: read-only (ur…) — get* only" ;;
+    m*) echo "key kind: monitor-specific (m…)" ;;
+    u*) echo "key kind: account-specific (u…) — read and write" ;;
+    *) echo "key kind: unrecognised prefix" ;;
+    esac
+    echo -n "v3 POST /monitors: "
+    curl --silent --show-error --max-time 30 -w ' (http %{http_code})\n' \
+        -H "Authorization: Bearer ${UPTIMEROBOT_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"type":"HTTP","url":"https://api.kolonie.ai/health","friendlyName":"kolonie api /health","interval":300}' \
+        "https://api.uptimerobot.com/v3/monitors" | head -c 400
+    echo
     id=$(call getAlertContacts | jq -r '[.alert_contacts[] | select(.status == 2) | .id][0]')
     local url="https://api.kolonie.ai/health"
     local -a sets=(
