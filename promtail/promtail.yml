@@ -253,9 +253,17 @@ scrape_configs:
       - match:
           selector: '{service=~"loki|promtail"}'
           stages:
+            # **Not anchored, and that is the whole of it.** Both write logfmt
+            # and neither writes it in a fixed order: `level=info ts=…` and
+            # `ts=… caller=… level=info` are both ordinary Loki lines, from the
+            # same process, minutes apart. An anchored expression matched the
+            # first and silently missed the second — which measured as 12 loki
+            # lines in three minutes that were neither labelled nor dropped.
+            # Found by reading production after the deploy, not by reading this
+            # file.
             - regex:
                 source: line
-                expression: '^level=(?P<stack_level>\w+)'
+                expression: '(?:^|\s)level=(?P<stack_level>\w+)'
             - labels:
                 level: stack_level
             - drop:
