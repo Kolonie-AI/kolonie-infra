@@ -123,6 +123,13 @@ containers; `logs.kolonie.ai` is the read API, behind a token.
   level of their own, so Promtail derives one: Postgres from its severity, and
   Traefik, the website and pgAdmin from the status in their Common Log Format
   lines. A `5xx` is an error; a `4xx` is the client being wrong and is not.
+- **Loki and Promtail do not describe themselves into their own store** (`#81`).
+  Measured 2026-08-05 they wrote 32,059 lines a day between them — 42 % of
+  everything kept — so their `info` and `debug` are dropped at ingestion. `warn`
+  and above survive, and so does any line whose level does not parse: a Go panic
+  carries no `level=`, and those are the lines worth having. It is the only drop
+  in the pipeline; every other service keeps every line, `traefik` at 19 %
+  included.
 - **`interactive` is a level, and it is what keeps the watcher honest.** A
   maintainer typing at a `psql` prompt against production produces `ERROR` lines
   that are not incidents — every postgres error in the 24 hours to 2026-08-05 was

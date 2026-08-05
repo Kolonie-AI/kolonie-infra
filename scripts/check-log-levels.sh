@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kolonie AI — does the Promtail pipeline give every service a level? (#80)
+# Kolonie AI — what the log pipeline labels, and what it throws away (#80, #81)
 #
 # Usage:
 #   ./scripts/check-log-levels.sh          run the fixtures through the real pipeline
@@ -11,6 +11,12 @@
 # filters on it. `promtail/promtail.yml` now derives a level for them. This runs
 # that pipeline, unmodified, over one line of every shape that matters and prints
 # the label it produced.
+#
+# It is also where the drop is checked (`#81`). Loki and Promtail wrote 42 % of
+# everything stored, describing themselves; their chatter is dropped at ingestion
+# and their warnings are not. **A line that is absent from this output was
+# dropped, and a line that is present survived** — which is the cheapest way to
+# see that the drop is narrow rather than to assume it.
 #
 # **It is a check somebody runs by hand, not a CI job.** This repository's `CI` is
 # parse-only by charter and says so at length; this needs Docker and a network
@@ -83,6 +89,12 @@ cases = [
     ('website', '127.0.0.1 - - [05/Aug/2026:15:20:25 +0000] "GET / HTTP/1.1" 500 41518 "-" "Wget" "-"'),
     ('pgadmin', '::ffff:127.0.0.1 - - [05/Aug/2026:15:21:47 +0000] "GET /misc/ping HTTP/1.1" 200 4 "-" "Wget"'),
     ('api', '{"level":"info","time":1785900000000,"msg":"a service that already says so"}'),
+    # The observability stack (#81): the chatter goes, a warning stays, and a
+    # line with no parseable level stays too.
+    ('loki', 'level=info ts=2026-08-05T15:26:13.688203605Z caller=marker.go:202 msg="no marks file found"'),
+    ('promtail', 'level=info ts=2026-08-05T15:26:23.342380237Z caller=filetargetmanager.go:193 msg="received file watcher event"'),
+    ('loki', 'level=warn ts=2026-08-05T15:26:13.688203605Z caller=ingester.go:1 msg="refusing writes"'),
+    ('loki', 'panic: runtime error: invalid memory address'),
 ]
 
 with open(sys.argv[1], 'w') as out:
@@ -116,3 +128,6 @@ echo "  · the psql ERROR is level=\"interactive\", not level=\"error\""
 echo "  · the application ERROR beside it is level=\"error\""
 echo "  · the 502 and the 500 are errors; the 200s are not"
 echo "  · the api line, which already said info, still says info"
+echo "  · loki's and promtail's info lines are absent — dropped at ingestion (#81)"
+echo "  · loki's warn line is present, and labelled, so a Loki refusing writes can say so"
+echo "  · loki's panic line is present: an unparseable level is kept, not dropped"

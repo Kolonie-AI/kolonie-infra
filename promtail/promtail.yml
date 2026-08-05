@@ -222,6 +222,47 @@ scrape_configs:
       - labeldrop:
           - filename
 
+      # 6. The observability stack stops describing itself (#81).
+      #
+      # Measured over 24 hours to 2026-08-05: `loki` wrote 19,534 lines and
+      # `promtail` 12,525 — **32,059 a day, about 42 % of everything stored**.
+      # Together they logged more than every service they exist to observe, and
+      # `api` produced 1,060 in the same window. Nothing is broken; Loki is
+      # logging at its default level about doing its job, and it is simply not
+      # worth a share of a 30-day retention window.
+      #
+      # **Dropped at ingestion rather than quietened at the source.** Raising
+      # each component's own log level leaves a setting a version bump can
+      # silently reset, in a file that is not this one. A drop stage is in the
+      # file that owns the pipeline, and if Loki ever does break, that shows up
+      # as *missing data* rather than as its own error lines.
+      #
+      # **`warn` and above survive.** A Loki that is refusing writes has to be
+      # able to say so. Both write logfmt with `level=` first on the line, so
+      # parsing it costs one expression — and the level is kept as a label, or a
+      # surviving warning would arrive invisible to the one thing that reads it.
+      #
+      # **A line whose level does not parse is kept.** That is the safe
+      # direction: a Go panic and a stack trace carry no `level=`, and those are
+      # exactly the lines worth having.
+      #
+      # This is the only drop in the pipeline. Every other service keeps every
+      # line, and `traefik` at 19 % is deliberately untouched — it is the only
+      # record of who reached the Colony and with what status, and volume is not
+      # the test.
+      - match:
+          selector: '{service=~"loki|promtail"}'
+          stages:
+            - regex:
+                source: line
+                expression: '^level=(?P<stack_level>\w+)'
+            - labels:
+                level: stack_level
+            - drop:
+                source: stack_level
+                expression: '^(?:debug|info)$'
+                drop_counter_reason: observability_stack_chatter
+
       # 7. Forward the application's line exactly as it was written, with
       # Docker's envelope stripped and nothing reformatted.
       - output:
