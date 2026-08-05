@@ -101,6 +101,11 @@ case "$1 ${2:-}" in
         config)
           if echo "$*" | grep -q -- "--services"; then
             echo -e "api\nverifier-runner\nsupport-triage-runner\nbadge-runner\nwebsite"
+            # The infrastructure services are off by default rather than always
+            # listed, because healthcheck() iterates whatever this answers and
+            # every existing case above asserts against the five application
+            # services. A case that needs one names it (#84).
+            for extra in ${EXTRA_SERVICES:-}; do echo "$extra"; done
             # pgadmin only when its profile is on, because that is the whole
             # property #30's placement turns on: a service inside the active
             # profiles is one healthcheck() will roll the stack back for.
@@ -153,8 +158,29 @@ case "$1 ${2:-}" in
 
       case "$*" in
         *"{{.State.Health.Status}}"*|*"{{.State.Running}}"*|*"{{.RestartCount}}"*) ;;
+        *"{{.State.StartedAt}}"*|*"{{range .Mounts}}"*) ;;
         *) echo "STUB: unknown docker inspect format: $*" >&2; exit 125 ;;
       esac
+
+      # What recreate_stale_mounted_config() asks, and it asks two things (#84).
+      #
+      # MOUNTS_FOR names the one container that reports a bind mount, and
+      # MOUNTS_LIST holds its `source|destination` pairs. Every other container
+      # answers with nothing, which is what a container with only named volumes
+      # answers and is the case the function must not act on.
+      if echo "$*" | grep -qF '{{range .Mounts}}'; then
+        if [ -n "${MOUNTS_FOR:-}" ] && [ "$MOUNTS_FOR" = "$container" ]; then
+          printf '%s\n' ${MOUNTS_LIST:-}
+        fi
+        exit 0
+      fi
+      # STARTED_AT is when every container started. A case sets it either side of
+      # the config file's mtime, which is the whole of what the function decides
+      # on — the file is newer than the process that read it, or it is not.
+      if echo "$*" | grep -qF '{{.State.StartedAt}}'; then
+        echo "${STARTED_AT:-2026-01-01T00:00:00Z}"
+        exit 0
+      fi
 
       if echo "$*" | grep -qF '{{.RestartCount}}'; then
         # CRASHLOOP_SERVICE names a container Docker keeps restarting — the
@@ -1094,6 +1120,56 @@ echo "== 26c. but a container that is genuinely gone still fails"
 seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
 out=$(run_deploy env ABSENT_CONTAINER=kolonie-verifier-runner || true)
 contains "$out" "ERROR: not healthy after 5s" "an absent container still fails an all-deploy"
+
+echo "== 27. a mounted configuration file newer than its container is recreated"
+# #84: compose compares its own definition of a service — image, command,
+# environment, the mounts themselves — and a change *inside* a bind-mounted file
+# is in none of those. So `promtail.yml` lands on the host, `up -d` reports
+# success, and the container keeps running the pipeline it parsed at startup.
+# Reproduced twice on production on 2026-08-05.
+#
+# Fails on main before the fix: nothing recreates anything, and the deploy is
+# green.
+mkdir -p "$WORK/promtail"
+echo "the new pipeline" > "$WORK/promtail/promtail.yml"
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env EXTRA_SERVICES=promtail STARTED_AT=2026-01-01T00:00:00Z \
+        MOUNTS_FOR=kolonie-promtail \
+        MOUNTS_LIST="$WORK/promtail/promtail.yml|/etc/promtail/promtail.yml" || true)
+contains "$out" "is newer than the container" "the staleness is named"
+contains "$out" "read once, at startup" "and why it matters is said"
+contains "$(cat "$WORK/docker.log")" "up -d --force-recreate promtail" "promtail is recreated"
+
+echo "== 27b. a container newer than its configuration is left alone"
+# The other half, and the one that stops this from being a blanket
+# --force-recreate. The issue is explicit that it is not asking for that.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env EXTRA_SERVICES=promtail STARTED_AT=2036-01-01T00:00:00Z \
+        MOUNTS_FOR=kolonie-promtail \
+        MOUNTS_LIST="$WORK/promtail/promtail.yml|/etc/promtail/promtail.yml" || true)
+absent "$(cat "$WORK/docker.log")" "--force-recreate" "nothing is recreated"
+contains "$out" "every container is at least as new" "and the deploy says so rather than staying silent"
+
+echo "== 27c. a bind-mounted directory is never recreated, however new"
+# Traefik's `dynamic/` is the case this protects: Traefik watches those files
+# itself and reloads them, so recreating it would be a restart nobody asked for.
+# The exclusion is by file type rather than by a list of paths, which is what
+# keeps it from going out of step with docker-compose.yml.
+mkdir -p "$WORK/traefik/dynamic"
+echo "routes" > "$WORK/traefik/dynamic/routes.yml"
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env EXTRA_SERVICES=traefik STARTED_AT=2026-01-01T00:00:00Z \
+        MOUNTS_FOR=kolonie-traefik \
+        MOUNTS_LIST="$WORK/traefik/dynamic|/dynamic" || true)
+absent "$(cat "$WORK/docker.log")" "--force-recreate" "a directory is not configuration read once"
+
+echo "== 27d. a service with no bind mounts at all is not asked about"
+# Every application container is this case: named volumes only. The check must
+# be silent for them rather than reporting something it did not measure.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env || true)
+absent "$(cat "$WORK/docker.log")" "--force-recreate" "nothing is recreated on an ordinary deploy"
+contains "$out" "every container is at least as new" "and it is stated once, not per service"
 
 echo
 echo "passed $pass, failed $fail"

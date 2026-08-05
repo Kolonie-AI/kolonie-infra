@@ -694,6 +694,7 @@ seed() {
 # When the flag is withheld, a genuinely removed service leaves a container
 # behind. That is a stale container, which is visible and fixable; the
 # alternative is an outage, which is neither.
+
 deploy() {
     log "Deploying service: $SERVICE"
     cd "$DEPLOY_DIR"
@@ -728,7 +729,105 @@ deploy() {
             exit "$(failure_exit_code)"
         }
     fi
+
+    # Last, and inside deploy() rather than beside it: whatever compose has just
+    # started is current by definition, so this only ever asks about the
+    # containers it left alone (#84).
+    recreate_stale_mounted_config
 }
+
+# The configuration change compose cannot see (#84)
+#
+# Compose recreates a container when *its own definition* changes — image,
+# command, environment, the mounts themselves. A file read *through* a bind mount
+# is not part of that definition, so editing one changes nothing: the new file
+# lands on the host, `up -d` reports success, and the container carries on
+# running the configuration it parsed at startup. Reproduced twice on 2026-08-05,
+# deploying #80 and then the fix in 7a28bac; both times the pipeline took effect
+# only when the container was recreated by hand.
+#
+# **A deploy that reports success and changes nothing is the worst shape of
+# failure this repository has**, and it is the shape #7 had: the run is green,
+# the file on disk is right, and the behaviour is the old one. There is nothing
+# to notice.
+#
+# **The comparison is the file's mtime against the container's StartedAt, and it
+# has to be.** Comparing *contents* is the obvious version and it cannot work: a
+# bind-mounted file inside the container is the same inode as the file on the
+# host, so the two are identical by construction, before and after. What is stale
+# is never the file — it is the process that read it once. So the only question
+# available is whether this container is older than its configuration.
+#
+# **The set of files is read off the containers rather than listed here.** A
+# hand-kept list of "services with mounted configuration" is the copy that goes
+# quietly out of step — the failure #120 is named for — and it would have to be
+# edited by whoever adds the next mounted file, who has no reason to look in this
+# function. `docker inspect` already knows: a bind mount whose source is a
+# regular file is configuration read through a mount, and one whose source is a
+# directory or a socket is not.
+#
+# What that catches today is Promtail's pipeline, Loki's configuration, Traefik's
+# **static** file and pgadmin's server list — but that is an observation, not
+# something this function depends on. Traefik's `dynamic/` directory is excluded
+# by being a directory, which is the right answer for the right reason: Traefik
+# watches those files itself and reloads them, and its static one it does not.
+#
+# **Deliberately after the deploy's own `up -d`.** Whatever compose recreated for
+# its own reasons has just started and therefore cannot be older than its
+# configuration, so it never appears here. Only the containers compose left
+# alone are asked, and a service is recreated at most once per deploy.
+#
+# **What this widens, said plainly rather than discovered later.** Until now a
+# broken `promtail.yml` was a no-op, because the container that would have
+# rejected it was never restarted. It is now a deploy-blocking failure like any
+# other: the recreated container is checked by healthcheck() along with
+# everything else, and an unhealthy one rolls the deploy back. That is the
+# existing contract for every service in the profile view and this change does
+# not carve an exception into it — a configuration that cannot start is a defect,
+# and the whole point of the issue is that such a defect stops being invisible.
+recreate_stale_mounted_config() {
+    cd "$DEPLOY_DIR"
+
+    local services svc container started started_at source dest
+    local stale=()
+
+    services=$(docker compose "${PROFILE_ARGS[@]}" config --services 2>/dev/null || true)
+
+    for svc in $services; do
+        container="kolonie-${svc}"
+
+        # A container that does not exist has nothing to be older than. That is
+        # the normal case for a service being introduced, and for every service
+        # outside this deploy's reach on a host that has never run it.
+        started_at=$(docker inspect --format='{{.State.StartedAt}}' "$container" 2>/dev/null || true)
+        [ -n "$started_at" ] || continue
+        started=$(date -d "$started_at" +%s 2>/dev/null || true)
+        case "${started:-}" in ''|*[!0-9]*) continue ;; esac
+
+        while IFS='|' read -r source dest; do
+            [ -n "$source" ] || continue
+            [ -f "$source" ] || continue
+            [ "$(stat -c %Y "$source" 2>/dev/null || echo 0)" -gt "$started" ] || continue
+            log "$svc: $source is newer than the container, which started at $started_at"
+            log "$svc: it is mounted at $dest and was read once, at startup — so the running configuration is the old one"
+            stale+=("$svc")
+            break
+        done < <(docker inspect --format='{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}|{{.Destination}}{{"\n"}}{{end}}{{end}}' "$container" 2>/dev/null || true)
+    done
+
+    if [ "${#stale[@]}" -eq 0 ]; then
+        log "Mounted configuration: every container is at least as new as the files it reads."
+        return 0
+    fi
+
+    log "Recreating ${stale[*]} — a change inside a bind mount is invisible to compose, so nothing else would."
+    docker compose "${PROFILE_ARGS[@]}" up -d --force-recreate "${stale[@]}" 2>&1 || {
+        log "ERROR: could not recreate ${stale[*]} after a mounted configuration change"
+        rollback
+        exit "$(failure_exit_code)"
+    }
+}
+
 
 # The label through which an application image declares what it cannot start
 # without (#42).

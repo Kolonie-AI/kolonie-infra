@@ -196,6 +196,34 @@ The deploy is serialised at two levels:
 - **`flock`** in `deploy.sh` itself — defence in depth against concurrent SSH
   sessions.
 
+### Configuration read through a bind mount
+
+**Compose cannot see inside a bind mount, and `deploy.sh` compensates for it —
+so adding another mounted configuration file needs nothing from you** (#84).
+
+Compose recreates a container when *its own definition* changes: image, command,
+environment, the mounts themselves. A change *inside* a mounted file is in none
+of those, so the file lands on the host, the deploy reports success, and the
+container carries on running what it parsed at startup. That happened twice on
+2026-08-05 with `promtail/promtail.yml`, and both times the pipeline took effect
+only when the container was recreated by hand.
+
+`recreate_stale_mounted_config()` now runs at the end of every deploy. It asks
+each container for its bind mounts and recreates the service when a mount whose
+source is a **regular file** is newer than the container. Two consequences worth
+knowing:
+
+- **Nothing lists which services those are**, deliberately. `docker inspect`
+  already knows, and a list in this file would be the copy that goes out of step
+  when somebody adds a mount. A bind-mounted **directory** is excluded, which is
+  why Traefik's `dynamic/` is untouched — Traefik watches and reloads those
+  itself — while its static `traefik.yml`, which it does not, is covered.
+- **A configuration that will not start is now a deploy-blocking failure**, where
+  before it was a silent no-op. The recreated container goes through
+  `healthcheck()` like any other, and an unhealthy one rolls the deploy back.
+  That is the existing contract for every service in the profile view; this
+  change does not carve an exception into it.
+
 ### Adding another image
 
 Five files, and the fifth is the one that has no API and no test. The sixth image
