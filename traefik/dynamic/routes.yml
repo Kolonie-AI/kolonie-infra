@@ -8,6 +8,41 @@
 
 http:
   routers:
+    # /health, and only /health, readable from the landing page (#86).
+    #
+    # **First in the file because it is the most specific router here**, and the
+    # only one that matches on a path. All five hostnames answer from the same
+    # `api` service, so this is one router rather than five — and it has to come
+    # ahead of the host routers below, which would otherwise take the request
+    # and answer without the CORS header.
+    #
+    # **The priority is explicit rather than inherited.** Traefik defaults it to
+    # the rule's length, which does put this ahead today, purely because
+    # `&& Path(...)` makes the string longer. That is an accident of spelling:
+    # rewording a rule below could overtake it, and nothing would fail loudly —
+    # the landing page would simply go back to reading as an outage. A number
+    # says what the file means.
+    #
+    # `security-headers` is still here. This router replaces the host routers
+    # for one path, so anything it leaves out is a header that path stops
+    # sending — which is how a fix for a missing header becomes five missing
+    # ones. `rate-limit` is deliberately not: a health endpoint is what you hit
+    # when you are worried, and the abuse case for a fixed 15-byte public body
+    # is not request volume.
+    health:
+      rule: >-
+        (Host(`api.kolonie.ai`) || Host(`academy.kolonie.ai`) || Host(`mcp.kolonie.ai`)
+        || Host(`challenge.kolonie.ai`) || Host(`console.kolonie.ai`)) && Path(`/health`)
+      priority: 1000
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - health-cors
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Public API — also serves the academy endpoints
     api:
       rule: "Host(`api.kolonie.ai`) || Host(`academy.kolonie.ai`)"

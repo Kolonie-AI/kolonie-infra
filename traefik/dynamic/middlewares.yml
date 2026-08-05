@@ -34,6 +34,52 @@ http:
     # somebody later wants plain for one afternoon. `stsSeconds` alone buys
     # nearly all the protection and is reversible by lowering a number. Turning
     # preload on is a new decision with a new issue, not a flag flip.
+    # `/health` becomes readable by the landing page, and by nothing else (#86).
+    #
+    # **The bug this fixes is user-visible and reads as an outage.** kolonie.ai
+    # reads api.kolonie.ai/health in the browser to render its one live line —
+    # is the Colony accepting citizens — and no host sent an
+    # `Access-Control-Allow-Origin`, so `fetch` rejected and the page fell into
+    # its unknown branch: *"The Colony did not answer when this page asked."*
+    # That is the first live signal a stranger gets from this project, and it
+    # was wrong while every endpoint was healthy.
+    #
+    # **Nothing noticed because nothing looked from a browser.** Every check the
+    # Colony runs against /health is a curl or an uptime monitor, and curl does
+    # not enforce CORS. `kolonie-infra#69` monitors this exact endpoint and was
+    # green, correctly — the endpoint was fine.
+    #
+    # ## Why this is its own middleware and its own router
+    #
+    # **Scoped to the path, not to the host.** /health is public,
+    # unauthenticated, and answers a fixed 15-byte body, so letting one origin
+    # read it gives away nothing. Every other route on these hosts is
+    # credentialed, and widening `security-headers` — which is attached to every
+    # router in this file — would have made the whole API cross-origin readable
+    # to fix a landing page. That is why the router in routes.yml carries a
+    # `Path` and this is not a line added above.
+    #
+    # **One origin, and it is the site's own.** Not `*`. The value is a promise
+    # about who may read the answer, and the honest promise here is exactly one
+    # page. `https://www.kolonie.ai` is deliberately absent: the `www` router
+    # redirects to the apex, so a page's origin is always the apex by the time
+    # it runs a fetch.
+    #
+    # `addVaryHeader` is not decoration. Without `Vary: Origin` a cache that saw
+    # the allowed origin's response can serve it, header and all, to a request
+    # from somewhere else — which would quietly turn one origin into any of them.
+    health-cors:
+      headers:
+        accessControlAllowOriginList:
+          - "https://kolonie.ai"
+        # GET and HEAD, because that is what reading a health endpoint is. A
+        # method list is a smaller promise than omitting one.
+        accessControlAllowMethods:
+          - GET
+          - HEAD
+        accessControlMaxAge: 300
+        addVaryHeader: true
+
     security-headers:
       headers:
         stsSeconds: 31536000
