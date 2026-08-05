@@ -119,6 +119,16 @@ containers; `logs.kolonie.ai` is the read API, behind a token.
 - **Labels are `service` and `level` only.** Anything per-request, per-agent or
   per-container belongs inside the JSON line, where `| json` finds it at query
   time and costs no index. Cardinality is how a Loki install dies.
+- **Every service that can fail can say so** (`#80`). Four of them do not write a
+  level of their own, so Promtail derives one: Postgres from its severity, and
+  Traefik, the website and pgAdmin from the status in their Common Log Format
+  lines. A `5xx` is an error; a `4xx` is the client being wrong and is not.
+- **`interactive` is a level, and it is what keeps the watcher honest.** A
+  maintainer typing at a `psql` prompt against production produces `ERROR` lines
+  that are not incidents — every postgres error in the 24 hours to 2026-08-05 was
+  one. Postgres records the connecting client, `log_line_prefix` now carries it,
+  and a line from `psql` or pgAdmin is labelled `interactive` rather than dropped:
+  excluded from the alarms, still there to look up.
 
 ### The split, and it is the thing to read before believing a green Loki
 

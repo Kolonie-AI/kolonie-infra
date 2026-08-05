@@ -121,6 +121,25 @@ services:
     logging: *logging
     networks:
       - kolonie
+    # Who is connected, on every session line (#80).
+    #
+    # The default prefix is `%m [%p] ` — a timestamp and a process id — so an
+    # `ERROR` from the platform and an `ERROR` from a maintainer typing at a
+    # `psql` prompt were the same line to anything reading them. Measured over
+    # 24 hours to 2026-08-05, every one of the 26 postgres errors in the logs was
+    # somebody typing.
+    #
+    # `%q` omits everything after it for a process with no session, so the
+    # checkpointer's lines are unchanged. A session's lines gain
+    # `<user>@<database>/<application name>`, which is what Promtail reads to
+    # tell an incident from a typo — see `promtail/promtail.yml`, stage 5a.
+    #
+    # Logging settings only. Nothing here changes what the server accepts, what
+    # it stores, or how it performs.
+    command:
+      - "postgres"
+      - "-c"
+      - "log_line_prefix=%m [%p] %q%u@%d/%a "
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kolonie}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

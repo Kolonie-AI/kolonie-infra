@@ -1,0 +1,71 @@
+server:
+  http_listen_port: 0
+  grpc_listen_port: 0
+positions:
+  filename: /tmp/positions.yaml
+clients:
+- url: http://localhost:3100/loki/api/v1/push
+scrape_configs:
+- job_name: containers
+  static_configs:
+  - targets:
+    - localhost
+    labels:
+      job: containers
+  pipeline_stages:
+  - json:
+      expressions:
+        line: log
+        attrs: attrs
+        time: time
+  - json:
+      source: attrs
+      expressions:
+        service: '"com.docker.compose.service"'
+  - timestamp:
+      source: time
+      format: RFC3339Nano
+  - json:
+      source: line
+      expressions:
+        level: level
+  - labels:
+      service: null
+      level: null
+  - match:
+      selector: '{service="postgres"}'
+      stages:
+      - regex:
+          source: line
+          expression: '^\S+ \S+ \S+ \[\d+\] (?:(?P<pg_user>[^@\s]+)@(?P<pg_db>[^/\s]+)/(?P<pg_app>\S*)
+            )?(?P<pg_severity>[A-Z]+):'
+      - template:
+          source: level
+          template: '{{- $app := .pg_app | default "" -}} {{- $severity := .pg_severity
+            | default "" -}} {{- if or (eq $app "psql") (hasPrefix "pgAdmin" $app)
+            -}} interactive {{- else if or (eq $severity "ERROR") (eq $severity "FATAL")
+            (eq $severity "PANIC") -}} error {{- else if eq $severity "WARNING" -}}
+            warn {{- else if eq $severity "" -}} {{- else -}} info {{- end -}}'
+      - labels:
+          level: null
+  - match:
+      selector: '{service=~"traefik|website|pgadmin"}'
+      stages:
+      - regex:
+          source: line
+          expression: ^time="[^"]*" level=(?P<edge_level>\w+)
+      - regex:
+          source: line
+          expression: '"[^"]*" (?P<http_status>\d{3}) '
+      - template:
+          source: level
+          template: '{{- $level := .edge_level | default "" -}} {{- $status := .http_status
+            | default "" -}} {{- if ne $level "" -}} {{ $level | lower }} {{- else
+            if eq $status "" -}} {{- else if ge (atoi $status) 500 -}} error {{- else
+            -}} info {{- end -}}'
+      - labels:
+          level: null
+  - labeldrop:
+    - filename
+  - output:
+      source: line
