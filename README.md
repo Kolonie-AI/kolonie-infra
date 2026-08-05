@@ -266,6 +266,51 @@ continuing to ask a third party to report on an erased citizen's address is what
 and `curl` — create, edit, delete, skip, both failure paths, and the assertion
 that no address, key or secret reaches anything it prints.
 
+### Step 10: Umami's database and role
+
+The analytics container (`kolonie-website#43`) gets **its own role and its own
+database**, and neither is created by compose. Run this once, on the host:
+
+```bash
+cd /opt/kolonie
+UMAMI_PW="$(openssl rand -hex 24)"
+
+docker compose exec -T postgres psql -U kolonie -d postgres <<SQL
+CREATE ROLE umami LOGIN PASSWORD '${UMAMI_PW}';
+CREATE DATABASE umami OWNER umami;
+REVOKE CONNECT ON DATABASE kolonie FROM umami;
+SQL
+
+printf 'UMAMI_APP_SECRET=%s\nUMAMI_DB_PASSWORD=%s\n' "$(openssl rand -hex 32)" "$UMAMI_PW" >> .env
+```
+
+**The `REVOKE` is the line worth reading.** Postgres grants `CONNECT` on every
+database to `PUBLIC` by default, so without it the analytics container could open
+a session against `kolonie` — a third party's image, executing in every visitor's
+browser by way of the script it serves, with a route to the citizen tables. That
+is a strange thing to add while improving the site's privacy, and it is one
+statement to prevent.
+
+Umami creates its own schema on first start; there is no migration step here.
+
+Then let a deploy run, or `docker compose --profile analytics up -d umami`.
+`scripts/deploy.sh` adds that profile only when both variables are present, so
+until this step is done the site simply records nothing — `kolonie.ai/analytics.js`
+answers 404 and every page still loads.
+
+**Finally, register the site in the dashboard**, which is not exposed and is
+reached over a tunnel:
+
+```bash
+ssh -N -L 3000:kolonie-umami:3000 <host>   # then open http://localhost:3000
+```
+
+Log in with `admin` / `umami`, **change that password immediately**, and add a
+website with the domain `kolonie.ai`. The id it generates goes into
+`PUBLIC_UMAMI_WEBSITE_ID` in `kolonie-website`'s build — the site sends nothing
+until it has one, and says so in `src/lib/analytics.ts` rather than loading a
+script that would report to nowhere.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)
