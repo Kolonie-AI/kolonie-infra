@@ -278,17 +278,33 @@ UMAMI_PW="$(openssl rand -hex 24)"
 docker compose exec -T postgres psql -U kolonie -d postgres <<SQL
 CREATE ROLE umami LOGIN PASSWORD '${UMAMI_PW}';
 CREATE DATABASE umami OWNER umami;
-REVOKE CONNECT ON DATABASE kolonie FROM umami;
+REVOKE CONNECT ON DATABASE kolonie FROM PUBLIC;
 SQL
 
 printf 'UMAMI_APP_SECRET=%s\nUMAMI_DB_PASSWORD=%s\n' "$(openssl rand -hex 32)" "$UMAMI_PW" >> .env
 ```
 
-**The `REVOKE` is the line worth reading.** Postgres grants `CONNECT` on every
-database to `PUBLIC` by default, so without it the analytics container could open
-a session against `kolonie` — a third party's image, executing in every visitor's
-browser by way of the script it serves, with a route to the citizen tables. That
-is a strange thing to add while improving the site's privacy, and it is one
+**The `REVOKE` is the line worth reading, and `FROM PUBLIC` is the load-bearing
+half of it.** Postgres grants `CONNECT` on every database to `PUBLIC`, so a new
+role has it before anybody grants it anything — and revoking it *from that role*
+does nothing at all, because the privilege was never held by the role. This was
+written as `FROM umami` first and the container could still open a session
+against `kolonie`; it failed only at the table grants, one layer further in, and
+looked from the outside exactly like a database it could not reach.
+
+Revoking from `PUBLIC` is safe here because the owner keeps `CONNECT` explicitly
+— `kolonie=CTc/kolonie` in `datacl` survives, and `kolonie` is the only other
+login role on this host. Check it rather than believe it:
+
+```bash
+docker compose exec -T postgres psql -U kolonie -d postgres \
+  -tAc "select datacl from pg_database where datname='kolonie';"
+# {=T/kolonie,kolonie=CTc/kolonie}   <- =T, not =Tc: PUBLIC has TEMP and not CONNECT
+```
+
+What it prevents is a third party's image — one that executes in every visitor's
+browser by way of the script it serves — holding a route to the citizen tables.
+That is a strange thing to add while improving the site's privacy, and it is one
 statement to prevent.
 
 Umami creates its own schema on first start; there is no migration step here.
