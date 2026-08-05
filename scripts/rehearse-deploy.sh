@@ -115,6 +115,15 @@ case "$1 ${2:-}" in
                  if [ "${FAIL_UP:-}" = 1 ] && [ ! -f "$DOCKER_LOG.upfailed" ]; then
                    touch "$DOCKER_LOG.upfailed"; exit 1
                  fi
+                 # FAIL_UP_NTH fails one specific `up` by ordinal, which is the
+                 # only way to reach the cascade's own deploy: the run's first
+                 # `up` is the deploy this run was asked for and has to succeed,
+                 # or the cascade is never reached at all (#79).
+                 if [ -n "${FAIL_UP_NTH:-}" ]; then
+                   ups=$(( $(cat "$DOCKER_LOG.upcount" 2>/dev/null || echo 0) + 1 ))
+                   echo "$ups" > "$DOCKER_LOG.upcount"
+                   [ "$ups" = "$FAIL_UP_NTH" ] && exit 1
+                 fi
                  exit 0 ;;
       esac
       exit 0 ;;
@@ -496,6 +505,69 @@ check "marker exists after runner rollback" "$([ -f "$WORK/state/needs-redeploy.
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
 out=$(run_deploy env || true)
 contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade was attempted"
+
+echo "== 16b. a failure inside the cascade says which half of the run failed (#79)"
+# The defect: a deploy that failed only in its cascade reported the same red as
+# one that never reached the host. Eleven consecutive runs on 2026-08-05 were
+# successful deploys of everything that had changed, all of them red.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:3333333333333333333333333333333333333333333333333333333333333333
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
+BADGE_IMAGE=ghcr.io/kolonie-ai/kolonie-badge-runner@sha256:$(printf %064d 6)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 3)
+EOF
+cat > "$WORK/state/needs-redeploy.env" <<EOF
+NEEDS_REDEPLOY_SERVICE=badge-runner
+NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-badge-runner:$SHA
+NEEDS_REDEPLOY_ATTEMPTS=1
+EOF
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+# The run's own `up` is the first; the cascade's is the second.
+out=$(run_deploy_service api env API_VERSION="$SHA" FAIL_UP_NTH=2 || true)
+rc=$?
+contains "$out" "Cascade re-deploy: badge-runner was rolled back" "the cascade was attempted"
+contains "$out" "The deploy this run was asked for SUCCEEDED; the cascade did not" "the two halves are told apart"
+contains "$out" "Production is serving this run's build" "the reader is told whether production moved"
+
+echo "== 16c. and it exits with a code that says so"
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+cat > "$WORK/state/needs-redeploy.env" <<EOF
+NEEDS_REDEPLOY_SERVICE=badge-runner
+NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-badge-runner:$SHA
+NEEDS_REDEPLOY_ATTEMPTS=1
+EOF
+run_deploy_service api env API_VERSION="$SHA" FAIL_UP_NTH=2 > /dev/null 2>&1
+check "a cascade failure exits 3, not 1" "$?" "3"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=2" "the attempt was counted"
+
+echo "== 16d. an ordinary deploy failure still exits 1"
+rm -f "$WORK/state/needs-redeploy.env"
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+run_deploy_service api env API_VERSION="$SHA" FAIL_UP=1 > /dev/null 2>&1
+check "a deploy failure is still 1" "$?" "1"
+
+echo "== 16e. the cascade stops retrying the same image at the bound (#79)"
+# The marker pins a tag, so a build that is broken in itself reddens every
+# deploy of every service until somebody intervenes. At the bound the retry
+# stops, the marker is kept so the condition stays queryable, and the run
+# reports what is true: its own deploy is serving.
+cat > "$WORK/state/needs-redeploy.env" <<EOF
+NEEDS_REDEPLOY_SERVICE=badge-runner
+NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-badge-runner:$SHA
+NEEDS_REDEPLOY_ATTEMPTS=3
+EOF
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+out=$(run_deploy_service api env API_VERSION="$SHA")
+check "the run succeeds rather than reddening on somebody else's image" "$?" "0"
+contains "$out" "is stuck, and is not being retried" "the bound is announced"
+contains "$out" "gh workflow run deploy.yml" "the way out is named"
+absent "$out" "Cascade re-deploy: badge-runner was rolled back" "no attempt was made"
+check "the marker is kept, not deleted" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "yes"
+rm -f "$WORK/state/needs-redeploy.env"
 
 echo "== 17. the deploy set is ordered by dependency, and a typo is refused"
 # The policy behind #31's fix: one commit produces one deploy naming several

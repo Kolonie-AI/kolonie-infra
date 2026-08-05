@@ -714,7 +714,7 @@ deploy() {
         docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
-            exit 1
+            exit "$(failure_exit_code)"
         }
     else
     if [ -n "${INFRA_COMMIT:-}" ]; then
@@ -725,7 +725,7 @@ deploy() {
         docker compose "${PROFILE_ARGS[@]}" up -d "${orphan_args[@]+"${orphan_args[@]}"}" "$SERVICE" 2>&1 || {
             log "ERROR: Deployment failed"
             rollback
-            exit 1
+            exit "$(failure_exit_code)"
         }
     fi
 }
@@ -918,6 +918,50 @@ HEALTH_LOG_COLS=${HEALTH_LOG_COLS:-500}
 # Set to 0 to disable and always wait the full timeout.
 EARLY_FAIL_RESTARTS=${EARLY_FAIL_RESTARTS:-3}
 
+# The cascade re-deploy, and how a run says which half of itself failed (#79).
+#
+# **A deploy that failed only in its cascade reports the same red as one that
+# never reached the host**, and the difference is exactly what a maintainer needs
+# in order to decide whether production is serving the new build. On 2026-08-05
+# eleven consecutive runs were red this way: migrations applied, the api healthy,
+# `deployed.env` written — and the run-level conclusion said failure, because the
+# re-deploy of a service a *previous* run had rolled back failed again on the
+# same broken image.
+#
+# So the two are told apart in three places: a distinct exit code, a block that
+# states plainly what did succeed, and a bound on how many times the same image
+# is retried.
+IN_CASCADE=0
+CASCADE_ATTEMPTS=0
+
+# What exit code a failure inside the cascade uses.
+#
+# Non-zero either way — the run did not do everything it set out to do, and
+# #79 is explicit that a non-zero exit is still right. `3` rather than `1` so
+# that the two are distinguishable by something a machine can read, next to the
+# block that makes them distinguishable to a person.
+CASCADE_EXIT_CODE=3
+
+# How many times the same rolled-back image is re-deployed before the cascade
+# gives up on it.
+#
+# **A cascade that has failed on the same image three times will not succeed on
+# the fourth**, and until it stops it makes every unrelated deploy red — which is
+# how eleven good deploys came to look like eleven bad ones. At the bound the
+# marker is kept, so the state stays visible and queryable, and the retry stops:
+# the fix is a new build of that service, which the log names the command for.
+#
+# Set to 0 to retry for ever, which is the behaviour before #79.
+CASCADE_MAX_ATTEMPTS=${CASCADE_MAX_ATTEMPTS:-3}
+
+# The code a failure after a rollback exits with, which says which half failed.
+#
+# Read at the moment of the exit rather than decided in advance, because the
+# same four call sites serve both halves of the run.
+failure_exit_code() {
+    if [ "$IN_CASCADE" = 1 ]; then echo "$CASCADE_EXIT_CODE"; else echo 1; fi
+}
+
 # Quote what the failing containers printed, before rollback() replaces them.
 #
 # From #43, and the 2026-07-31 outage: nineteen deploys reported
@@ -941,6 +985,22 @@ report_failure_logs() {
     local svc container output
 
     log "--- what the failing containers printed (last ${HEALTH_LOG_LINES} lines each) ---"
+
+    # **An empty section and a silent container are different findings** (#79).
+    #
+    # A capture with no service named prints the two markers and nothing between
+    # them, which reads exactly like every container having said nothing — and
+    # sends the reader to the images when the fault is in this script's own
+    # bookkeeping. It cannot happen today: `$failing` and `$pending` are
+    # appended in the same iteration, and the caller only runs when `$pending`
+    # is non-empty. That is an invariant of two loops forty lines apart, which is
+    # the kind that stops holding quietly.
+    if [ "$#" -eq 0 ]; then
+        log "no failing service was named, so nothing was captured."
+        log "That is a fault in the deploy script rather than in any container — the health check decided something was wrong and did not say what."
+        log "--- end of container output ---"
+        return
+    fi
     for svc in "$@"; do
         container="kolonie-${svc}"
 
@@ -1083,7 +1143,7 @@ healthcheck() {
             # shellcheck disable=SC2086  # deliberate word splitting: a service list
             report_failure_logs $failing
             rollback
-            exit 1
+            exit "$(failure_exit_code)"
         fi
 
         if [ "$SECONDS" -ge "$deadline" ]; then
@@ -1091,7 +1151,7 @@ healthcheck() {
             # shellcheck disable=SC2086  # deliberate word splitting: a service list
             report_failure_logs $failing
             rollback
-            exit 1
+            exit "$(failure_exit_code)"
         fi
 
         sleep 5
@@ -1200,11 +1260,35 @@ rollback() {
         website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
         *)                 redeploy_tag="" ;;
     esac
+    # How many times this exact image has now failed to re-deploy (#79).
+    #
+    # Counted per service *and* per tag: a new build of the same service is a
+    # new question and starts at one, because what the bound is about is
+    # retrying an image that has already answered. A rollback outside the
+    # cascade is the first attempt by definition — nothing has been retried yet.
+    local attempts=1
+    if [ "$IN_CASCADE" = 1 ] && [ "${NEEDS_REDEPLOY_TAG:-}" = "$redeploy_tag" ]; then
+        attempts=$((CASCADE_ATTEMPTS + 1))
+    fi
+
     cat > "$STATE_DIR/needs-redeploy.env" <<REDEPLOY
 NEEDS_REDEPLOY_SERVICE=$SERVICE
 NEEDS_REDEPLOY_TAG=$redeploy_tag
+NEEDS_REDEPLOY_ATTEMPTS=$attempts
 REDEPLOY
-    log "Recorded $SERVICE for cascade re-deploy in $STATE_DIR/needs-redeploy.env"
+    log "Recorded $SERVICE for cascade re-deploy in $STATE_DIR/needs-redeploy.env (attempt $attempts)"
+
+    # **Say which half of this run failed, before the exit code is all that is
+    # left** (#79). Inside the cascade, everything this run was *asked* to
+    # deploy is already on the host and healthy; what failed is a retry of
+    # somebody else's earlier rollback. A reader that cannot tell those apart
+    # has to go and inspect the host to find out whether production moved.
+    if [ "$IN_CASCADE" = 1 ]; then
+        log "=== The deploy this run was asked for SUCCEEDED; the cascade did not ==="
+        log "Deployed and healthy: ${ORIG_SERVICE:-unknown} at ${VERSION:-unknown} — migrations applied, deployed.env written."
+        log "Failed: the cascade re-deploy of $SERVICE, which a previous run rolled back. It is not what this commit changed."
+        log "Production is serving this run's build. The cascade is a separate fact and it is $attempts attempt(s) old."
+    fi
 }
 
 # Main
@@ -1275,34 +1359,62 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
     . "$STATE_DIR/needs-redeploy.env"
 
     if [ "${NEEDS_REDEPLOY_SERVICE:-}" != "$SERVICE" ] && [ -n "${NEEDS_REDEPLOY_SERVICE:-}" ]; then
-        log "=== Cascade re-deploy: $NEEDS_REDEPLOY_SERVICE was rolled back by a prior deploy ==="
-        log "Now that this deploy succeeded and migrations are current, re-deploying $NEEDS_REDEPLOY_SERVICE"
+        # A marker written before #79 carries no count; it has been tried at
+        # least once by definition, so it reads as one rather than as zero.
+        CASCADE_ATTEMPTS=${NEEDS_REDEPLOY_ATTEMPTS:-1}
+        case "$CASCADE_ATTEMPTS" in ''|*[!0-9]*) CASCADE_ATTEMPTS=1 ;; esac
 
-        # Clear BEFORE attempting, so a failure here does not cascade infinitely.
-        rm -f "$STATE_DIR/needs-redeploy.env"
+        # **The bound, and why it stops reddening the run** (#79).
+        #
+        # The marker pins a *tag*, not a service: `rollback()` re-writes it on
+        # every failed retry, so no later commit is ever tried and a build that
+        # is broken in itself reddens every deploy of every service until
+        # somebody intervenes. Eleven consecutive runs on 2026-08-05 were that.
+        #
+        # At the bound the retry stops and the marker is kept — the state stays
+        # visible in a file a maintainer can read, and this run reports the
+        # truth, which is that what it was asked to deploy is deployed. The exit
+        # is deliberately zero here: a standing condition somebody has to fix is
+        # not a reason to fail an unrelated deploy for ever. It is loud instead.
+        if [ "$CASCADE_MAX_ATTEMPTS" -gt 0 ] && [ "$CASCADE_ATTEMPTS" -ge "$CASCADE_MAX_ATTEMPTS" ]; then
+            log "WARN: === Cascade re-deploy of $NEEDS_REDEPLOY_SERVICE is stuck, and is not being retried ==="
+            log "WARN: it has failed $CASCADE_ATTEMPTS time(s) on the same image, ${NEEDS_REDEPLOY_TAG:-unknown} — the next attempt would pull the same build and fail the same way."
+            log "WARN: this run's own deploy of $SERVICE succeeded and is serving; the stuck cascade is a separate fact and does not fail it."
+            log "WARN: the fix is a new build of $NEEDS_REDEPLOY_SERVICE, deployed by naming it and a good commit:"
+            log "WARN:   gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=$NEEDS_REDEPLOY_SERVICE -f version=<a good full sha>"
+            log "WARN: that path clears the marker at $STATE_DIR/needs-redeploy.env, which is kept rather than deleted so the condition stays queryable."
+        else
+            log "=== Cascade re-deploy: $NEEDS_REDEPLOY_SERVICE was rolled back by a prior deploy ==="
+            log "Now that this deploy succeeded and migrations are current, re-deploying $NEEDS_REDEPLOY_SERVICE (attempt $((CASCADE_ATTEMPTS + 1)) of $CASCADE_MAX_ATTEMPTS)"
 
-        # Restore the image tag the original deploy intended to ship.
-        ORIG_SERVICE="$SERVICE"
-        SERVICE="$NEEDS_REDEPLOY_SERVICE"
-        case "$SERVICE" in
-            api)               export API_IMAGE="$NEEDS_REDEPLOY_TAG"; API_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-            verifier-runner)   export RUNNER_IMAGE="$NEEDS_REDEPLOY_TAG"; RUNNER_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-            moderation-runner) export MODERATION_IMAGE="$NEEDS_REDEPLOY_TAG"; MODERATION_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-            support-triage-runner) export TRIAGE_IMAGE="$NEEDS_REDEPLOY_TAG"; TRIAGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-            badge-runner)      export BADGE_IMAGE="$NEEDS_REDEPLOY_TAG"; BADGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-            website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
-        esac
+            # Clear BEFORE attempting, so a failure here does not cascade infinitely.
+            rm -f "$STATE_DIR/needs-redeploy.env"
+            IN_CASCADE=1
 
-        detect_profile
-        pull
-        pin
-        # migrate and seed are skipped: the deploy that triggered the cascade
-        # already brought the schema and seed data current.
-        deploy
-        healthcheck
-        record_deployment
-        SERVICE="$ORIG_SERVICE"
-        log "=== Cascade re-deploy of $NEEDS_REDEPLOY_SERVICE completed ==="
+            # Restore the image tag the original deploy intended to ship.
+            ORIG_SERVICE="$SERVICE"
+            SERVICE="$NEEDS_REDEPLOY_SERVICE"
+            case "$SERVICE" in
+                api)               export API_IMAGE="$NEEDS_REDEPLOY_TAG"; API_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                verifier-runner)   export RUNNER_IMAGE="$NEEDS_REDEPLOY_TAG"; RUNNER_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                moderation-runner) export MODERATION_IMAGE="$NEEDS_REDEPLOY_TAG"; MODERATION_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                support-triage-runner) export TRIAGE_IMAGE="$NEEDS_REDEPLOY_TAG"; TRIAGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                badge-runner)      export BADGE_IMAGE="$NEEDS_REDEPLOY_TAG"; BADGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+            esac
+
+            detect_profile
+            pull
+            pin
+            # migrate and seed are skipped: the deploy that triggered the cascade
+            # already brought the schema and seed data current.
+            deploy
+            healthcheck
+            record_deployment
+            SERVICE="$ORIG_SERVICE"
+            IN_CASCADE=0
+            log "=== Cascade re-deploy of $NEEDS_REDEPLOY_SERVICE completed ==="
+        fi
     else
         # The rolled-back service is the one we just deployed — our own deploy
         # succeeded, so the marker is stale.
