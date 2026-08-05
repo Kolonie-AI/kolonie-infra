@@ -308,6 +308,20 @@ services:
       #   - no RPC_URL, and the reconciliation pass reports zeros. The webhook
       #     still credits; what is lost is the recovery of a delivery it missed,
       #     which is the difference between a delay and a loss (#72)
+      # The seal on a waiting operator drop (kolonie-platform#410) — the channel
+      # an operator hands its agent a code or a credential down.
+      #
+      # **`:-` and not `:?`, which is the one way it differs from
+      # `DEPOSIT_SEALING_KEY` four lines up.** That key protects money and the
+      # API refuses to boot without it. This one protects a convenience, and
+      # making it required would have meant that shipping the feature stopped
+      # every existing deployment from starting. Unset, the three drop tools
+      # answer `conflict` and say the Colony has no such channel — the same shape
+      # the SMS adapter uses for absent configuration.
+      #
+      # **Not the same value as DEPOSIT_SEALING_KEY.** One key with two purposes
+      # is one rotation that cannot be done for either of them.
+      OPERATOR_DROP_SEALING_KEY: ${OPERATOR_DROP_SEALING_KEY:-}
       DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
       QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
