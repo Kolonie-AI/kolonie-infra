@@ -1,0 +1,32 @@
+[Unit]
+Description=Keep the Helius webhook watching every deposit address (kolonie-infra#73)
+# It reads the address list out of the database container, so there has to be
+# one. On a boot where Docker is slow to come up this orders the run after it
+# rather than racing it.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# **`RemainAfterExit` is left at its default of `no`, and that is #65.**
+# systemd will not schedule the next elapse of a timer whose triggered unit is
+# still active, so a `yes` here would give a timer that reads healthy on every
+# signal anybody thinks to check and never fires again. That failure cost
+# `kolonie-origin-firewall.timer` three days and was found by hand.
+ExecStart=/opt/kolonie/scripts/helius-webhook.sh
+
+# It reads one file, talks to one container and one API, and writes nothing on
+# this host.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A run that could not reach Helius is not an incident. The webhook that is
+# already configured keeps delivering, a new address is covered by
+# `kolonie-reconcile.timer` within the hour (#72), and the next pass will try
+# again. What must not happen is a unit retrying in a tight loop against an API
+# that is rate-limiting it.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

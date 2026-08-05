@@ -1,0 +1,27 @@
+[Unit]
+Description=Hourly sync of the watched deposit addresses (kolonie-infra#73)
+# Hourly, and the interval is an argument rather than a default.
+#
+# A deposit address is created the first time a sponsor asks where to send, and
+# until Helius is told about it, that sponsor's transfer is credited by the
+# hourly reconciliation instead of in seconds. So the cost of the delay is the
+# difference between *fast* and *within the hour* for one sponsor's first
+# deposit, and never the difference between credited and lost — which is the
+# property #72 exists to hold and the reason this can be a timer rather than a
+# call the API makes when it generates an address.
+#
+# Most runs change nothing and say so: the sync compares the set before it
+# writes.
+
+[Timer]
+OnCalendar=hourly
+# A pass skipped because the host was down still matters: an address generated
+# during an outage would otherwise wait for the next whole hour after boot.
+Persistent=true
+# Every other hourly timer on this box would otherwise fire at :00 together, and
+# `kolonie-reconcile.timer` in particular reads the same database. Ten minutes
+# separates them and is short enough that the hour still means an hour.
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

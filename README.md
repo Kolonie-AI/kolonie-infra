@@ -212,6 +212,60 @@ The journal line is one per pass. `recovered` is the number worth reading: it
 counts deposits the webhook **missed**, so a zero means the webhook is working
 and a number that keeps recurring means it is not.
 
+### Step 9: The Helius webhook
+
+Step 8 is what makes a missed delivery a delay. This is what makes a delivery
+happen at all: `./scripts/helius-webhook.sh` points a Helius enhanced webhook at
+`POST /v1/deposits/webhook` and keeps the watched address list equal to
+`deposit_addresses` (`kolonie-infra#73`).
+
+**It is a sync and not a setup step, and that is the whole design.** There is one
+deposit address per identity, created the first time a sponsor asks where to
+send, so the set grows. A webhook configured once against today's addresses stops
+covering tomorrow's — silently, and the symptom is a sponsor whose transfer is
+not credited promptly.
+
+```bash
+# Say what it would do, change nothing
+./scripts/helius-webhook.sh --dry-run
+
+sudo install -m 644 systemd/kolonie-helius-webhook.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-helius-webhook.timer
+
+sudo systemctl start kolonie-helius-webhook.service
+journalctl -u kolonie-helius-webhook.service -n 20
+
+# As with every timer here: `NEXT` must not be empty (kolonie-infra#66)
+systemctl list-timers kolonie-helius-webhook.timer
+```
+
+**What happens when an address is generated after the webhook was configured**,
+which is the question `kolonie-infra#73` asks to have written down:
+
+| | |
+|---|---|
+| Within the hour | The timer's next pass adds it, and the webhook delivers for it from then on |
+| Before that pass | `kolonie-reconcile.timer` credits the deposit anyway — one RPC read per address, hourly |
+| So the cost of the gap | The difference between *seconds* and *within the hour* for one sponsor's first deposit. Never the difference between credited and lost |
+
+That is why this is a timer rather than a call the API makes when it generates an
+address. The gap is already covered by something that has to exist regardless, so
+adding an outbound Helius call to the address-generation path would buy a few
+minutes at the price of a request that can fail while a sponsor is waiting.
+
+**With no deposit addresses, there is no webhook, and that is correct rather than
+missing.** Helius refuses `accountAddresses: []` outright — `400 {"message":["At
+least one account address is required"]}`, measured 2026-08-05 — so *watch
+nothing* is expressed by there being no webhook. The script says `nothing to
+watch` and exits 0. The last address disappearing deletes it again, because
+continuing to ask a third party to report on an erased citizen's address is what
+`governance/erasure.md` says the Colony stops doing.
+
+`./scripts/rehearse-helius-webhook.sh` runs the whole thing against stub `docker`
+and `curl` — create, edit, delete, skip, both failure paths, and the assertion
+that no address, key or secret reaches anything it prints.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)
@@ -435,8 +489,10 @@ kolonie-infra/
 │   ├── healthcheck.sh              ← Post-deploy health check
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
 │   ├── backup.sh                   ← Daily pg_dump + .env into an off-host restic repository
+│   ├── helius-webhook.sh           ← Keep the Helius webhook watching every deposit address
 │   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
-│   └── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
+│   ├── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
+│   └── rehearse-helius-webhook.sh  ← Run helius-webhook.sh against a stub docker and curl
 │
 ├── docs/
 │   ├── scaling-strategy.md         ← How we scale from VPS to global
@@ -446,7 +502,7 @@ kolonie-infra/
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
-├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation
+├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation, Helius webhook sync
 │
 └── .github/
     └── workflows/
