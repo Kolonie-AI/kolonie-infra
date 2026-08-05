@@ -305,11 +305,22 @@ reached over a tunnel:
 ssh -N -L 3000:kolonie-umami:3000 <host>   # then open http://localhost:3000
 ```
 
-Log in with `admin` / `umami`, **change that password immediately**, and add a
-website with the domain `kolonie.ai`. The id it generates goes into
-`PUBLIC_UMAMI_WEBSITE_ID` in `kolonie-website`'s build — the site sends nothing
-until it has one, and says so in `src/lib/analytics.ts` rather than loading a
-script that would report to nowhere.
+Umami ships with `admin` / `umami` and that pair is in its own documentation, so
+**change it before anything else** — Settings → Profile, or
+`POST /api/me/password`. The working credentials live in
+`/opt/kolonie/secrets/umami-admin.txt`, mode 600, in the same untracked
+directory as Traefik's htpasswd files and for the same reason.
+
+Then add a website with the domain `kolonie.ai`. The id it generates goes into
+the `PUBLIC_UMAMI_WEBSITE_ID` **repository variable** on `kolonie-website` — a
+variable and not a secret, because it is served to every visitor in the tag. The
+site sends nothing until a build has one, and `src/lib/analytics.ts` says so
+rather than loading a script that would report to nowhere.
+
+**The account is not reachable from the internet at any point in this**, which
+is why a default password was survivable long enough to change it. It is still
+the first thing to do: everything else on the `kolonie` network can reach port
+3000.
 
 ## Deployment
 
