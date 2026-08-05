@@ -56,6 +56,13 @@ required_by_compose() {
     grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:\?' "$COMPOSE" | sed 's/\${//; s/:?//' | sort -u
 }
 
+# Variables read bare — ${VAR}, with no `:-` default and no `:?` guard. These are
+# the ones an operator following the template really does get empty, which is what
+# the undocumented section below has always claimed about everything it printed.
+bare_in_compose() {
+    grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$COMPOSE" | tr -d '${}' | sort -u
+}
+
 # Both halves of the template count as documented: an active KEY= line, and a
 # commented #KEY= line, which is how .env.example marks a variable that is
 # genuinely optional because compose carries its production default. Treating a
@@ -95,9 +102,39 @@ echo "compose reads ${COMPOSE_VARS:+$(printf '%s\n' "$COMPOSE_VARS" | wc -l)} va
 echo ".env.example documents $(printf '%s\n' "$DOCUMENTED_VARS" | wc -l)"
 echo
 
+# Three sections rather than one, because the consequence differs and the exit
+# code has to mean something (#87).
+#
+# Until this, every compose variable missing from the template was printed under
+# one heading — "an operator following the template gets an empty value" — and
+# failed the run. That sentence is false for a variable carrying a `:-` default,
+# and the script was failing the build on three of them, one of which
+# docker-compose.yml documents in its own comment as correct to leave unset:
+# *"Unset is a working configuration"*. The exit code stopped carrying
+# information, which this repository has already written down twice: #38 is a
+# rehearsal that had stopped watching, and #59 is four middlewares attached to
+# nothing while the file read as a correct answer.
+#
+# Severity now matches consequence: a deploy that cannot start, then a value that
+# really does arrive empty, then a default nobody wrote down.
 UNDOCUMENTED="$(only_in_first "$COMPOSE_VARS" "$DOCUMENTED_VARS")"
-report "read by a service, missing from .env.example — an operator following the template gets an empty value:" "$UNDOCUMENTED"
-[ -n "$UNDOCUMENTED" ] && FAILED=1
+BARE_VARS="$(bare_in_compose)"
+
+UNDOCUMENTED_REQUIRED="$(only_in_first "$REQUIRED_VARS" "$DOCUMENTED_VARS")"
+report "required by compose (\${VAR:?}), missing from .env.example — an operator following the template cannot start the stack:" "$UNDOCUMENTED_REQUIRED"
+[ -n "$UNDOCUMENTED_REQUIRED" ] && FAILED=1
+
+# Bare and undocumented, minus anything already reported as required above: a
+# variable written both ways is reported as the harder of the two cases.
+UNDOCUMENTED_BARE="$(only_in_first "$(only_in_first "$BARE_VARS" "$DOCUMENTED_VARS")" "$REQUIRED_VARS")"
+report "read bare by a service (\${VAR}), missing from .env.example — an operator following the template gets an empty value:" "$UNDOCUMENTED_BARE"
+[ -n "$UNDOCUMENTED_BARE" ] && FAILED=1
+
+# Everything else undocumented carries a `:-` default, so nothing is empty and
+# nothing fails. Reported, because a default that exists only in
+# docker-compose.yml is a setting nobody rebuilding this host can discover.
+UNDOCUMENTED_DEFAULTED="$(only_in_first "$(only_in_first "$UNDOCUMENTED" "$UNDOCUMENTED_BARE")" "$REQUIRED_VARS")"
+report "has a default nobody wrote down (\${VAR:-…}), missing from .env.example — nothing breaks, and nobody rebuilding this host would know the setting exists:" "$UNDOCUMENTED_DEFAULTED"
 
 if [ -n "$ENV_DIR" ] && [ -f "$ENV_DIR/.env" ]; then
     HOST_VARS="$(defined_on_host "$ENV_DIR/.env")"
