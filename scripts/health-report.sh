@@ -208,6 +208,90 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         printf 'disk\tunknown\t-\t0\t0\t-\n'
     fi
 
+    # The Twilio balance, when there is a Twilio account (#83).
+    #
+    # **Running out fails silently, and that is the whole reason this exists.**
+    # Auto-recharge is deliberately off — an OTP endpoint that sends to a number
+    # the caller chose is the standard target for SMS pumping, and a finite
+    # balance is the only thing between that and the card. The cost of that
+    # choice is that when the balance reaches zero, sending stops, every citizen
+    # on a phone rung stalls, and **nothing looks wrong**: the verifier's own
+    # contract makes a send the Colony cannot make `pending` with the Colony
+    # named as the cause, so no citizen fails and no alarm fires.
+    #
+    # **APPROX_SECONDS carries messages remaining, not dollars and not seconds.**
+    # A dollar figure silently means something different every time the
+    # allowlist changes — $40 is four hundred messages to the US and three
+    # hundred and fifty to Germany — so the number that reaches the triage is
+    # already denominated in the thing that runs out. Same borrowed column the
+    # `disk` row above uses, and confined to these two files for the same reason.
+    #
+    # **Absent configuration means no row at all.** A Colony with no Twilio
+    # account is not unhealthy, and a row saying `unknown` on every workstation
+    # run is how a watcher gets ignored.
+    #
+    # **The values come out of `.env`, because nothing else puts them in this
+    # shell.** `health-watch.yml` runs this over SSH as `cd $DEPLOY_DIR &&
+    # ./scripts/health-report.sh`; the `TWILIO_*` variables live in
+    # `$DEPLOY_DIR/.env`, which Compose reads and a login shell does not. A
+    # version of this check that only read the environment would have been
+    # correct in the rehearsal and silent in production, for ever — which is the
+    # exact shape of failure `#84` and `#85` are both about.
+    #
+    # Read key by key rather than sourced. `.env` is a file `set -a; . ./.env`
+    # would execute, and this script runs on the host that holds the database
+    # password.
+    if [ -r "$DEPLOY_DIR/.env" ]; then
+        for var in TWILIO_ACCOUNT_SID TWILIO_API_KEY_SID TWILIO_API_KEY_SECRET \
+            SMS_DEAREST_DESTINATION_CENTS; do
+            # Only when the environment did not already carry it, so the
+            # rehearsal and a manual run can override without editing anything.
+            [ -n "${!var:-}" ] && continue
+            value=$(sed -n "s/^${var}=//p" "$DEPLOY_DIR/.env" | tail -1 | tr -d '"'"'"'\r')
+            [ -n "$value" ] && printf -v "$var" '%s' "$value"
+        done
+    fi
+
+    if [ -n "${TWILIO_ACCOUNT_SID:-}" ] && [ -n "${TWILIO_API_KEY_SID:-}" ] &&
+        [ -n "${TWILIO_API_KEY_SECRET:-}" ]; then
+        # The base is a variable so the rehearsal can point it at a stub. It is
+        # not configuration anybody sets on the host, and it is not in
+        # `.env.example` for that reason.
+        twilio_base="${TWILIO_API_BASE:-https://api.twilio.com}"
+
+        # `--fail` so a 401 is a failure rather than an error document parsed as
+        # a balance. `-u` puts the key in the request and not in the output;
+        # nothing below ever prints the response.
+        balance_json=$(curl -sS --fail --max-time 10 \
+            -u "${TWILIO_API_KEY_SID}:${TWILIO_API_KEY_SECRET}" \
+            "${twilio_base}/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Balance.json" 2>/dev/null || echo "")
+
+        # The most expensive destination the allowlist admits, in cents, so the
+        # arithmetic below is integer. Measured against this account on
+        # 2026-08-05: DE $0.112 · AT $0.0979 · CH $0.0769 · GB $0.056 · US
+        # $0.0083. Configurable because the allowlist is, and defaulted to
+        # Germany because Germany is the most expensive of the five.
+        dearest_cents="${SMS_DEAREST_DESTINATION_CENTS:-12}"
+
+        balance=$(printf '%s' "$balance_json" |
+            sed -n 's/.*"balance"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9.-]*\).*/\1/p')
+
+        if [ -z "$balance" ]; then
+            # **`unknown`, never `low`.** A network blip, a 500 at the vendor or
+            # an expired key all land here, and an alarm that fires on any of
+            # them is an alarm somebody turns off — after which the real one is
+            # not heard either.
+            printf 'sms\tunknown\t-\t0\t0\t-\n'
+        else
+            # Truncating integer division, in cents, so a balance of $0.11 with
+            # a $0.112 message reports zero remaining rather than one.
+            balance_cents=$(printf '%s' "$balance" | awk '{printf "%d", $1 * 100}')
+            remaining=$((balance_cents / dearest_cents))
+            [ "$remaining" -lt 0 ] && remaining=0
+            printf 'sms\tok\t-\t0\t%s\t-\n' "$remaining"
+        fi
+    fi
+
     # One row per timer (#66). Both of the Colony's timers maintain something
     # whose absence is invisible for a while and expensive later — a backup
     # nobody took, an allowlist nobody refreshed — which is the same instinct as

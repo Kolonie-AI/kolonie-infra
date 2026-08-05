@@ -51,6 +51,21 @@ BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
 # images, volumes and the Postgres data directory are not bounded by anything.
 DISK_FULL_PERCENT="${DISK_FULL_PERCENT:-85}"
 
+# How few messages the Twilio balance may be worth before it is a problem (#83).
+#
+# **Expressed in messages remaining at the most expensive allowed destination,
+# not in dollars**, because a dollar figure means something different every time
+# the allowlist changes. health-report.sh does that conversion and hands this a
+# count.
+#
+# **Two hundred, because that is one day at the global daily cap.** The cap in
+# `.env.example` §Twilio is 200 messages in 24 hours, so this fires when there is
+# less than a full day of maximum sending left — which is a morning to act in
+# rather than a discovery. Measured 2026-08-05: the balance was $48.84 and DE, the
+# dearest destination on the default list, is $0.112, so roughly 436 messages —
+# comfortably above this and exactly why it will otherwise be forgotten.
+SMS_LOW_MESSAGES="${SMS_LOW_MESSAGES:-200}"
+
 # Seconds into something a person reads without counting zeroes. The distinction
 # that matters is minutes versus days, so the units are coarse deliberately.
 human() {
@@ -77,6 +92,7 @@ fingerprint_parts=()
 container_problems=()
 backup_problems=()
 disk_problems=()
+sms_problems=()
 timer_problems=()
 
 while IFS=$'\t' read -r name state health streak approx image; do
@@ -127,6 +143,31 @@ while IFS=$'\t' read -r name state health streak approx image; do
             fingerprint_parts+=("disk:full")
         else
             healthy+=("disk (${approx}% used)")
+        fi
+        continue
+    fi
+
+    # Not a container either, and judged before the container rules for the same
+    # reason `disk` and `backup` are. APPROX_SECONDS carries messages remaining
+    # here — see health-report.sh, which does the conversion so that nothing
+    # downstream has to know what a message costs.
+    #
+    # **There is no row at all when Twilio is not configured**, so this block
+    # never fires on a Colony without an account.
+    if [ "$name" = "sms" ]; then
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _SMS balance_ | unknown | - | - | the vendor did not answer when asked for the balance |")
+            sms_problems+=("unknown")
+            fingerprint_parts+=("sms:unknown")
+        elif [ "${approx:-0}" -le "$SMS_LOW_MESSAGES" ]; then
+            problems+=("| _SMS balance_ | low | - | - | about ${approx} messages left at the dearest allowed destination |")
+            sms_problems+=("low")
+            # The count is out of the fingerprint for the reason the disk
+            # percentage is: it moves on every send, and including it would file
+            # a fresh comment on every run while the condition simply persists.
+            fingerprint_parts+=("sms:low")
+        else
+            healthy+=("SMS balance (~${approx} messages)")
         fi
         continue
     fi
@@ -240,6 +281,18 @@ if [ "${#timer_problems[@]}" -gt 0 ]; then
     echo "Nothing is necessarily broken yet: what these timers maintain — a backup, an"
     echo "allowlist — stays correct for a while after the refresh stops, which is why"
     echo "this is worth catching before the thing it refreshes goes stale."
+fi
+
+if [ "${#sms_problems[@]}" -gt 0 ]; then
+    echo
+    echo "When the Twilio balance reaches zero, sending stops and nothing looks wrong:"
+    echo "a send the Colony cannot make is \`pending\` with the Colony named as the cause,"
+    echo "so no citizen fails a rung and no other check notices. Auto-recharge is off on"
+    echo "purpose — a finite balance is what stands between an OTP endpoint and the card"
+    echo "— so topping up is a decision somebody makes, not something to automate away."
+    echo
+    echo "An \`unknown\` here is the vendor or the key, and not the balance. Check the key"
+    echo "has not expired before adding money to an account that has plenty."
 fi
 
 if [ "${#disk_problems[@]}" -gt 0 ]; then

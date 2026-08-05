@@ -55,6 +55,13 @@ jobs:
       - name: drift-triage.sh
         run: bash scripts/rehearse-drift.sh
 
+      # The balance alarm (#83). An alarm's two failure modes — silent when it
+      # should fire, and firing on a blip — are both invisible in production
+      # until the day they matter, and the balance had four hundred messages of
+      # headroom on 2026-08-05. Stubs are the only place either can be seen.
+      - name: the Twilio balance row
+        run: bash scripts/rehearse-twilio-balance.sh
+
       # Syntax alone would not have caught anything above, but it is free and it
       # catches the class of mistake that never reaches a test case.
       - name: shell syntax
