@@ -313,6 +313,33 @@ services:
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}
       RPC_URL: ${RPC_URL:-}
+      # Twilio, for the SMS rungs (#82, kolonie-platform#409).
+      #
+      # **Sending belongs here** — a citizen asks for a code and one goes out on
+      # that request — and **polling for inbound belongs to the verifier runner**,
+      # where every other verifier that reaches outside already lives. Both need
+      # the credentials and only one needs to be able to send. That asymmetry is
+      # worth keeping if Twilio ever offers a send-only key; today its key is one
+      # key, so both get the same one and this paragraph is why that is not an
+      # oversight.
+      #
+      # **Not `:?`, deliberately, and this is the whole of the decision.** A
+      # Colony without SMS configured must still deploy: the adapter's contract
+      # is that absent configuration means the rung is unavailable, not that the
+      # process dies. `#7` is what `:?` on an unset variable costs.
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID:-}
+      TWILIO_API_KEY_SECRET: ${TWILIO_API_KEY_SECRET:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      # The spend ceiling, which has to come from our side because Twilio has no
+      # true prepaid mode. Unset means the defaults compiled into the adapter —
+      # DE, AT, CH, GB, US · five per citizen per day · two hundred in total —
+      # and those are documented in `.env.example` §Twilio beside the prices they
+      # were chosen against. Here so that raising one is an `.env` edit rather
+      # than a release.
+      SMS_ALLOWED_DESTINATIONS: ${SMS_ALLOWED_DESTINATIONS:-}
+      SMS_MAX_PER_CITIZEN: ${SMS_MAX_PER_CITIZEN:-}
+      SMS_MAX_PER_DAY: ${SMS_MAX_PER_DAY:-}
       PORT: 3000
     depends_on:
       postgres:
@@ -410,6 +437,21 @@ services:
       # line up, and deliberately so — there the door must not close, here money
       # may depend on the verdict.
       QUEST_JUDGE_MODEL: ${QUEST_JUDGE_MODEL:-}
+      # Twilio, the reading half (#82, kolonie-platform#409).
+      #
+      # The runner polls for inbound messages, which is where every verifier that
+      # reaches outside already lives — and it is the same one key the API gets,
+      # for the reason spelled out on that service. **It never sends**, so this
+      # service having a key that could is the asymmetry named there and not an
+      # accident.
+      #
+      # No `:?` here either. A runner with no Twilio configuration parks the two
+      # phone rungs and runs every other verifier normally, which is the same
+      # shape `SOLANA_RPC_URL` and the model variables above have.
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID:-}
+      TWILIO_API_KEY_SECRET: ${TWILIO_API_KEY_SECRET:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       POLL_INTERVAL_MS: ${VERIFIER_POLL_INTERVAL_MS:-5000}
     depends_on:
       postgres:
