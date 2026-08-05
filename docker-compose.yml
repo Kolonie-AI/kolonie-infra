@@ -567,7 +567,31 @@ services:
       # triage verdict the way a citizen waits on a moderation one — and a longer
       # tick means two reports of the same thing usually land in one pass and
       # produce one issue rather than two.
+      #
+      # It is also the log detector's tick (`kolonie-platform#407`), which is why
+      # the target there is *within half an hour* rather than *within minutes*.
       POLL_INTERVAL_MS: ${TRIAGE_POLL_INTERVAL_MS:-1800000}
+      # The Colony's own errors, as a second source into the same machinery
+      # (`kolonie-platform#407`).
+      #
+      # **The credential the Watch Agent already reads with**, not a new one:
+      # `#407` is explicit that minting a second where a fitting one exists is
+      # the wrong trade, and `ARCHITECTURE.md` is deliberately strict about
+      # stored credentials. It is the same `LOKI_WATCH_TOKEN` behind
+      # `logs.kolonie.ai` (`#68`).
+      #
+      # **The internal name, not the public host.** Loki sits beside this
+      # container; going out through Traefik would be asking the public edge for
+      # a service on the same network — and it is what lets the basicAuth token
+      # stay unnecessary on this path, which is why the user defaults to the
+      # same `watch` and the token may be empty in a deployment that has not set
+      # one up.
+      #
+      # Unset is a working configuration: the runner then triages tickets and
+      # notices nothing in the logs, which is the state before `#407` existed.
+      LOKI_URL: ${LOKI_INTERNAL_URL:-http://loki:3100}
+      LOKI_USER: ${LOKI_USER:-watch}
+      LOKI_TOKEN: ${LOKI_WATCH_TOKEN:-}
     # **Runs as the user that owns the key, and the numbers are measured.**
     #
     # The image ships `USER node`, which is uid 1000 inside it. The App key is
