@@ -267,8 +267,27 @@ second — the edge change and a deploy cannot land in the same instant, and the
 fallback is also what makes this revertible without a deploy behind it.
 
 **`cf-ipcountry` is unaffected**, because it is part of Cloudflare's default set
-rather than of the managed transform. Verified at the origin after the change,
-with the same capture recipe as above.
+rather than of the managed transform. That was the one real risk in this change
+and it was checked rather than assumed — `humans.ts` derives the session's coarse
+location from it.
+
+**Observed at the origin, 2026-08-06, after the change**, with the capture recipe
+above. The whole geography- and network-related set a proxied request now
+carries:
+
+```
+Cf-Ipcountry
+X-Kolonie-Asn
+X-Kolonie-Timezone
+```
+
+Gone: `cf-ipcity`, `cf-ipcontinent`, `cf-iplatitude`, `cf-iplongitude`,
+`cf-postal-code`, `cf-region`, `cf-region-code`, `cf-timezone`.
+
+**The rule took minutes, not seconds.** The first capture, taken immediately
+after the `PATCH`, still showed all nine — which is what the *Cloudflare rule
+changes are not immediate* warning above is for. Four minutes later it was
+clean.
 
 ### Turning it off
 
