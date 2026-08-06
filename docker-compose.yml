@@ -327,6 +327,18 @@ services:
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}
       RPC_URL: ${RPC_URL:-}
+      # Signing in as a *person* (kolonie-platform#425): an Auth0 tenant, and
+      # the console application registered inside it.
+      #
+      # **Not `:?`, for the reason the block below gives.** A Colony with no
+      # tenant configured must still deploy: the console then offers the mail
+      # link alone, which is what it offered before #425 existed. The API refuses
+      # to render a provider button whose redirect has nowhere to go, so a
+      # half-configured deployment shows a stranger nothing rather than showing
+      # them somebody else's error page.
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN:-}
+      AUTH0_CONSOLE_CLIENT_ID: ${AUTH0_CONSOLE_CLIENT_ID:-}
+      AUTH0_CONSOLE_CLIENT_SECRET: ${AUTH0_CONSOLE_CLIENT_SECRET:-}
       # Twilio, for the SMS rungs (#82, kolonie-platform#409).
       #
       # **Sending belongs here** — a citizen asks for a code and one goes out on
