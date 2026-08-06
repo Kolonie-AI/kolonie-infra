@@ -257,6 +257,18 @@ services:
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
       CLOUDFLARE_EMAIL_SEND_TOKEN: ${CLOUDFLARE_EMAIL_SEND_TOKEN:-}
       ACADEMY_SENDER_ADDRESS: ${ACADEMY_SENDER_ADDRESS:-}
+      # Who console mail comes from, separately from the Academy's challenge host
+      # (kolonie-platform#398, #405). Optional and falling back to the line above,
+      # which is deliberate: console mail failing entirely because the console has
+      # no address of its own would be worse than the defect it fixes.
+      #
+      # **Listed here for the reason the rhythm bounds below are listed here.**
+      # This service has no `env_file`, so until this line existed the variable
+      # was invisible to the container however carefully it was set in `.env` —
+      # and the symptom would have been the worst kind: `.env` says the console
+      # has its own sender, mail keeps arriving from the Academy's challenge
+      # host, and nothing anywhere reports a problem.
+      CONSOLE_SENDER_ADDRESS: ${CONSOLE_SENDER_ADDRESS:-}
       # The wake-up rhythm bounds (#61, kolonie-platform#142). Optional: absent
       # means the default compiled into the API — 6 / 12 / 24 hours — and a
       # deployment that sets none of the three is not diminished, which is why
