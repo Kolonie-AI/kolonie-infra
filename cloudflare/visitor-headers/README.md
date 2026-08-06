@@ -13,8 +13,8 @@ or restored (`kolonie-infra#63`).
 
 | | What it adds |
 |---|---|
-| `Add visitor location headers` managed transform | `cf-ipcity`, `cf-ipcontinent`, `cf-iplatitude`, `cf-iplongitude`, `cf-postal-code`, `cf-region`, `cf-region-code`, `cf-timezone` |
-| `asn-header.json` — a request-header transform rule | `x-kolonie-asn`, from the dynamic expression `ip.src.asnum` |
+| ~~`Add visitor location headers` managed transform~~ | **Off since 2026-08-06.** It sent `cf-ipcity`, `cf-ipcontinent`, `cf-iplatitude`, `cf-iplongitude`, `cf-postal-code`, `cf-region`, `cf-region-code` and `cf-timezone` — nine fields for the one the Colony reads. See *Why the managed transform was turned off* below |
+| `asn-header.json` — two request-header transform rules | `x-kolonie-asn` from `ip.src.asnum`, and `x-kolonie-timezone` from `ip.src.timezone.name` |
 
 **Two of those names are not what Cloudflare's own list says**, measured at the
 origin on 2026-08-02 rather than copied from the documentation:
@@ -228,3 +228,65 @@ Note that a location this precise is now on every request. That is a fact for
 whatever stores it (`kolonie-platform#191`) to decide about — lat/long and postal
 code are not the same class of data as a country, and the Colony choosing to
 receive them is not the same as choosing to keep them.
+
+## Why the managed transform was turned off — 2026-08-06 (`kolonie-docs#188`)
+
+**The paragraph directly above was the finding, and this is what was done about
+it.** `governance/privacy.md` §3 describes what the Colony *holds* about a
+signed-in person as *"a coarse location"*, and that was accurate: the code reads
+`cf-ipcountry` in `humans.ts` and `cf-timezone` in `console/time.ts`, and stores
+the first. The other eight fields were arriving for nothing.
+
+**Arriving is one line of YAML from being kept.** Traefik's access log is Common
+Log Format and carries no `cf-*` header — checked against the running container
+on 2026-08-06 — but Promtail scrapes every container's stdout into Loki, so
+`accessLog.fields.headers` is the whole distance between *reaches the origin* and
+*retained for as long as Loki keeps anything*. That is a defect waiting for
+somebody who is debugging something else at the time.
+
+**The managed transform cannot be narrowed — it is one switch.** So it is off,
+and a second rule in `asn-header.json` sets the one field that was worth having.
+Three expressions were validated against the API before choosing:
+
+| Expression | Accepted in a transform rule |
+|---|---|
+| `ip.src.timezone.name` | yes |
+| `ip.src.postal_code` | yes |
+| `ip.src.city` | yes |
+
+So the narrowing was available and only the *naming* was not:
+
+```
+'set' is not a valid value for operation because it cannot be used
+on header beginning with 'cf-'
+```
+
+**Hence `x-kolonie-timezone` rather than keeping `cf-timezone`.**
+`kolonie-platform`'s `console/time.ts` reads the new name first and the old one
+second — the edge change and a deploy cannot land in the same instant, and the
+fallback is also what makes this revertible without a deploy behind it.
+
+**`cf-ipcountry` is unaffected**, because it is part of Cloudflare's default set
+rather than of the managed transform. Verified at the origin after the change,
+with the same capture recipe as above.
+
+### Turning it off
+
+```bash
+curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/managed_headers" \
+  -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
+  --data '{"managed_request_headers":[{"id":"add_visitor_location_headers","enabled":false}],"managed_response_headers":[]}'
+```
+
+### Applying the timezone rule
+
+The entrypoint already exists, so it is a `PUT` of the whole file's `rules` —
+which is what the *If a `http_request_late_transform` entrypoint already exists*
+note above describes, and it is now the ordinary case rather than the exception.
+
+**Do not probe this endpoint with a `POST` that creates something.** A `POST` of
+a new zone ruleset now answers `20217 exceeded maximum number of zone rulesets
+for phase http_request_late_transform`, which looks like a permission problem and
+is not. To test whether an *expression* is accepted, append a rule with
+`"enabled": false` to the existing ruleset and delete it again — that is how the
+three rows above were measured.
