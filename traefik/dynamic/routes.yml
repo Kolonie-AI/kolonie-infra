@@ -122,47 +122,6 @@ http:
       tls:
         certResolver: cloudflare
 
-    # Analytics, first-party on the site's own hostname (kolonie-website#43).
-    #
-    # Two paths on `kolonie.ai` and nothing else: the tracker script the page
-    # loads, and the endpoint it reports to. Both are served by the umami
-    # container; every other path on this host stays with the website below.
-    #
-    # **First-party is the whole design, and it is not about ad blockers.** A
-    # tracker on a hostname of its own is a third-party origin in the page's
-    # connection list, needs a DNS record, needs a second certificate, and is
-    # one more name in the disclosure `#42` has to write. Two paths on the
-    # hostname the reader is already on need none of those.
-    #
-    # `TRACKER_SCRIPT_NAME` and `COLLECT_API_ENDPOINT` in docker-compose.yml
-    # make Umami answer on exactly these two paths; the compose comment explains
-    # why they carry honest names rather than the disguised ones those variables
-    # exist for upstream.
-    #
-    # **`priority` is explicit, and this is the load-bearing line in the block.**
-    # Traefik breaks a tie by rule length, so this would already win against
-    # `Host(kolonie.ai)` — by an accident of how these two rules happen to be
-    # spelled. A router deciding which container serves a request is not
-    # something to leave resting on a character count that a later edit can
-    # change without anybody thinking about it.
-    #
-    # There is no auth here and there must not be: these two paths are called by
-    # every visitor's browser. Umami's dashboard is not exposed at all — it has
-    # no router, on purpose, and the reasoning is in docker-compose.yml.
-    umami-tracker:
-      rule: "Host(`kolonie.ai`) && (Path(`/analytics.js`) || Path(`/analytics/send`))"
-      priority: 100
-      entryPoints:
-        - websecure
-      # No rate-limit, for the website's reason: this is what an ordinary page
-      # load does, once. A limit here would drop the measurement it is meant to
-      # protect, and the endpoint writes one row of browser-family and country.
-      middlewares:
-        - security-headers
-      service: umami
-      tls:
-        certResolver: cloudflare
-
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"
@@ -346,10 +305,3 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-loki:3100"
-
-    # Only the two tracker paths above reach this. The dashboard on the same
-    # port has no router by design — see docker-compose.yml.
-    umami:
-      loadBalancer:
-        servers:
-          - url: "http://kolonie-umami:3000"

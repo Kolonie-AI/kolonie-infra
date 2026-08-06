@@ -313,32 +313,6 @@ detect_profile() {
     else
         log "PGADMIN_PASSWORD is not set on this host — skipping --profile admin (db.kolonie.ai stays down)"
     fi
-
-    # Umami (kolonie-website#43), gated on the host's .env for pgAdmin's reason
-    # and with one addition that matters more here.
-    #
-    # The image is always pullable and the container refuses to start without
-    # APP_SECRET and a reachable DATABASE_URL — the crash-loop that healthcheck()
-    # reads as three restarts and answers by rolling the entire stack back. That
-    # is #7 and #93's shape again, and the gate is the same answer.
-    #
-    # **What is different is that the database is not created by compose.** A
-    # host can have the variables and still not have the `umami` role, because
-    # that is README.md step 10 and a person runs it once. Both are therefore
-    # required to be present before the profile is added, and the two names are
-    # checked separately so the log says which one is missing — the failure this
-    # replaces would otherwise read as "analytics is off" with no way to tell
-    # whether that was a decision or an omission.
-    #
-    # **A name, never a value**, as above: this log is public.
-    if grep -qE '^UMAMI_APP_SECRET=.' "$DEPLOY_DIR/.env" 2>/dev/null && \
-       grep -qE '^UMAMI_DB_PASSWORD=.' "$DEPLOY_DIR/.env" 2>/dev/null; then
-        PROFILE_ARGS+=(--profile analytics)
-        log "UMAMI_APP_SECRET and UMAMI_DB_PASSWORD are set on this host — including --profile analytics"
-    else
-        log "UMAMI_APP_SECRET or UMAMI_DB_PASSWORD is not set on this host — skipping --profile analytics"
-        log "NOTE: kolonie.ai/analytics.js will answer 404 and the site will record nothing. See README.md step 10."
-    fi
 }
 
 # Snapshot the current state, for reading afterwards.
