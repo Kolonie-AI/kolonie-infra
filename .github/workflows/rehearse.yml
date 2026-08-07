@@ -73,6 +73,22 @@ jobs:
       - name: the Twilio balance row
         run: bash scripts/rehearse-twilio-balance.sh
 
+      # The Helius webhook sync (#73). **This rehearsal existed and ran
+      # nowhere** — written with the script, never added here, and green in all
+      # 48 assertions on 2026-08-07 when it was first run by anything other than
+      # a person. That is #38 again, and it is the reason this workflow exists,
+      # so it is listed rather than noted.
+      - name: helius-webhook.sh
+        run: bash scripts/rehearse-helius-webhook.sh
+
+      # The image prune (#91). It is the only script here that *deletes* on the
+      # deploy host, so what the stubs are for is the half a live run cannot
+      # show: on a healthy host the rollback target is also the running image
+      # and every protection covers it at once. The fixtures pull them apart and
+      # assert the recorded digest survives a margin it falls outside of.
+      - name: image-prune.sh
+        run: bash scripts/rehearse-image-prune.sh
+
       # Syntax alone would not have caught anything above, but it is free and it
       # catches the class of mistake that never reaches a test case.
       - name: shell syntax

@@ -1,0 +1,35 @@
+[Unit]
+Description=Remove application images no longer worth keeping (kolonie-infra#91)
+# It talks to the Docker daemon and to nothing else, so it has to wait for one.
+# On a boot where Docker is slow to come up this orders the run after it rather
+# than racing it.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# **`RemainAfterExit` is left at its default of `no`, and that is #65.**
+# systemd will not schedule the next elapse of a timer whose triggered unit is
+# still active, so a `yes` here would give a timer that reads healthy on every
+# signal anybody thinks to check and never fires again. That failure cost
+# `kolonie-origin-firewall.timer` three days and was found by hand.
+ExecStart=/opt/kolonie/scripts/image-prune.sh
+
+# The margin is deliberately larger than the number of builds a busy day
+# produces between two runs, so a weekly prune never has to reason about how
+# many deploys happened since the last one.
+Environment=KEEP_BUILDS=5
+
+# It reads /opt/kolonie/state and the Docker socket, and writes nothing on this
+# host outside the image store.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A prune that could not run is not an incident on the day it happens — the
+# partition fills over weeks, not hours, and the next pass will try again. What
+# must not happen is a unit retrying in a tight loop against a daemon that is
+# already struggling for space.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

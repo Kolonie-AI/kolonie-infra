@@ -266,6 +266,60 @@ continuing to ask a third party to report on an erased citizen's address is what
 and `curl` — create, edit, delete, skip, both failure paths, and the assertion
 that no address, key or secret reaches anything it prints.
 
+### Step 10: The image prune
+
+Every build leaves a tagged image on this host and until `kolonie-infra#91`
+nothing removed one. Measured on 2026-08-07, when the partition reached **85 % of
+96 GB**: 1509 images, 82.6 GB, **58.24 GB of it reclaimable** — 398 builds of
+`kolonie-api` alone, at roughly 373 MB each.
+
+**The endpoint of that curve is every container stopping at once**, for a reason
+none of their logs can record because there is nowhere left to record it.
+Container logs are capped in `docker-compose.yml` (#37); the image store was not.
+
+```bash
+# Say what it would remove, remove nothing
+./scripts/image-prune.sh --dry-run
+
+sudo install -m 644 systemd/kolonie-image-prune.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-image-prune.timer
+
+sudo systemctl start kolonie-image-prune.service
+journalctl -u kolonie-image-prune.service -n 30
+
+# As with every timer here: `NEXT` must not be empty (kolonie-infra#66)
+systemctl list-timers kolonie-image-prune.timer
+```
+
+**Why not `docker system prune -a`**, which is what the issue's own diagnosis
+suggested and what an operator reaches for: it removes every image no *container*
+references, and the rollback target usually is not one. `rollback.sh` returns to
+the digests in `state/deployed.env` and to nothing else (#12), while a
+single-service deploy rewrites only its own line and carries the other five over
+— so that file legitimately names builds that are not up. Pruning by container
+reference alone deletes precisely the image a rollback needs.
+
+So three sets are protected, computed rather than inferred:
+
+| | |
+|---|---|
+| Every image an existing container references | running **or stopped** — a stopped container's image vanishing turns a restart into a pull |
+| Every digest in `state/deployed.env`, and in `state/needs-redeploy.env` when the cascade marker exists (#79) | the recovery inputs, protected by name rather than by luck |
+| The newest `KEEP_BUILDS` of each application repository, default 5 | the margin, for a rollback to something older than the last record |
+
+Third-party images are never touched. `postgres:16-alpine` and `traefik:v3.7` are
+pinned by tag rather than digest, so deleting one and pulling it back is not
+guaranteed to return the same bytes — and eleven images against fifteen hundred
+is not where the disk went.
+
+`./scripts/rehearse-image-prune.sh` runs it against a stub daemon. What the stubs
+are for is the half a live run cannot show: on a healthy host the rollback target
+is also the running image, so every protection covers it at once and a script
+with none of them would still pass. The fixtures pull the cases apart — the
+recorded digest is made the *oldest* build there is, held by no container, and
+asserted to survive.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)
@@ -539,7 +593,7 @@ kolonie-infra/
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
-├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation, Helius webhook sync
+├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation, Helius webhook sync, image prune
 │
 └── .github/
     └── workflows/

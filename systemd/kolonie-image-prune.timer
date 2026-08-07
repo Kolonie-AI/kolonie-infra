@@ -1,0 +1,29 @@
+[Unit]
+Description=Weekly prune of superseded application images (kolonie-infra#91)
+# Weekly, and the interval is an argument rather than a default.
+#
+# Measured on 2026-08-07: roughly 45 commits a day across the two application
+# repositories, each leaving one tagged image of ~373 MB whose layers are mostly
+# shared. The partition took months to reach 85 % of 96 GB, so the unit of this
+# problem is the week and not the hour. A daily prune would remove the same
+# images a week later at seven times the churn, and an hourly one would fight
+# the deploy it is running beside.
+#
+# The other direction bounds it: at the observed rate a fortnight is enough to
+# make the reclaim large and the run long, and a prune long enough to overlap a
+# deploy is a prune arguing with `docker pull` over the same image store.
+
+[Timer]
+OnCalendar=Sun 04:00
+# A pass skipped because the host was down still matters — the disk did not stop
+# filling while it was off, and the next whole week is a long time to wait on a
+# partition that was already the reason for the reboot.
+Persistent=true
+# Nothing else on this box runs at 04:00 on a Sunday, but the reason for the
+# jitter is the deploy rather than the other timers: a merge landing at exactly
+# this minute would have `docker pull` and `docker image rm` in the same image
+# store, and half an hour is cheap on a weekly cadence.
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
