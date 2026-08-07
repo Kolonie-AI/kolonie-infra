@@ -7,6 +7,18 @@
 #   2. what .env.example documents                the template an operator follows
 #   3. what the deploy host defines               .env, when one is present
 #
+# **There is a fourth place a variable can live, and this script does not read
+# it: the code** (#90). A name `apps/api` reads that `docker-compose.yml` never
+# mentions is invisible to every comparison here — a name compose has not heard
+# of cannot drift from a template — and it is permanently empty in production,
+# because the api service has no `env_file`. That has shipped twice:
+# `SMS_COLONY_NUMBER` (kolonie-platform#480) and `MASTODON_VERIFIER_INSTANCES`
+# (#482), and this script exited 0 through both, correctly.
+#
+# `scripts/code-drift.sh` is that leg. It lives beside this one and takes a path
+# to a kolonie-platform checkout, the same way this one takes a path to a
+# deployment directory.
+#
 # The drift between 2 and 3 is what #8 was opened for. The drift that actually
 # breaks a deploy is between 1 and 3, and #7 is what that looks like: a variable
 # marked required with :? that the host does not define, discovered by every

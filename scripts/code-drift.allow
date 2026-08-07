@@ -1,0 +1,18 @@
+# Names the deployed code reads, absent from docker-compose.yml on purpose, whose
+# default `code-drift.sh` cannot see (kolonie-infra#90).
+#
+# **This file is the short residue and not a suppression list.** The check's own
+# rule catches a default written beside the read — `process.env[X] ?? 60_000`.
+# What it cannot catch is a default applied by the *callee*, and that is the only
+# thing that belongs here.
+#
+# One name per line, then the reason. A name here is reported as deliberate and
+# does not fail the run, so a line without a reason is a line somebody should
+# have argued for instead of adding.
+#
+# Adding a name here to silence a real finding is the failure mode. The two
+# defects #90 exists to catch — SMS_COLONY_NUMBER and MASTODON_VERIFIER_INSTANCES
+# — are both fixed in docker-compose.yml, not listed here, and neither belongs
+# here ever.
+
+DIRECTION_MODEL  the default is applied inside openRouterDirectionClassifier(), not at the call site — kolonie-platform's packages/verifiers holds DEFAULT_DIRECTION_MODEL beside it. Documented there as "Overridable, because the choice will be revisited".

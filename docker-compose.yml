@@ -202,6 +202,22 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       JWT_SECRET: ${JWT_SECRET}
+      # The Auth0 `sub` of the identity that holds the `maintainer` role
+      # (kolonie-platform#485). Granted at startup, once, and idempotent.
+      #
+      # **`:-` and never `:?`.** It is deliberately optional: `preflight_env()`
+      # refuses a deploy whose host cannot supply a declared name, so declaring
+      # this one would break every deployment that has no maintainer to
+      # bootstrap — including every future one, since it is only ever needed
+      # once. `kolonie-platform`'s `required-env.test.ts` asserts it is declared
+      # nowhere, from the other side.
+      #
+      # Passed here for the reason kolonie-infra#90 exists: the api reads it, and
+      # this file is the only way a host value reaches the container. Setting it
+      # on the host without this line would have done nothing at all — which is
+      # exactly the shape of #480 and #482, caught this time by the check rather
+      # than by a citizen.
+      BOOTSTRAP_MAINTAINER_SUBJECT: ${BOOTSTRAP_MAINTAINER_SUBJECT:-}
       # Salts the hashes of identifiers a *banned* citizen proved, which are the
       # only thing an erasure leaves behind (kolonie-platform#90, #92). An
       # unsalted digest of a mailbox address is reversible with a wordlist, so
@@ -437,6 +453,19 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       GITHUB_VERIFIER_TOKEN: ${GITHUB_VERIFIER_TOKEN:-}
+      # The Mastodon allow-list the social rung checks an instance against
+      # (kolonie-platform#482), passed because the code reads it and this file is
+      # the only way a host value reaches the container — kolonie-infra#90.
+      #
+      # **It was read and never passed, so setting it on the host did nothing.**
+      # That is the second instance of the defect #90 exists to catch, and it is
+      # named here rather than left to the check to keep reporting: a gate that
+      # is red on the day it is installed is a gate people switch off.
+      #
+      # Whether the list belongs in code rather than in a variable is
+      # kolonie-platform#482's question and is not settled by passing it. Unset
+      # is a working configuration — the code falls back to its own list.
+      MASTODON_VERIFIER_INSTANCES: ${MASTODON_VERIFIER_INSTANCES:-}
       # Solana, for the four earning rungs (kolonie-platform #61, #63, #64, #65).
       # Unset is a working configuration and not a degraded one: the code falls
       # back to Solana's own public mainnet endpoint, which needs no credential.

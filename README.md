@@ -129,6 +129,39 @@ This block is an excerpt and goes stale. `.env.example` is the list, and
 matches it — run it rather than reading two files side by side, which is how
 `FRONTEND_URL` and `WEBSITE_URL` came to be two names for one address (#8).
 
+**There is a fourth place a variable can live and `env-drift.sh` cannot see it:
+the code** (#90). A name `apps/api` reads that `docker-compose.yml` never
+mentions is invisible to every comparison that script makes — a name compose has
+not heard of cannot drift from a template — and it is permanently empty in
+production, because the api service has no `env_file`. Nothing fails and nothing
+logs; the guard that depends on it simply always takes the unconfigured branch.
+
+That has shipped twice. `SMS_COLONY_NUMBER` (kolonie-platform#480) made
+`sms-receive` refuse every call from the day it shipped, and the Colony learned
+about it from a citizen's support ticket. `MASTODON_VERIFIER_INSTANCES` (#482)
+was the same shape.
+
+```bash
+# Both repositories are public, so the other tree is a clone rather than a credential
+git clone https://github.com/Kolonie-AI/kolonie-platform /tmp/platform
+./scripts/code-drift.sh /tmp/platform
+```
+
+It resolves `process.env[SOME_CONST]` to the string the constant holds, not only
+string literals — **both real defects are read through a constant, so a
+literal-only version would report zero problems and be worse than nothing.** It
+excludes test files by path rather than by matching their text. And a fallback to
+the empty string is not treated as a default: `process.env['X'] ?? ''` is the
+unconfigured branch, which is exactly what #480 looked like.
+
+A name with a real in-code default is listed without failing the run.
+`scripts/code-drift.allow` holds the short residue whose default is applied by a
+*callee*, where no amount of grepping the call site would see it.
+
+Run against `kolonie-platform@96cd078` — the commit before #480 landed — it names
+`SMS_COLONY_NUMBER` and exits non-zero, which is the only proof it earns its
+place.
+
 ### Step 3: GitHub Secrets
 
 These are already set in kolonie-infra → Settings → Secrets:

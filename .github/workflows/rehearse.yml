@@ -81,6 +81,18 @@ jobs:
       - name: helius-webhook.sh
         run: bash scripts/rehearse-helius-webhook.sh
 
+      # The third leg of the drift check (#90) — the variables the deployed code
+      # reads that `docker-compose.yml` never passes, which are permanently
+      # empty in production and which `env-drift.sh` is structurally unable to
+      # see. Two defects have shipped that way.
+      #
+      # The stubs are the point here as everywhere: today's tree is clean, which
+      # is what installing the check achieves, so the properties worth asserting
+      # — that it resolves `process.env[SOME_CONST]`, and that it excludes tests
+      # by path — can only be shown against a fixture.
+      - name: code-drift.sh
+        run: bash scripts/rehearse-code-drift.sh
+
       # The image prune (#91). It is the only script here that *deletes* on the
       # deploy host, so what the stubs are for is the half a live run cannot
       # show: on a healthy host the rollback target is also the running image
