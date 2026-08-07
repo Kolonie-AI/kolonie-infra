@@ -1,0 +1,26 @@
+[Unit]
+Description=Payment reconciliation over the Colony wallet (kolonie-platform#503)
+# **Every fifteen minutes rather than hourly, and the difference from
+# `kolonie-reconcile.timer` is deliberate.** That one is a backstop to a webhook
+# that works, and an hour is well inside the patience of somebody watching a
+# deposit land. This one is not a backstop: kolonie-infra#73 records this
+# provider's webhook registered, correctly authenticated and never observed
+# delivering, so the honest assumption is that this pass is the only thing
+# recognising a payment.
+#
+# What waits on it is a sponsor's quest going live, which is worse to leave
+# sitting for an hour than a balance is. One RPC page per pass over one address
+# is cheap enough that four times an hour costs nothing worth counting.
+
+[Timer]
+OnCalendar=*:0/15
+# A pass skipped because the host was down is the one most likely to matter: an
+# outage is exactly when a delivery would have been dropped.
+Persistent=true
+# The public RPC endpoint is rate-limited per source address and every other
+# timer on this box fires on the quarter hour. Two minutes separates them and is
+# short enough that the quarter still means a quarter.
+RandomizedDelaySec=2m
+
+[Install]
+WantedBy=timers.target

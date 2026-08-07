@@ -299,6 +299,60 @@ continuing to ask a third party to report on an erased citizen's address is what
 and `curl` — create, edit, delete, skip, both failure paths, and the assertion
 that no address, key or secret reaches anything it prints.
 
+### Step 9b: The Colony wallet — payments in
+
+Steps 8 and 9 are the deposit path, which `kolonie-platform#506` removes. This is
+what replaces it (D-106, `kolonie-platform#503`): the Colony holds **one** wallet,
+a sponsor pays a quest invoice into it from its own, and a payment is recognised
+by the address it came from rather than by which address it landed on.
+
+**The reconciliation is not a backstop here, and that is the whole difference
+from step 8.** `kolonie-infra#73` records this provider's webhook registered,
+with an `authHeader` byte-identical to the host's secret, never observed
+delivering. So the pass is treated as the only thing that recognises a payment,
+and it runs four times an hour rather than once — what waits on it is a sponsor's
+quest going live.
+
+| | |
+|---|---|
+| `PAYOUT_WALLET_ADDRESS` and `PAYOUT_WALLET_SECRET` in `.env` | otherwise the API mounts no payment routes, and both the pass and the webhook script exit 0 saying they skipped |
+| `DEPOSIT_WEBHOOK_SECRET` in `.env` | the same secret guards the payment routes. The name still says *deposit*; renaming it on the host is sequenced with `kolonie-platform#506` |
+| `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
+
+**The API refuses to start if the two wallet halves disagree.** `PAYOUT_WALLET_SECRET`
+is the raw 32-byte Ed25519 seed, not the 64-byte secret key a wallet exports, and
+handing one to the other derives a *different* address without throwing. The
+process derives the address at startup and compares it — so a wrong value is a
+container that will not come up, rather than a citizen who is not paid.
+
+```bash
+sudo install -m 644 systemd/kolonie-payments-reconcile.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-payments-reconcile.timer
+
+# Prove it — a pass by hand, then the schedule
+sudo systemctl start kolonie-payments-reconcile.service
+journalctl -u kolonie-payments-reconcile.service -n 20
+systemctl list-timers kolonie-payments-reconcile.timer
+
+# The webhook: one address, so this is idempotent rather than a sync. Run it
+# once, and again only after a wallet rotation.
+./scripts/helius-payment-webhook.sh --dry-run
+./scripts/helius-payment-webhook.sh
+```
+
+Two numbers in the journal line matter. `recovered` counts arrivals the webhook
+**missed** — under kolonie-infra#73 expect it to equal `attributed`, and a zero
+would be the first evidence the webhook has started working. `quarantined` is
+money that arrived from an address nobody has proved they control: it is recorded
+and visible, credited to nobody, and somebody has to decide what happens to it.
+
+```bash
+# The maintainer's queue, behind the same secret as the two routes above
+docker exec kolonie-api curl -sS -H "Authorization: $SECRET" \
+    http://127.0.0.1:3000/v1/payments/quarantined | jq
+```
+
 ### Step 10: The image prune
 
 Every build leaves a tagged image on this host and until `kolonie-infra#91`
