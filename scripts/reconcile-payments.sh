@@ -82,9 +82,25 @@ RESPONSE="$(docker exec -e SECRET="$SECRET" "$CONTAINER" \
     exit 3
 }
 
+# The payouts follow in the same pass, and deliberately after the reconciliation:
+# money that has just been recognised may be exactly what a payout was waiting
+# on (kolonie-platform#505). A failure here does not fail the unit — the
+# reconciliation already succeeded, and an obligation left unpaid is retried in
+# fifteen minutes with the amount still owed.
+PAYOUTS="$(docker exec -e SECRET="$SECRET" "$CONTAINER" \
+    curl -sS --fail-with-body --max-time 300 \
+    -X POST \
+    -H "Authorization: $SECRET" \
+    http://127.0.0.1:3000/v1/payouts/run 2>&1)" || PAYOUTS="FAILED: $PAYOUTS"
+
 # One line, so `journalctl -u kolonie-payments-reconcile` reads as a history of
 # passes. Two numbers matter: `recovered` is how many arrivals the webhook
 # missed — a non-zero one that keeps recurring says the webhook is not working —
 # and `quarantined` is money the Colony is holding and cannot give to anybody,
 # which somebody has to look at rather than let accumulate.
 echo "reconciled: $RESPONSE"
+
+# `floatShort` is the one to read: it means the wallet holds less than the Colony
+# owes its citizens, which is the Colony failing to pay rather than a citizen
+# failing to be payable.
+echo "paid out: $PAYOUTS"

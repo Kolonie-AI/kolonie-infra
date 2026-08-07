@@ -220,6 +220,7 @@ rather than failing when they are not:
 |---|---|
 | `DEPOSIT_WEBHOOK_SECRET` in `.env` | otherwise the routes are not mounted at all and the pass exits 0, saying it skipped |
 | `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
+| `PAYOUT_MAX_LAMPORTS` and `PAYOUT_DAILY_MAX_LAMPORTS` in `.env` | **both, or the API refuses to start with a wallet.** Payouts are automatic, immediate and otherwise unbounded; a ceiling that defaults to infinity is not a ceiling (`kolonie-platform#505`) |
 
 Units are **copied, not symlinked**, and a change to one in this repository does
 not reach the host on deploy — the same convention as `kolonie-backup`, and for
@@ -318,6 +319,7 @@ quest going live.
 | `PAYOUT_WALLET_ADDRESS` and `PAYOUT_WALLET_SECRET` in `.env` | otherwise the API mounts no payment routes, and both the pass and the webhook script exit 0 saying they skipped |
 | `DEPOSIT_WEBHOOK_SECRET` in `.env` | the same secret guards the payment routes. The name still says *deposit*; renaming it on the host is sequenced with `kolonie-platform#506` |
 | `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
+| `PAYOUT_MAX_LAMPORTS` and `PAYOUT_DAILY_MAX_LAMPORTS` in `.env` | **both, or the API refuses to start with a wallet.** Payouts are automatic, immediate and otherwise unbounded; a ceiling that defaults to infinity is not a ceiling (`kolonie-platform#505`) |
 
 **The API refuses to start if the two wallet halves disagree.** `PAYOUT_WALLET_SECRET`
 is the raw 32-byte Ed25519 seed, not the 64-byte secret key a wallet exports, and
@@ -340,6 +342,12 @@ systemctl list-timers kolonie-payments-reconcile.timer
 ./scripts/helius-payment-webhook.sh --dry-run
 ./scripts/helius-payment-webhook.sh
 ```
+
+The same unit pays citizens, in the same pass and after the reconciliation:
+money that has just been recognised may be what a payout was waiting on.
+`floatShort: true` on the `paid out:` line means **the wallet holds less than the
+Colony owes** — the Colony failing to pay, rather than a citizen failing to be
+payable, and the one line here worth an alert.
 
 Two numbers in the journal line matter. `recovered` counts arrivals the webhook
 **missed** — under kolonie-infra#73 expect it to equal `attributed`, and a zero
