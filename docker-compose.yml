@@ -218,6 +218,19 @@ services:
       # exactly the shape of #480 and #482, caught this time by the check rather
       # than by a citizen.
       BOOTSTRAP_MAINTAINER_SUBJECT: ${BOOTSTRAP_MAINTAINER_SUBJECT:-}
+      # The name a person's mail client shows as the sender
+      # (kolonie-platform#483). Unset sends a bare address, which is what the
+      # Colony sent before that issue — so this is safe to leave empty and is
+      # the one thing that makes the mail read as coming from `Kolonie AI`
+      # rather than from `Konsole`, which is what a client invents from the
+      # local part when no display name is sent.
+      #
+      # **Wired here because #483 shipped without it and the variable reached
+      # nothing.** `code-drift.sh` did not catch it either: `mailerFromEnv`
+      # reads it off an aliased `env` parameter rather than `process.env`, and
+      # the check only matched the latter. Both are fixed in the same commit —
+      # kolonie-infra#90.
+      MAIL_SENDER_NAME: ${MAIL_SENDER_NAME:-}
       # Salts the hashes of identifiers a *banned* citizen proved, which are the
       # only thing an erasure leaves behind (kolonie-platform#90, #92). An
       # unsalted digest of a mailbox address is reversible with a wordlist, so

@@ -3,8 +3,9 @@
 #
 # **This file is the short residue and not a suppression list.** The check's own
 # rule catches a default written beside the read — `process.env[X] ?? 60_000`.
-# What it cannot catch is a default applied by the *callee*, and that is the only
-# thing that belongs here.
+# What it cannot catch is a default the *control flow* applies rather than the
+# expression: one inside the callee, or one behind an early return. That is the
+# only thing that belongs here.
 #
 # One name per line, then the reason. A name here is reported as deliberate and
 # does not fail the run, so a line without a reason is a line somebody should
@@ -16,3 +17,4 @@
 # here ever.
 
 DIRECTION_MODEL  the default is applied inside openRouterDirectionClassifier(), not at the call site — kolonie-platform's packages/verifiers holds DEFAULT_DIRECTION_MODEL beside it. Documented there as "Overridable, because the choice will be revisited".
+SKILL_RELEASES  skillReleasesFromEnv() returns DEFAULT_SKILL_RELEASES on unset or empty, as an early return rather than a `??`, so the line-scoped rule cannot see it. Unset is the shipped configuration.

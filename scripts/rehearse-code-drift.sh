@@ -14,6 +14,12 @@
 #   2. **It excludes test files by path.** Asserted against a fixture shaped like
 #      `MCP_SURFACE_REPORT`, which lives only in a `.test.ts` and must not be
 #      reported.
+#   3. **It reads `env[...]` off an alias, not only `process.env[...]`.** The
+#      environment is routinely a parameter — `mailerFromEnv(env = process.env)`
+#      — and measured 2026-08-07 more names are read that way than directly. The
+#      `process.env`-only version reported a clean tree while being blind to most
+#      of it, which is property 1's failure wearing a different shape. Caught by
+#      `MAIL_SENDER_NAME` reaching nothing while the check said OK.
 #
 # So the fixtures are a scratch tree laid out like a platform checkout, and a
 # scratch compose file. Neither needs Docker, a host, a network or a credential.
@@ -190,12 +196,43 @@ out=$(drift); status=$?
 check "exit 0 after" "$status" "0"
 contains "$out" "DIRECTION_MODEL" "still listed as deliberate"
 
-echo "== 11. it refuses a path that is not a platform checkout"
+echo "== 11. it sees a read through an aliased env parameter"
+# `mailerFromEnv(env = process.env)` then `env[MAIL_SENDER_NAME_VAR]`. Measured
+# 2026-08-07: **more names are read that way than directly**, so the
+# `process.env`-only version was blind to most of the surface while reporting a
+# clean result — which is the failure this whole script exists not to be. Caught
+# by `MAIL_SENDER_NAME` (kolonie-platform#483) reaching nothing while this said
+# OK.
+platform
+cat > "$WORK/platform/apps/api/src/mail.ts" <<'TS'
+export const MAIL_SENDER_NAME_VAR = 'MAIL_SENDER_NAME'
+export function mailerFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  return env[MAIL_SENDER_NAME_VAR]
+}
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 1" "$status" "1"
+contains "$out" "MAIL_SENDER_NAME" "resolved it through the alias and the constant both"
+
+echo "== 11b. and a literal read off an alias"
+platform
+cat > "$WORK/platform/apps/api/src/mail.ts" <<'TS'
+export function build(env: NodeJS.ProcessEnv = process.env) {
+  return env['ACADEMY_SENDER_ADDRESS']
+}
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 1" "$status" "1"
+contains "$out" "ACADEMY_SENDER_ADDRESS" "named it"
+
+echo "== 12. it refuses a path that is not a platform checkout"
 out=$(COMPOSE_FILE="$WORK/compose.yml" bash "$ROOT/scripts/code-drift.sh" "$WORK/nowhere" 2>&1); status=$?
 check "exit 1" "$status" "1"
 contains "$out" "does not look like a kolonie-platform checkout" "said why"
 
-echo "== 12. it never prints a value"
+echo "== 13. it never prints a value"
 # The names are the deliverable. This runs in workflows whose logs are public.
 platform
 cat > "$WORK/platform/apps/api/src/server.ts" <<'TS'

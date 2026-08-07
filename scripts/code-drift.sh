@@ -29,6 +29,18 @@
 #
 # ## Two things that decide whether this is worth anything
 #
+# **0. It matches `env[...]`, not only `process.env[...]`.** The environment is
+# routinely passed as a parameter and read through the alias:
+#
+#     export function mailerFromEnv(env: NodeJS.ProcessEnv = process.env) {
+#       const senderName = env[MAIL_SENDER_NAME_VAR]
+#
+# Measured 2026-08-07: **more names are read that way than directly**, so a
+# `process.env`-only version of this check was blind to most of the surface while
+# reporting a clean result — the precise failure mode this file warns about one
+# paragraph down. It was caught by `MAIL_SENDER_NAME` (kolonie-platform#483)
+# being wired nowhere and this check saying nothing.
+#
 # **1. It resolves indirection, or it is blind to the class that bit.** Both real
 # defects are read through a constant, not a literal:
 #
@@ -173,8 +185,8 @@ scan() {
 
 # process.env['LITERAL'] and process.env["LITERAL"]
 literal_reads() {
-    scan "process\.env\[[\"'][A-Za-z_][A-Za-z0-9_]*[\"']\]" |
-        sed -E "s/process\.env\[[\"']//; s/[\"']\]//" | sort -u
+    scan "(process\.)?\benv\[[\"'][A-Za-z_][A-Za-z0-9_]*[\"']\]" |
+        sed -E "s/.*env\[[\"']//; s/[\"']\]//" | sort -u
 }
 
 # process.env.NAME
@@ -184,7 +196,7 @@ dotted_reads() {
 
 # process.env[SOME_CONST] — the identifiers, before resolution.
 constant_reads() {
-    scan 'process\.env\[[A-Za-z_][A-Za-z0-9_]*\]' | sed 's/process\.env\[//; s/\]//' | sort -u
+    scan '(process\.)?\benv\[[A-Za-z_][A-Za-z0-9_]*\]' | sed -E 's/.*env\[//; s/\]//' | sort -u
 }
 
 # What one identifier holds. **A declaration, and only in SCREAMING_SNAKE_CASE.**
@@ -323,7 +335,7 @@ PASSED="$(passed_by_compose)"
 has_default() {
     local name="$1"
     printf '%s\n' "$SOURCE_FILES" |
-        { xargs grep -hE "process\.env(\[[\"']?${name}[\"']?\]|\.${name}\b)" 2>/dev/null || true; } |
+        { xargs grep -hE "env(\[[\"']?${name}[\"']?\]|\.${name}\b)" 2>/dev/null || true; } |
         grep -E '\?\?|\|\|' |
         grep -qvE "(\?\?|\|\|)[[:space:]]*(''|\"\")"
 }
@@ -336,7 +348,7 @@ has_default_via_constant() {
         [ -n "$identifier" ] || continue
         [ "$(resolve_constant "$identifier")" = "$name" ] || continue
         if printf '%s\n' "$SOURCE_FILES" |
-            { xargs grep -hE "process\.env\[${identifier}\]" 2>/dev/null || true; } |
+            { xargs grep -hE "env\[${identifier}\]" 2>/dev/null || true; } |
             grep -E '\?\?|\|\|' |
             grep -qvE "(\?\?|\|\|)[[:space:]]*(''|\"\")"; then
             return 0
