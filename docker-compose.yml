@@ -407,6 +407,19 @@ services:
       # it and holds nothing for it; the seed phrase is the maintainer's
       # (kolonie-docs#202). `kolonie-platform#507` asserts that no code path can
       # send *from* it.
+      # The payout ceilings — kolonie-platform#505.
+      #
+      # **The API refuses to start with a wallet and only one of these**, and
+      # pays nothing at all with neither. Payouts are automatic, immediate and
+      # otherwise unbounded: a bug in an amount, a duplicated acceptance, or a
+      # retry that does not recognise a prior success would drain the wallet at
+      # the speed of the chain. A ceiling that defaults to infinity is not a
+      # ceiling, so there is deliberately no default here.
+      #
+      # They are also settings (D-104), so a maintainer turns them without a
+      # deploy; what these supply is the boot default.
+      PAYOUT_MAX_LAMPORTS: ${PAYOUT_MAX_LAMPORTS:-}
+      PAYOUT_DAILY_MAX_LAMPORTS: ${PAYOUT_DAILY_MAX_LAMPORTS:-}
       PAYOUT_WALLET_ADDRESS: ${PAYOUT_WALLET_ADDRESS:-}
       PAYOUT_WALLET_SECRET: ${PAYOUT_WALLET_SECRET:-}
       TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
