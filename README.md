@@ -624,6 +624,7 @@ kolonie-infra/
 │   ├── security-model.md           ← Threat model and security decisions
 │   ├── cost-projections.md         ← Infrastructure cost planning
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
+│   ├── deposit-recovery.md         ← Moving USDC off a sponsor's deposit address, by hand
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
 ├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation, Helius webhook sync, image prune

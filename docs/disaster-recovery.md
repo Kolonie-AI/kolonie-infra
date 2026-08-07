@@ -139,6 +139,14 @@ into the vault.
 
 ### Restoring
 
+**What is not in here: a sponsor's deposit.** Restoring the database restores the
+*sealed* deposit keys, which is what makes the money recoverable — but moving it
+is a different procedure with its own preconditions (SOL for fees, a key handled
+by hand, a ledger that is not corrected by the transfer). It is
+[`deposit-recovery.md`](deposit-recovery.md), and it is deliberately not folded
+into a restore: a restore is run under pressure, and that is the worst moment to
+first read about spending keys.
+
 Everything below assumes the credentials are loaded:
 
 ```bash
