@@ -392,6 +392,24 @@ services:
       # is one rotation that cannot be done for either of them.
       OPERATOR_DROP_SEALING_KEY: ${OPERATOR_DROP_SEALING_KEY:-}
       DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
+      # The Colony's own wallet — D-106, kolonie-platform#503.
+      #
+      # **`:-` and not `:?`, and the check that matters is not presence.** Both
+      # halves absent is a deployment that takes no money and mounts no payment
+      # routes, which is every environment that is not this one. What the API
+      # refuses to start on is the pair *disagreeing*: `PAYOUT_WALLET_SECRET` is
+      # the raw 32-byte Ed25519 seed and every SDK's `fromSecretKey` expects 64
+      # bytes, so handing one to the other derives a different address without
+      # throwing — and the first symptom would be a transfer signed by an account
+      # holding nothing. The process derives the address at startup and compares.
+      #
+      # **`TREASURY_ADDRESS` is an address and never a key.** The Colony sends to
+      # it and holds nothing for it; the seed phrase is the maintainer's
+      # (kolonie-docs#202). `kolonie-platform#507` asserts that no code path can
+      # send *from* it.
+      PAYOUT_WALLET_ADDRESS: ${PAYOUT_WALLET_ADDRESS:-}
+      PAYOUT_WALLET_SECRET: ${PAYOUT_WALLET_SECRET:-}
+      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
       QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}
