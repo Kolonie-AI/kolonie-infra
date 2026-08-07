@@ -55,6 +55,17 @@ jobs:
       - name: drift-triage.sh
         run: bash scripts/rehearse-drift.sh
 
+      # The pin check (#89). Two failure modes, both invisible in production
+      # until the day they matter: reporting a clean host while blind, and
+      # reporting drift for a container that is merely not running. The second
+      # would file a second issue for a fault Health Watch already owns.
+      #
+      # It also asserts the half that is not a script — that no image in
+      # docker-compose.yml falls back to `:latest` — because that is the line
+      # somebody restores by hand while making an unrelated change.
+      - name: the pin check
+        run: bash scripts/rehearse-pin.sh
+
       # The balance alarm (#83). An alarm's two failure modes — silent when it
       # should fire, and firing on a blip — are both invisible in production
       # until the day they matter, and the balance had four hundred messages of

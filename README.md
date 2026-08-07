@@ -355,6 +355,35 @@ change underneath the deploy. After the health check passes, those digests are
 written to `state/deployed.env`; that file is what `rollback()` returns to, and
 it is the only place the host records which build is serving (#12).
 
+**…and since #89 nothing can be run from a mutable tag by accident either.** That
+sentence above was true of `deploy.sh` and false of the host. The pins live only
+in `state/deployed.env`, `/opt/kolonie/.env` defines none, and every application
+image in `docker-compose.yml` used to fall back to `:latest` — so any
+`docker compose up -d` that did not source the record replaced a digest-pinned
+container with whatever `:latest` then resolved to, exited zero and came up
+healthy. On 2026-08-06 production served an `api` two days and 212 commits behind
+for about ninety minutes and no instrument on the host reported it.
+
+The fallbacks are now a tag that does not exist and never will, so the same
+command fails at the pull with the reason in the tag name. `:?` would have been
+louder still and is refused for the reason `docker-compose.yml` gives under
+`pgadmin`: it fails `docker compose` **as a whole**, including `ps` and the
+bootstrap in Step 6 above, which are neither the problem nor served by breaking.
+
+**Whether the host agrees with its record is now a measurement:**
+
+```bash
+./scripts/pin-report.sh | ./scripts/pin-triage.sh   # non-zero when they disagree
+```
+
+Health Watch runs it every fifteen minutes and files *The deploy host is not
+running the images its own record names*. It is **not** the same question as the
+drift check beside it: that one compares against the newest image **built**,
+which goes blind exactly when the build is what failed — no newer image is ever
+pushed, so the host matches the newest one that exists and the check answers
+`current` while serving week-old code. That is what happened. This one compares
+against the **record**, which moves only when a deploy succeeds.
+
 **`--remove-orphans` is conditional.** It is passed only on a full deploy where
 every application image was reachable. That flag deletes every container absent
 from the compose view it is given, and two things make that view incomplete: a
@@ -366,9 +395,14 @@ stale container instead, which is visible and fixable.
 **To add a new service:**
 1. Build image in its own repo → push to `ghcr.io/kolonie-ai/<service>:latest`
 2. Add service definition to `docker-compose.yml` (with `profiles: [full]` if optional).
-   Write the image as `${SERVICE_IMAGE:-ghcr.io/kolonie-ai/<service>:latest}` and pin
-   it in `deploy.sh`, or it will be the one service nobody can roll back
-3. Next infra deploy will pick it up automatically
+   Write the image as
+   `${SERVICE_IMAGE:-ghcr.io/kolonie-ai/<service>:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}`
+   and pin it in `deploy.sh`, or it will be the one service nobody can roll back.
+   **Not `:latest` as the fallback** — that is #89, and the new service would be
+   the one the pin check cannot protect
+3. Add it to `SERVICES` in `scripts/pin-report.sh` with the variable that pins it,
+   or it silently drops out of the comparison
+4. Next infra deploy will pick it up automatically
 
 ### The host mirrors origin — it does not merge
 
@@ -490,6 +524,9 @@ kolonie-infra/
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
 │   ├── backup.sh                   ← Daily pg_dump + .env into an off-host restic repository
 │   ├── helius-webhook.sh           ← Keep the Helius webhook watching every deposit address
+│   ├── pin-report.sh               ← What each container runs, against what state/deployed.env names
+│   ├── pin-triage.sh               ← The judgement on those rows: pinned, drifted, absent, unknown
+│   ├── rehearse-pin.sh             ← Run both against a stub docker; no VPS needed
 │   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
 │   ├── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
 │   └── rehearse-helius-webhook.sh  ← Run helius-webhook.sh against a stub docker and curl

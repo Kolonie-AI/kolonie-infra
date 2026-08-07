@@ -43,6 +43,11 @@ env:
   DEPLOY_DIR: /opt/kolonie
   ISSUE_TITLE: 'Containers on the deploy host are unhealthy'
   DRIFT_ISSUE_TITLE: 'The deploy host is not serving what was last built'
+  # Deliberately not a variant of the line above. That one means *a build exists
+  # that this host has not taken*; this one means *the host is running something
+  # its own record does not name*, which is the failure that hid on 2026-08-06
+  # precisely because the two read alike (#89).
+  PIN_ISSUE_TITLE: 'The deploy host is not running the images its own record names'
 
 jobs:
   watch:
@@ -120,6 +125,25 @@ jobs:
               "cd ${DEPLOY_DIR} && chmod +x scripts/deployed-revision.sh && ./scripts/deployed-revision.sh" \
               > revisions.out
 
+          # A third question, and it is not the second one asked twice (#89).
+          #
+          # `deployed-revision.sh` feeds a comparison against **the newest image
+          # built**, which is blind in exactly one case: when the *build* is what
+          # failed, nothing newer is ever pushed, so the host matches the newest
+          # image that exists and the check answers `current` while serving
+          # week-old code. That is what happened on 2026-08-06.
+          #
+          # This compares against **the record** — `state/deployed.env` — which
+          # moves only when a deploy succeeds. One notices a build nobody took;
+          # the other notices a container nobody meant to start.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd ${DEPLOY_DIR} && chmod +x scripts/pin-report.sh && ./scripts/pin-report.sh" \
+              > pins.out
+
           # Never leave a production key on the filesystem past the step that
           # needed it, even on a runner that is about to be destroyed.
           shred -u ~/.ssh/deploy_key
@@ -127,6 +151,7 @@ jobs:
           echo "health rows: $(wc -l < probe.out)"
           echo "reason lines: $(wc -l < why.out)"
           echo "revision rows: $(wc -l < revisions.out)"
+          echo "pin rows: $(wc -l < pins.out)"
 
       - name: Triage the report
         id: triage
@@ -339,4 +364,107 @@ jobs:
 
           gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file drift-body.md
           gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file drift-changed.md
+          echo "updated #$number"
+
+      # --- pin drift (#89) -------------------------------------------------
+      #
+      # A third condition, a third issue and a third verdict, for the same
+      # reason the drift lane is separate from the health lane: one verdict for
+      # two unrelated faults is a report nobody can act on.
+      #
+      # What this one catches that neither of the others can: a container
+      # running an image `state/deployed.env` does not name. On 2026-08-06 that
+      # was production on an api two days and 212 commits behind — healthy,
+      # serving, and reported as current by every instrument the host had,
+      # because the health check passes on old code and the drift check's
+      # reference had moved backwards with it.
+      - name: Compare what is running against what the record names
+        id: pins
+        run: |
+          set -uo pipefail
+
+          chmod +x scripts/pin-triage.sh
+          ./scripts/pin-triage.sh < pins.out > pins.md 2> pins-verdict.env
+          status=$?
+
+          # Exit 2 is the script saying it could not run — an empty probe rather
+          # than a disagreeing host. Fail the run so it is visible in the
+          # Actions tab, for the same reason the other two triages do.
+          if [ "$status" -eq 2 ]; then
+            echo "::error::The pin probe returned no rows. SSH reachable but the report is empty?"
+            exit 1
+          fi
+
+          cat pins-verdict.env >> "$GITHUB_OUTPUT"
+          cat pins.md
+
+      - name: File, update or close the pin report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT: ${{ steps.pins.outputs.VERDICT }}
+          FINGERPRINT: ${{ steps.pins.outputs.FINGERPRINT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$PIN_ISSUE_TITLE\"" --json number,body --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          # `unknown` files nothing, exactly as the drift lane decided. It means
+          # this check is partly blind — a host with no completed pinned deploy,
+          # or a recorded image the local store no longer holds — and an issue
+          # that says "I cannot tell" every fifteen minutes teaches the reader to
+          # ignore the ones that say something.
+          if [ "$VERDICT" != "drifted" ]; then
+            if [ -n "$number" ]; then
+              printf '%s\n\n%s\n' \
+                'Resolved. Every running container matches the image `state/deployed.env` names.' \
+                "$RUN_URL" > pins-recovered.md
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file pins-recovered.md
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+                --reason completed --comment "Closed automatically by Health Watch."
+              echo "closed #$number"
+            else
+              echo "verdict $VERDICT, nothing open — saying nothing"
+            fi
+            exit 0
+          fi
+
+          {
+            cat pins.md
+            printf '\n<!-- pin-watch-fingerprint: %s -->\n\n' "$FINGERPRINT"
+            printf 'Filed automatically by [Health Watch](%s). It closes itself once every\n' "$RUN_URL"
+            printf 'container matches the record again.\n\n'
+            printf 'Read this as: something started a container without the pins, and the file\n'
+            printf 'the rest of this system trusts has been wrong ever since. A healthy stack\n'
+            printf 'and a green drift check are both compatible with it — an older build is\n'
+            printf 'healthy, and when a build fails there is no newer image to be behind.\n'
+          } > pins-body.md
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$PIN_ISSUE_TITLE" \
+              --label p1 --label area:infra \
+              --body-file pins-body.md
+            echo "filed a new pin report"
+            exit 0
+          fi
+
+          previous="$(echo "$existing" | jq -r '.[0].body // ""' \
+            | sed -n 's/.*pin-watch-fingerprint: \(.*\) -->.*/\1/p')"
+
+          if [ "$previous" = "$FINGERPRINT" ]; then
+            echo "unchanged since the last run — #$number already says this"
+            exit 0
+          fi
+
+          {
+            printf 'What disagrees has changed.\n\n'
+            cat pins.md
+            printf '\n%s\n' "$RUN_URL"
+          } > pins-changed.md
+
+          gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file pins-body.md
+          gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file pins-changed.md
           echo "updated #$number"

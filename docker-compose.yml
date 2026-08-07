@@ -157,14 +157,42 @@ services:
   # challenge.kolonie.ai. Routing lives in
   # traefik/dynamic/routes.yml, not in labels — see the note there.
   #
-  # The three application images are variables with a `:latest` default, and the
-  # default is what makes this readable by hand — `docker compose up` on a fresh
-  # host still does the obvious thing. `deploy.sh` never uses it: it resolves the
-  # tag to an immutable digest after pulling and exports that, so the containers
-  # it starts are pinned to a build that cannot change underneath them and can be
-  # returned to later (#12).
+  # Every image this organisation builds carries a variable whose fallback is a
+  # tag that **does not exist and never will**. `deploy.sh` resolves each tag to
+  # an immutable digest after pulling and exports that, so the containers it
+  # starts are pinned to a build that cannot change underneath them and can be
+  # returned to later (#12). The fallback is what happens when nothing did.
+  #
+  # **It used to be `:latest`, and that is the defect #89 was filed for.** The
+  # pins live in exactly one place — `state/deployed.env`, which `deploy.sh`
+  # writes and sources — and `/opt/kolonie/.env` defines none. So any
+  # `docker compose up -d` that did not source `deployed.env`, by hand or from a
+  # half-finished recovery, silently replaced a digest-pinned container with
+  # whatever `:latest` then resolved to. It exited zero, reported success and
+  # came up healthy, because an older build *is* healthy. On 2026-08-06 that ran
+  # production on an api two days and 212 commits behind for about ninety
+  # minutes, and the only thing that changed was which code served.
+  #
+  # The sharp part is that `:latest` had not moved since 2026-08-04, because
+  # every build after it had failed. **The floating tag is at its most wrong in
+  # the one situation that reaches for it** — a safety net woven from the same
+  # thread as the fall.
+  #
+  # **Why a sentinel tag rather than `${API_IMAGE:?}`.** `:?` was #89's own
+  # suggestion and it is the wrong instrument here for a reason this file
+  # already records under `pgadmin`: it fails `docker compose` **as a whole**,
+  # and this file is parsed on every invocation including the ones that never
+  # touch these services. `README.md`'s bootstrap starts `traefik` and
+  # `postgres` on a fresh host before any deploy has run, and `docker compose ps`
+  # is what a person types when something is wrong; `:?` breaks both to guard
+  # neither. The sentinel fails exactly where it should — at the pull, when an
+  # application container is actually being started unpinned — and the tag names
+  # its own remedy in the error message.
+  #
+  # Whether the host is running what the record says is a separate question and
+  # a measurement rather than a hope: `scripts/pin-report.sh | scripts/pin-triage.sh`.
   api:
-    image: ${API_IMAGE:-ghcr.io/kolonie-ai/kolonie-api:latest}
+    image: ${API_IMAGE:-ghcr.io/kolonie-ai/kolonie-api:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-api
     restart: unless-stopped
     logging: *logging
@@ -399,7 +427,7 @@ services:
   # No Traefik route on purpose: it pulls submissions from the database and
   # talks outward to third-party APIs. Nothing on the internet reaches it.
   verifier-runner:
-    image: ${RUNNER_IMAGE:-ghcr.io/kolonie-ai/kolonie-verifier-runner:latest}
+    image: ${RUNNER_IMAGE:-ghcr.io/kolonie-ai/kolonie-verifier-runner:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-verifier-runner
     restart: unless-stopped
     logging: *logging
@@ -535,7 +563,7 @@ services:
   # struggles and tips from the database and talks outward to OpenRouter.
   # Nothing on the internet reaches it.
   moderation-runner:
-    image: ${MODERATION_IMAGE:-ghcr.io/kolonie-ai/kolonie-moderation-runner:latest}
+    image: ${MODERATION_IMAGE:-ghcr.io/kolonie-ai/kolonie-moderation-runner:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-moderation-runner
     restart: unless-stopped
     logging: *logging
@@ -607,7 +635,7 @@ services:
   # support tickets citizens filed over MCP and talks outward to OpenRouter and
   # GitHub. Nothing on the internet reaches it.
   support-triage-runner:
-    image: ${TRIAGE_IMAGE:-ghcr.io/kolonie-ai/kolonie-support-triage-runner:latest}
+    image: ${TRIAGE_IMAGE:-ghcr.io/kolonie-ai/kolonie-support-triage-runner:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-support-triage-runner
     restart: unless-stopped
     logging: *logging
@@ -739,7 +767,7 @@ services:
   # was deliberately withheld until the build job existed in the platform's
   # workflow. Both halves land together or neither does.
   badge-runner:
-    image: ${BADGE_IMAGE:-ghcr.io/kolonie-ai/kolonie-badge-runner:latest}
+    image: ${BADGE_IMAGE:-ghcr.io/kolonie-ai/kolonie-badge-runner:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-badge-runner
     restart: unless-stopped
     logging: *logging
@@ -798,7 +826,7 @@ services:
   # `full` therefore means "the API and the two runners behind it". Deploy this one
   # with --profile website.
   website:
-    image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:latest}
+    image: ${WEBSITE_IMAGE:-ghcr.io/kolonie-ai/kolonie-website:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
     container_name: kolonie-website
     restart: unless-stopped
     logging: *logging
