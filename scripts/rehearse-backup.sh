@@ -172,6 +172,18 @@ case "$1" in
       # only the dump in it. A run that identifies the wrong snapshot therefore
       # fails here rather than passing on a listing that was never checked — the
       # same way it failed on the host.
+      #
+      # The trap is #92, and it is what makes this stub able to fail the old
+      # code. Real `restic ls` is a Go program writing over a network; a reader
+      # that stops early leaves it writing into a closed pipe, and it takes
+      # SIGPIPE often enough to matter — 5 runs in 30 on the host. A shell stub
+      # is far too fast to lose that race on its own, so the noise below forces
+      # it: more than a pipe buffer of output *after* the line the old reader
+      # matched on, which any short-circuiting reader is guaranteed to abandon.
+      trap 'echo "restic ls TOOK SIGPIPE" >> "${CALL_LOG:-/dev/null}"; exit 141' PIPE
+      # An `ls` that fails outright, which is a different fact from a snapshot
+      # missing a path and used to be indistinguishable from one.
+      [ "${FAIL_LS:-}" = 1 ] && { echo "Fatal: repository is already locked" >&2; exit 1; }
       echo "${KOLONIE_BACKUP_DIR:-/var/backups/kolonie}/kolonie.sql"
       [ "$2" = "0ldgr0up" ] && exit 0
       [ "${NO_ENV_IN_SNAPSHOT:-}" = 1 ] || echo "${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/.env"
@@ -180,6 +192,17 @@ case "$1" in
       # backup.sh reads the listing back instead of trusting the write's exit code.
       if [ "${NO_SECRETS_IN_SNAPSHOT:-}" != 1 ] && [ -d "${KOLONIE_SECRETS_DIR:-${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/secrets}" ]; then
         find "${KOLONIE_SECRETS_DIR:-${KOLONIE_DEPLOY_DIR:-/opt/kolonie}/secrets}" -type f 2>/dev/null
+      fi
+      # 128 KiB of paths that match nothing, written after every line the checks
+      # look for. A reader that consumes the listing takes all of it and this
+      # costs a few milliseconds; a reader that stopped at its match is long gone
+      # and the write above lands in a closed pipe. Off by default, because every
+      # other case in this file runs `ls` too.
+      if [ "${LS_TRAILING_NOISE:-}" = 1 ]; then
+        i=0; while [ "$i" -lt 4096 ]; do
+          echo "/var/backups/kolonie/padding-that-matches-no-check-$i"
+          i=$((i+1))
+        done
       fi
       exit 0 ;;
   unlock) exit 0 ;;
@@ -495,6 +518,48 @@ check "the run succeeded" "$?" "0"
 contains "$out" "is empty — nothing to include" "said so"
 absent "$(calls)" "--tag kolonie-secrets" "no tag"
 rm -rf "$WORK/secrets"
+
+echo "== 22. the listing is read to the end, not until the first match (#92)"
+# The night of 2026-08-07, and the worst shape a check can have: it failed on a
+# correct backup, it failed at random so it read as a real intermittent fault,
+# and it aborted before `.last-success` was written — so a repository holding a
+# good snapshot reported itself stale for a day.
+#
+# The mechanism is this script's own `pipefail` meeting `grep -q`. `grep -q`
+# exits at its match — `.env` is the third of twelve lines — `restic ls` is left
+# writing into a closed pipe, and a SIGPIPE there becomes the pipeline's status.
+# Measured on the host: 5 failures in 30 runs piped, 0 in 30 captured first.
+#
+# The assertion is on the stub taking SIGPIPE rather than on the exit code alone,
+# because an exit code cannot tell the two apart: the old code passed most of the
+# time, and a case that passes four times in five proves nothing about the fifth.
+echo "22. a listing longer than the pipe buffer does not fail the verification"
+write_env
+# Reset to the sentinel first, or the timestamp assertion below passes on the
+# previous case's success and proves nothing about this one.
+echo "2020-01-01T00:00:00+00:00" > "$WORK/backups/.last-success"
+out=$(run_backup LS_TRAILING_NOISE=1); rc=$?
+check "exits 0" "$rc" "0"
+contains "$out" "ok" "the backup completed"
+absent "$(calls)" "restic ls TOOK SIGPIPE" "nothing closed the pipe on restic ls"
+check "a success timestamp was written" \
+  "$([ "$(cat "$WORK/backups/.last-success")" != "2020-01-01T00:00:00+00:00" ] && echo yes || echo no)" "yes"
+
+echo "== 22b. and a genuinely missing path is still caught, noise or not"
+# The half that must not be lost in fixing the other one. Reading the listing to
+# the end is not the same as not reading it.
+out=$(run_backup LS_TRAILING_NOISE=1 NO_ENV_IN_SNAPSHOT=1); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "does not contain" "still says what is missing from it"
+
+echo "== 22c. a failing 'restic ls' says that, rather than blaming the snapshot"
+# The other half of what `2>/dev/null` cost. An unreachable repository, a stale
+# lock and a corrupt index all arrived as *the secrets are not backed up*, which
+# sends the reader to the wrong half of the system entirely.
+out=$(run_backup FAIL_LS=1); rc=$?
+check "exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+contains "$out" "could not be verified" "names the command that failed"
+absent "$out" "the secrets are not backed up" "does not report a missing file it never looked for"
 
 echo
 echo "passed: $pass   failed: $fail"

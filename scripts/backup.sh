@@ -494,9 +494,16 @@ do_backup() {
     # It surfaced as the check below refusing the run on 2026-07-31, which is the
     # check doing its job on the code that wrote it. Anything grouping snapshots
     # by path is a trap here for as long as the path set can change.
-    local newest
-    newest=$(restic snapshots latest --host "$RESTIC_HOST_LABEL" --json 2>/dev/null \
-        | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    #
+    # Captured before it is filtered, for the reason the block below this one
+    # gives at length: `head -1` closes the pipe on `grep`, `grep` closes it on
+    # `restic`, and under this script's `pipefail` a SIGPIPE anywhere along that
+    # chain becomes the assignment's status. Here it was survivable — `head` has
+    # the id by then, and the emptiness check below is what actually guards the
+    # line — but it is the same hazard and it is not worth leaving one of each.
+    local snapshots_json newest
+    snapshots_json=$(restic snapshots latest --host "$RESTIC_HOST_LABEL" --json 2>/dev/null || true)
+    newest=$(grep -o '"short_id":"[^"]*"' <<<"$snapshots_json" | head -1 | cut -d'"' -f4)
     [ -n "$newest" ] || die "backup reported success but the repository has no snapshot for $RESTIC_HOST_LABEL"
 
     # The same argument as reading the snapshot id back instead of trusting an
@@ -505,7 +512,34 @@ do_backup() {
     # file that vanished mid-run, a future change to the invocation above. The
     # dump has the restore test to catch its absence; the secrets file had
     # nothing until this line.
-    if ! restic ls "$newest" 2>/dev/null | grep -qxF "$ENV_FILE"; then
+    #
+    # ## Why the listing is captured and not piped (#92)
+    #
+    # These two checks were `restic ls "$newest" | grep -q …`, and under the
+    # `pipefail` this script sets that is a race the backup loses about one night
+    # in six. `grep -q` exits the moment it matches — `/opt/kolonie/.env` is the
+    # third of twelve lines — and `restic ls` is then writing into a closed pipe.
+    # It usually finishes into the pipe buffer and exits 0; sometimes it takes
+    # SIGPIPE and exits 141, `pipefail` promotes that to the pipeline's status,
+    # and the check reports *the file is not in the snapshot* about a snapshot
+    # that contains it. Measured on the host 2026-08-07: 5 failures in 30 runs
+    # piped, 0 in 30 with the same command captured first.
+    #
+    # That is the worst shape a check can have. It fails on a correct backup, it
+    # fails at random so it reads as a real intermittent fault, and it aborts the
+    # run before `.last-success` is written — so a repository holding a perfectly
+    # good snapshot reports itself stale. It cost the night of 2026-08-07.
+    #
+    # Capturing also lets a genuine `restic ls` failure say so. The `2>/dev/null`
+    # here meant an unreachable repository, a bad lock or a corrupt index all
+    # arrived as *the secrets are not backed up*, which sends the reader to the
+    # wrong half of the system.
+    local listing
+    if ! listing=$(restic ls "$newest" 2>&1); then
+        die "restic ls $newest failed, so the snapshot could not be verified: $listing"
+    fi
+
+    if ! grep -qxF "$ENV_FILE" <<<"$listing"; then
         die "snapshot $newest does not contain $ENV_FILE — the secrets are not backed up"
     fi
 
@@ -513,7 +547,7 @@ do_backup() {
     # there were some to include. A host with an empty secrets directory is a
     # working configuration; a host that had files and wrote a snapshot without
     # them is the failure this line is for, and it is invisible until a restore.
-    if [ "$SECRETS_COUNT" -gt 0 ] && ! restic ls "$newest" 2>/dev/null | grep -q "^${SECRETS_DIR}/"; then
+    if [ "$SECRETS_COUNT" -gt 0 ] && ! grep -q "^${SECRETS_DIR}/" <<<"$listing"; then
         die "snapshot $newest does not contain $SECRETS_DIR — the App key and the htpasswd are not backed up"
     fi
 
