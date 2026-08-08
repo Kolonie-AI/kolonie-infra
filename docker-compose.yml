@@ -398,13 +398,10 @@ services:
       # (kolonie-platform#506), and the same secret has guarded the payment
       # routes since — a name describing a path that no longer exists.
       #
-      # **Both are passed during the changeover and that is deliberate.** A
-      # container starts with the environment the host had when it started, so a
-      # release reading only the new name would mount no payment routes between
-      # the deploy and somebody editing `.env`. The API reads the new name first
-      # and falls back; the old line comes out once the host carries the new one.
+      # Both names were passed for one release, so a container starting between
+      # the deploy and the host's `.env` edit would still mount the payment
+      # routes. The host carries the new name and the old line is gone.
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-}
-      DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
       # The Colony's own wallet — D-106, kolonie-platform#503.
       #
       # **`:-` and not `:?`, and the check that matters is not presence.** Both

@@ -57,15 +57,11 @@ fi
 #
 # **Named `PAYMENT_WEBHOOK_SECRET` since `kolonie-infra#95`.** It was
 # `DEPOSIT_WEBHOOK_SECRET`, written for a route that went with the deposit module
-# (`kolonie-platform#506`), and the old name is still read while the host carries
-# it so this pass works either side of the changeover.
+# (`kolonie-platform#506`) while the secret stayed to guard the payment ones.
 #
 # `|| true` is load-bearing: `pipefail` carries grep's status, and grep answers 1
 # when it matches nothing — the case the next branch exists to handle.
 SECRET="$(grep -E '^PAYMENT_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-if [[ -z "$SECRET" ]]; then
-    SECRET="$(grep -E '^DEPOSIT_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-fi
 
 if [[ -z "$SECRET" ]]; then
     # Not a failure. Without the secret the routes are not mounted at all, which

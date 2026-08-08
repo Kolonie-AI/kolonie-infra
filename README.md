@@ -260,7 +260,7 @@ quest going live.
 | | |
 |---|---|
 | `PAYOUT_WALLET_ADDRESS` and `PAYOUT_WALLET_SECRET` in `.env` | otherwise the API mounts no payment routes, and both the pass and the webhook script exit 0 saying they skipped |
-| `PAYMENT_WEBHOOK_SECRET` in `.env` | guards the payment routes. It was `DEPOSIT_WEBHOOK_SECRET` until `kolonie-infra#95` renamed it; the old name is still read while a host carries it |
+| `PAYMENT_WEBHOOK_SECRET` in `.env` | guards the payment routes. It was `DEPOSIT_WEBHOOK_SECRET` until `kolonie-infra#95` renamed it for the route it guards |
 | `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
 | `PAYOUT_MAX_LAMPORTS` and `PAYOUT_DAILY_MAX_LAMPORTS` in `.env` | **both, or the API refuses to start with a wallet.** Payouts are automatic, immediate and otherwise unbounded; a ceiling that defaults to infinity is not a ceiling (`kolonie-platform#505`) |
 

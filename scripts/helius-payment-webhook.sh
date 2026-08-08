@@ -66,10 +66,9 @@ read_env() {
 }
 
 API_KEY="$(read_env HELIUS_API_KEY)"
-# `kolonie-infra#95` renamed it; the old name is read while the host still
-# carries it, so this script works either side of the changeover.
+# `DEPOSIT_WEBHOOK_SECRET` until `kolonie-infra#95` renamed it for the route it
+# actually guards.
 SECRET="$(read_env PAYMENT_WEBHOOK_SECRET)"
-if [[ -z "$SECRET" ]]; then SECRET="$(read_env DEPOSIT_WEBHOOK_SECRET)"; fi
 API_URL="$(read_env API_URL)"
 WALLET="$(read_env PAYOUT_WALLET_ADDRESS)"
 
