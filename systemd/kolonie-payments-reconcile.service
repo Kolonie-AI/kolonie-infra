@@ -8,8 +8,8 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-# `RemainAfterExit` is left at its default of `no`, for the reason
-# `kolonie-reconcile.service` records: systemd will not schedule the next elapse
+# `RemainAfterExit` is left at its default of `no`, for the reason the deposit
+# reconciliation unit recorded before it was removed: systemd will not schedule the next elapse
 # of a timer whose triggered unit is still active, so a `yes` here gives a timer
 # that reads healthy on every signal anybody checks and never fires again.
 ExecStart=/opt/kolonie/scripts/reconcile-payments.sh

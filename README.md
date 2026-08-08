@@ -238,109 +238,20 @@ Reads only, safe against production, and that is where it is useful. It is a SQL
 query and not a dashboard on purpose: if it gets run often enough to be annoying,
 that is the signal to build one.
 
-### Step 8: The deposit reconciliation timer
+### Step 8: The Colony wallet — payments in
 
-A sponsor's USDC arrives through a webhook, and a webhook that is not delivered
-is money the Colony never sees. `kolonie-reconcile.timer` re-reads every deposit
-address hourly and credits what the webhook missed — which is what makes a
-missed delivery a delay rather than a loss (`kolonie-infra#72`).
+This is the whole way money reaches the Colony (D-106, `kolonie-platform#503`):
+the Colony holds **one** wallet, a sponsor pays a quest invoice into it from its
+own, and a payment is recognised by the address it came from rather than by which
+address it landed on.
 
-**Two things have to be true before it is worth enabling**, and it says so
-rather than failing when they are not:
+**Two steps used to stand here** — a deposit reconciliation timer and a Helius
+webhook sync, both against per-sponsor deposit addresses. `kolonie-platform#506`
+removed the module they served and `kolonie-infra#94` removed them; the units are
+gone from this repository and from the host.
 
-| | |
-|---|---|
-| `DEPOSIT_WEBHOOK_SECRET` in `.env` | otherwise the routes are not mounted at all and the pass exits 0, saying it skipped |
-| `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
-| `PAYOUT_MAX_LAMPORTS` and `PAYOUT_DAILY_MAX_LAMPORTS` in `.env` | **both, or the API refuses to start with a wallet.** Payouts are automatic, immediate and otherwise unbounded; a ceiling that defaults to infinity is not a ceiling (`kolonie-platform#505`) |
-
-Units are **copied, not symlinked**, and a change to one in this repository does
-not reach the host on deploy — the same convention as `kolonie-backup`, and for
-the same reason. Copy out of the checkout, never create files in it as root:
-`/opt/kolonie` is a git checkout the deploy resets as `ubuntu`, and a root-owned
-file inside it breaks every deploy at the git step.
-
-```bash
-sudo install -m 644 systemd/kolonie-reconcile.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now kolonie-reconcile.timer
-
-# Prove it — a pass by hand, then the schedule
-sudo systemctl start kolonie-reconcile.service
-journalctl -u kolonie-reconcile.service -n 20
-
-# `NEXT` must not be empty. An empty next elapse is the failure kolonie-infra#66
-# is about: every other signal reads healthy while the timer schedules nothing.
-systemctl list-timers kolonie-reconcile.timer
-```
-
-The journal line is one per pass. `recovered` is the number worth reading: it
-counts deposits the webhook **missed**, so a zero means the webhook is working
-and a number that keeps recurring means it is not.
-
-### Step 9: The Helius webhook
-
-Step 8 is what makes a missed delivery a delay. This is what makes a delivery
-happen at all: `./scripts/helius-webhook.sh` points a Helius enhanced webhook at
-`POST /v1/deposits/webhook` and keeps the watched address list equal to
-`deposit_addresses` (`kolonie-infra#73`).
-
-**It is a sync and not a setup step, and that is the whole design.** There is one
-deposit address per identity, created the first time a sponsor asks where to
-send, so the set grows. A webhook configured once against today's addresses stops
-covering tomorrow's — silently, and the symptom is a sponsor whose transfer is
-not credited promptly.
-
-```bash
-# Say what it would do, change nothing
-./scripts/helius-webhook.sh --dry-run
-
-sudo install -m 644 systemd/kolonie-helius-webhook.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now kolonie-helius-webhook.timer
-
-sudo systemctl start kolonie-helius-webhook.service
-journalctl -u kolonie-helius-webhook.service -n 20
-
-# As with every timer here: `NEXT` must not be empty (kolonie-infra#66)
-systemctl list-timers kolonie-helius-webhook.timer
-```
-
-**What happens when an address is generated after the webhook was configured**,
-which is the question `kolonie-infra#73` asks to have written down:
-
-| | |
-|---|---|
-| Within the hour | The timer's next pass adds it, and the webhook delivers for it from then on |
-| Before that pass | `kolonie-reconcile.timer` credits the deposit anyway — one RPC read per address, hourly |
-| So the cost of the gap | The difference between *seconds* and *within the hour* for one sponsor's first deposit. Never the difference between credited and lost |
-
-That is why this is a timer rather than a call the API makes when it generates an
-address. The gap is already covered by something that has to exist regardless, so
-adding an outbound Helius call to the address-generation path would buy a few
-minutes at the price of a request that can fail while a sponsor is waiting.
-
-**With no deposit addresses, there is no webhook, and that is correct rather than
-missing.** Helius refuses `accountAddresses: []` outright — `400 {"message":["At
-least one account address is required"]}`, measured 2026-08-05 — so *watch
-nothing* is expressed by there being no webhook. The script says `nothing to
-watch` and exits 0. The last address disappearing deletes it again, because
-continuing to ask a third party to report on an erased citizen's address is what
-`governance/erasure.md` says the Colony stops doing.
-
-`./scripts/rehearse-helius-webhook.sh` runs the whole thing against stub `docker`
-and `curl` — create, edit, delete, skip, both failure paths, and the assertion
-that no address, key or secret reaches anything it prints.
-
-### Step 9b: The Colony wallet — payments in
-
-Steps 8 and 9 are the deposit path, which `kolonie-platform#506` removes. This is
-what replaces it (D-106, `kolonie-platform#503`): the Colony holds **one** wallet,
-a sponsor pays a quest invoice into it from its own, and a payment is recognised
-by the address it came from rather than by which address it landed on.
-
-**The reconciliation is not a backstop here, and that is the whole difference
-from step 8.** `kolonie-infra#73` records this provider's webhook registered,
+**The reconciliation is not a backstop here, and that is the difference from the
+deposit path it replaced.** `kolonie-infra#73` records this provider's webhook registered,
 with an `authHeader` byte-identical to the host's secret, never observed
 delivering. So the pass is treated as the only thing that recognises a payment,
 and it runs four times an hour rather than once — what waits on it is a sponsor's
@@ -349,7 +260,7 @@ quest going live.
 | | |
 |---|---|
 | `PAYOUT_WALLET_ADDRESS` and `PAYOUT_WALLET_SECRET` in `.env` | otherwise the API mounts no payment routes, and both the pass and the webhook script exit 0 saying they skipped |
-| `DEPOSIT_WEBHOOK_SECRET` in `.env` | the same secret guards the payment routes. The name still says *deposit*; renaming it on the host is sequenced with `kolonie-platform#506` |
+| `DEPOSIT_WEBHOOK_SECRET` in `.env` | the same secret guards the payment routes. The name is the deposit era's and outlived it; the rename is `kolonie-infra#95` |
 | `RPC_URL` in `.env` | otherwise the API has no watcher and the pass answers zeros |
 | `PAYOUT_MAX_LAMPORTS` and `PAYOUT_DAILY_MAX_LAMPORTS` in `.env` | **both, or the API refuses to start with a wallet.** Payouts are automatic, immediate and otherwise unbounded; a ceiling that defaults to infinity is not a ceiling (`kolonie-platform#505`) |
 
@@ -393,7 +304,7 @@ docker exec kolonie-api curl -sS -H "Authorization: $SECRET" \
     http://127.0.0.1:3000/v1/payments/quarantined | jq
 ```
 
-### Step 10: The image prune
+### Step 9: The image prune
 
 Every build leaves a tagged image on this host and until `kolonie-infra#91`
 nothing removed one. Measured on 2026-08-07, when the partition reached **85 % of
@@ -704,13 +615,13 @@ kolonie-infra/
 │   ├── healthcheck.sh              ← Post-deploy health check
 │   ├── rollback.sh                 ← Return to the last build that passed a health check
 │   ├── backup.sh                   ← Daily pg_dump + .env into an off-host restic repository
-│   ├── helius-webhook.sh           ← Keep the Helius webhook watching every deposit address
+│   ├── helius-payment-webhook.sh   ← Point the Helius webhook at the Colony's own wallet
+│   ├── reconcile-payments.sh       ← Ask the API to recognise payments the webhook missed, and pay citizens
 │   ├── pin-report.sh               ← What each container runs, against what state/deployed.env names
 │   ├── pin-triage.sh               ← The judgement on those rows: pinned, drifted, absent, unknown
 │   ├── rehearse-pin.sh             ← Run both against a stub docker; no VPS needed
 │   ├── rehearse-deploy.sh          ← Run deploy.sh against a stub docker; no VPS needed
-│   ├── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
-│   └── rehearse-helius-webhook.sh  ← Run helius-webhook.sh against a stub docker and curl
+│   └── rehearse-backup.sh          ← Run backup.sh against a stub docker and restic
 │
 ├── docs/
 │   ├── scaling-strategy.md         ← How we scale from VPS to global
@@ -718,10 +629,9 @@ kolonie-infra/
 │   ├── security-model.md           ← Threat model and security decisions
 │   ├── cost-projections.md         ← Infrastructure cost planning
 │   ├── disaster-recovery.md        ← Backup and recovery procedures
-│   ├── deposit-recovery.md         ← Moving USDC off a sponsor's deposit address, by hand
 │   └── database-strategy.md        ← PostgreSQL + Drizzle ORM decision
 │
-├── systemd/                        ← Host units: origin firewall, backup, deposit reconciliation, Helius webhook sync, image prune
+├── systemd/                        ← Host units: origin firewall, backup, payment reconciliation, image prune
 │
 └── .github/
     └── workflows/

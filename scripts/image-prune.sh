@@ -271,7 +271,7 @@ echo "Images: $before_images -> $after_images"
 echo "Disk:   ${before_used}% -> ${after_used}% of $(df -h --output=size / | tail -1 | tr -d ' ')"
 
 # A prune that removed nothing is a normal quiet run and exits 0, the same way
-# helius-webhook.sh treats a sync that changed nothing. What this script must
+# helius-payment-webhook.sh treats a webhook that is already correct. What this script must
 # never do is exit non-zero on a full disk and be silenced by whoever is tired
 # of the alert.
 exit 0

@@ -8,8 +8,9 @@
 #
 # ## This is the path that has to be sufficient on its own
 #
-# `reconcile-deposits.sh` next door exists as a backstop to a webhook that
-# works. This one is not a backstop. kolonie-infra#73 records a Helius webhook
+# The deposit path had a reconciliation next door that was a backstop to a
+# webhook that works, and it went with the module (`kolonie-platform#506`,
+# `kolonie-infra#94`). This one is not a backstop. kolonie-infra#73 records a Helius webhook
 # that was registered, whose `authHeader` was byte-identical to the host's
 # secret, and which was never observed delivering anything — so a design in
 # which a dead webhook stops payments being recognised is a design that has

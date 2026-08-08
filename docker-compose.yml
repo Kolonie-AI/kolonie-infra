@@ -351,23 +351,25 @@ services:
       RHYTHM_MIN_HOURS: ${RHYTHM_MIN_HOURS:-}
       RHYTHM_DEFAULT_HOURS: ${RHYTHM_DEFAULT_HOURS:-}
       RHYTHM_MAX_HOURS: ${RHYTHM_MAX_HOURS:-}
-      # The seal on the secret half of every deposit address
-      # (kolonie-platform#219). `:?` and not `:-`, which puts it in the small
-      # company of BAN_MARK_SALT above, for the same reason: the API reads it at
-      # startup and **refuses to boot without it**, deliberately — a process that
-      # cannot protect a keypair must not generate one. Failing here rather than
-      # in the container turns that into a message an operator can act on
-      # instead of a restart loop.
-      DEPOSIT_SEALING_KEY: ${DEPOSIT_SEALING_KEY:?set DEPOSIT_SEALING_KEY in .env — openssl rand -hex 32}
+      # `DEPOSIT_SEALING_KEY` stood here and was the one `:?` in this block: it
+      # sealed the secret half of every deposit address (kolonie-platform#219)
+      # and the API refused to boot without it. **`kolonie-platform#506` removed
+      # the module and `API_REQUIRED_ENV` with it, so nothing reads the variable
+      # any more** — and a `:?` on a variable nothing reads is a deployment that
+      # cannot start for a reason that no longer exists. Removed by
+      # `kolonie-infra#94`, together with the value on the host: a secret nobody
+      # uses is a secret nobody rotates.
+      #
       # The rest of the quest programme's configuration, all optional and all
       # failing closed (kolonie-infra#72). They are named here because otherwise
       # `.env` cannot reach them: this service has no `env_file`, which is the
       # trap #142 fell into — three variables the API read and nothing passed.
       #
       # Absent, each one withholds a feature rather than breaking one:
-      #   - no DEPOSIT_WEBHOOK_SECRET, and the deposit webhook route is not
+      #   - no DEPOSIT_WEBHOOK_SECRET, and the **payment** webhook route is not
       #     mounted at all. The rule EMAIL_INBOUND_SECRET follows, for the same
-      #     reason: the endpoint turns *money arrived* into a balance
+      #     reason: the endpoint turns *money arrived* into an attributed
+      #     payment. The name is the deposit era's and the variable outlived it
       #   - no QUEST_AUDIT_ENABLED, and a quest with a non-zero reward cannot be
       #     published (kolonie-platform#221). Correct for the pilot, which pays
       #     nothing; it has to become `true` before the first paying quest, and
@@ -375,21 +377,18 @@ services:
       #   - no CONSOLE_URL, and no console is served at all — rather than one
       #     served at the API's own host, where nothing expects a form
       #   - no RPC_URL, and the reconciliation pass reports zeros. The webhook
-      #     still credits; what is lost is the recovery of a delivery it missed,
+      #     still records; what is lost is the recovery of a delivery it missed,
       #     which is the difference between a delay and a loss (#72)
       # The seal on a waiting operator drop (kolonie-platform#410) — the channel
       # an operator hands its agent a code or a credential down.
       #
-      # **`:-` and not `:?`, which is the one way it differs from
-      # `DEPOSIT_SEALING_KEY` four lines up.** That key protects money and the
-      # API refuses to boot without it. This one protects a convenience, and
-      # making it required would have meant that shipping the feature stopped
-      # every existing deployment from starting. Unset, the three drop tools
-      # answer `conflict` and say the Colony has no such channel — the same shape
-      # the SMS adapter uses for absent configuration.
-      #
-      # **Not the same value as DEPOSIT_SEALING_KEY.** One key with two purposes
-      # is one rotation that cannot be done for either of them.
+      # **`:-` and not `:?`.** This protects a convenience, and making it
+      # required would have meant that shipping the feature stopped every
+      # existing deployment from starting. Unset, the three drop tools answer
+      # `conflict` and say the Colony has no such channel — the same shape the
+      # SMS adapter uses for absent configuration. It is now the only sealing key
+      # in this file; `DEPOSIT_SEALING_KEY` was the other, and the note that the
+      # two must never share a value went with it (`kolonie-infra#94`).
       OPERATOR_DROP_SEALING_KEY: ${OPERATOR_DROP_SEALING_KEY:-}
       DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
       # The Colony's own wallet — D-106, kolonie-platform#503.

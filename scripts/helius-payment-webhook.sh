@@ -5,10 +5,11 @@
 # own. This points a Helius enhanced webhook at `POST /v1/payments/webhook` for
 # that one address.
 #
-# ## Why this is not a sync, and `helius-webhook.sh` next door is
+# ## Why this is not a sync, and the deposit webhook next door was
 #
-# The deposit webhook watches a set that grows every time a sponsor asks where to
-# send, so it is derived from the database on every run. This one watches
+# The deposit webhook watched a set that grew every time a sponsor asked where to
+# send, so it was derived from the database on every run — and it went with the
+# module it served (`kolonie-platform#506`, `kolonie-infra#94`). This one watches
 # **exactly one address**, fixed at deploy time in `PAYOUT_WALLET_ADDRESS`. There
 # is nothing to keep in step, so this is idempotent rather than periodic: run it
 # once, run it again after a wallet rotation, and never on a timer.
@@ -22,7 +23,7 @@
 # The API key and the webhook secret. The wallet address **is** printed: it is
 # the Colony's own, it is on chain, and an operator running this needs to see
 # which address was configured. A sponsor's address would not be — that
-# identifies a citizen — which is why `helius-webhook.sh` prints counts only.
+# identifies a citizen — which is why the deposit sync printed counts only.
 #
 # Usage, on the deploy host:
 #

@@ -73,13 +73,12 @@ jobs:
       - name: the Twilio balance row
         run: bash scripts/rehearse-twilio-balance.sh
 
-      # The Helius webhook sync (#73). **This rehearsal existed and ran
-      # nowhere** — written with the script, never added here, and green in all
-      # 48 assertions on 2026-08-07 when it was first run by anything other than
-      # a person. That is #38 again, and it is the reason this workflow exists,
-      # so it is listed rather than noted.
-      - name: helius-webhook.sh
-        run: bash scripts/rehearse-helius-webhook.sh
+      # `rehearse-helius-webhook.sh` stood here — 48 assertions against the
+      # deposit-address sync (#73). The script and its rehearsal went with the
+      # module (`kolonie-platform#506`, `#94`). Its one lasting lesson is kept
+      # rather than deleted with it: **that rehearsal existed and ran nowhere**
+      # for two days, written with the script and never added here, which is #38
+      # again and the reason this workflow exists at all.
 
       # The third leg of the drift check (#90) — the variables the deployed code
       # reads that `docker-compose.yml` never passes, which are permanently

@@ -139,13 +139,15 @@ into the vault.
 
 ### Restoring
 
-**What is not in here: a sponsor's deposit.** Restoring the database restores the
-*sealed* deposit keys, which is what makes the money recoverable — but moving it
-is a different procedure with its own preconditions (SOL for fees, a key handled
-by hand, a ledger that is not corrected by the transfer). It is
-[`deposit-recovery.md`](deposit-recovery.md), and it is deliberately not folded
-into a restore: a restore is run under pressure, and that is the worst moment to
-first read about spending keys.
+**What is not in here, and no longer needs to be: a sponsor's deposit.** A
+restore used to leave the *sealed* deposit keys recoverable and a separate
+procedure — `deposit-recovery.md` — moved the money by hand. Both are gone.
+`kolonie-platform#506` retired the deposit module and wrote off the 0.3 USDC that
+was on the last address; `kolonie-infra#94` removed `DEPOSIT_SEALING_KEY` and the
+document, because a procedure whose key no longer exists is a trap rather than a
+fallback. Under D-106 a sponsor pays from its own wallet into the Colony's, and
+what a restore has to bring back is `PAYOUT_WALLET_SECRET` — which is in `.env`
+and therefore in the snapshot below.
 
 Everything below assumes the credentials are loaded:
 
