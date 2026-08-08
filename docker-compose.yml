@@ -433,6 +433,10 @@ services:
       PAYOUT_WALLET_ADDRESS: ${PAYOUT_WALLET_ADDRESS:-}
       PAYOUT_WALLET_SECRET: ${PAYOUT_WALLET_SECRET:-}
       TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
+      # The boot default for how often the fee is swept (kolonie-platform#507).
+      # Like the payout ceilings above it is also a setting (D-104), so what this
+      # supplies is the value before a maintainer has turned the dial.
+      TREASURY_SWEEP_INTERVAL_MS: ${TREASURY_SWEEP_INTERVAL_MS:-}
       QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}

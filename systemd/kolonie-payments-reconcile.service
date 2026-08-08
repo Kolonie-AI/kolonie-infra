@@ -1,5 +1,5 @@
 [Unit]
-Description=Ask the API to recognise payments the webhook missed (kolonie-platform#503)
+Description=One pass over the Colony's money: reconcile, pay out, sweep the fee (kolonie-platform#503, #505, #507)
 # The pass runs inside the API container, so there has to be one. On a boot where
 # Docker is slow to come up this orders the run after it rather than racing it.
 After=docker.service network-online.target

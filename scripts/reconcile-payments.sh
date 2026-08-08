@@ -34,6 +34,10 @@
 #
 #   ./scripts/reconcile-payments.sh
 #
+# Three calls in one pass, in this order and for the reasons given at each: the
+# reconciliation, the payouts it may have unblocked, and the sweep of what is
+# left over as the Colony's fee (kolonie-platform#507).
+#
 # Exit codes: 0 the pass ran, 2 it could not be started, 3 the API refused.
 
 set -euo pipefail
@@ -106,3 +110,46 @@ echo "reconciled: $RESPONSE"
 # owes its citizens, which is the Colony failing to pay rather than a citizen
 # failing to be payable.
 echo "paid out: $PAYOUTS"
+
+# And the Colony's own share leaves the hot wallet last (kolonie-platform#507).
+#
+# ## Why it is here and third, rather than on a timer of its own
+#
+# **Third is the safety property, not a preference.** The sweep takes what is
+# left after every citizen has been paid; running it before the payouts, or on an
+# independent clock that could land between them, would let it take money a
+# payout in the same minute was about to need. The API refuses that anyway — it
+# sizes the transfer as balance minus what is owed minus the float — but an
+# ordering that relies on a downstream check is an ordering that only works while
+# somebody remembers the check.
+#
+# ## This timer is not the cadence
+#
+# It fires every fifteen minutes and a fee sweep should not. **How often the
+# Colony actually sends is `TREASURY_SWEEP_INTERVAL_MS` in the settings table**
+# (D-104), read by the API on every call; until the interval has passed this
+# answers `too-soon` and sends nothing. That is deliberate: the cadence is then a
+# maintainer's dial rather than a unit file on a host, and changing it needs no
+# deploy and no ssh.
+#
+# ## Why the Colony cannot spend the Treasury
+#
+# It holds no key for it. `TREASURY_ADDRESS` is an address and there is no
+# variable anywhere carrying a secret for it — asserted on the module's exports
+# in `apps/api/src/treasury.test.ts`, so a change that reached for one fails a
+# test rather than a review.
+#
+# A failure here does not fail the unit, for the same reason the payouts do not:
+# the reconciliation has already succeeded, and an unswept fee is still earned
+# and still swept on the next pass.
+SWEEP="$(docker exec -e SECRET="$SECRET" "$CONTAINER" \
+    curl -sS --fail-with-body --max-time 300 \
+    -X POST \
+    -H "Authorization: $SECRET" \
+    http://127.0.0.1:3000/v1/treasury/sweep 2>&1)" || SWEEP="FAILED: $SWEEP"
+
+# `refusal` is the field to read. `too-soon` and `nothing-earned` are the two
+# ordinary answers and mean the arrangement is working. `float-would-not-cover-it`
+# means the fee is stuck in the hot wallet because the wallet holds less than the
+# Colony owes plus its float — not an error, and not a state to leave alone.
+echo "treasury: $SWEEP"
