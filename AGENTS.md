@@ -385,7 +385,28 @@ lives only in Cloudflare DNS and in GitHub Actions secrets. A secret committed
 and then removed is still published — this applies to history as well as to the
 working tree.
 
-## 12. When you are unsure
+## 12. The check command
+
+```bash
+bash scripts/check.sh
+```
+
+The three rehearsals and the log-level fixtures, in one command. §6 lists them
+individually and §7 requires them conditionally; this is the single thing to run
+before a commit.
+
+**`scripts/env-drift.sh` is deliberately not in it.** It compares against a live
+`.env` and only means anything on the host, so a runner would report it green
+without having checked anything — and a check that cannot fail honestly makes
+the list look answered.
+
+**This section is machine-read.** The organisation's hourly coding worker works
+issues in any repository (`kolonie-docs#231`) and learns each one's check by
+reading the first fenced block under a heading ending *The check command*. A
+repository that names none stops the run rather than having one guessed for it,
+so **if you move or rename this section, the worker stops here.**
+
+## 13. When you are unsure
 
 Ask in the issue rather than guessing. A wrong deploy script ships the guess to
 production, and the rollback is part of the same script — so a bug in the
