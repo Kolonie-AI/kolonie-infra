@@ -66,12 +66,15 @@ read_env() {
 }
 
 API_KEY="$(read_env HELIUS_API_KEY)"
-SECRET="$(read_env DEPOSIT_WEBHOOK_SECRET)"
+# `kolonie-infra#95` renamed it; the old name is read while the host still
+# carries it, so this script works either side of the changeover.
+SECRET="$(read_env PAYMENT_WEBHOOK_SECRET)"
+if [[ -z "$SECRET" ]]; then SECRET="$(read_env DEPOSIT_WEBHOOK_SECRET)"; fi
 API_URL="$(read_env API_URL)"
 WALLET="$(read_env PAYOUT_WALLET_ADDRESS)"
 
 if [[ -z "$SECRET" ]]; then
-    echo "skipped: DEPOSIT_WEBHOOK_SECRET is unset, so the payment routes are not mounted."
+    echo "skipped: PAYMENT_WEBHOOK_SECRET is unset, so the payment routes are not mounted."
     exit 0
 fi
 

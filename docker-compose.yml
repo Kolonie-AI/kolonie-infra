@@ -366,10 +366,10 @@ services:
       # trap #142 fell into — three variables the API read and nothing passed.
       #
       # Absent, each one withholds a feature rather than breaking one:
-      #   - no DEPOSIT_WEBHOOK_SECRET, and the **payment** webhook route is not
+      #   - no PAYMENT_WEBHOOK_SECRET, and the payment webhook route is not
       #     mounted at all. The rule EMAIL_INBOUND_SECRET follows, for the same
       #     reason: the endpoint turns *money arrived* into an attributed
-      #     payment. The name is the deposit era's and the variable outlived it
+      #     payment
       #   - no QUEST_AUDIT_ENABLED, and a quest with a non-zero reward cannot be
       #     published (kolonie-platform#221). Correct for the pilot, which pays
       #     nothing; it has to become `true` before the first paying quest, and
@@ -390,6 +390,20 @@ services:
       # in this file; `DEPOSIT_SEALING_KEY` was the other, and the note that the
       # two must never share a value went with it (`kolonie-infra#94`).
       OPERATOR_DROP_SEALING_KEY: ${OPERATOR_DROP_SEALING_KEY:-}
+      # What a Helius delivery presents as its `Authorization` header to
+      # `POST /v1/payments/webhook` (kolonie-platform#503).
+      #
+      # **Renamed from DEPOSIT_WEBHOOK_SECRET by kolonie-infra#95.** It was
+      # written for the deposit webhook, that route went with the module
+      # (kolonie-platform#506), and the same secret has guarded the payment
+      # routes since — a name describing a path that no longer exists.
+      #
+      # **Both are passed during the changeover and that is deliberate.** A
+      # container starts with the environment the host had when it started, so a
+      # release reading only the new name would mount no payment routes between
+      # the deploy and somebody editing `.env`. The API reads the new name first
+      # and falls back; the old line comes out once the host carries the new one.
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-}
       DEPOSIT_WEBHOOK_SECRET: ${DEPOSIT_WEBHOOK_SECRET:-}
       # The Colony's own wallet — D-106, kolonie-platform#503.
       #
