@@ -425,6 +425,12 @@ services:
       QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
       QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
       CONSOLE_URL: ${CONSOLE_URL:-}
+      # The website's own address, and the host the Atlas answers on
+      # (kolonie-platform#546). It has been in .env.example since #8 with nothing
+      # reading it; this is the reader that file asks for before a name is added.
+      # Unset, the API serves no Atlas at all rather than serving it on its own
+      # five hostnames.
+      WEBSITE_URL: ${WEBSITE_URL:-}
       RPC_URL: ${RPC_URL:-}
       # Signing in as a *person* (kolonie-platform#425): an Auth0 tenant, and
       # the console application registered inside it.

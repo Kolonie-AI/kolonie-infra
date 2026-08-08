@@ -122,6 +122,40 @@ http:
       tls:
         certResolver: cloudflare
 
+    # The Atlas — the apex host, one path prefix, answered by the API
+    # (kolonie-platform#546).
+    #
+    # **The only router here that splits one hostname between two services**, and
+    # the reason is that the catalogue is a table. kolonie.ai is a static Astro
+    # site built into an image, so generating the Atlas at build time would mean
+    # a rebuild and a deploy per edited entry — twenty of each in a curation
+    # session. Rendering it from the database is the arrangement D-062 already
+    # runs for console.kolonie.ai, pointed at a path on this host instead of a
+    # host of its own: the pages belong to the site a person is reading, and a
+    # fourth hostname would put the Colony's public catalogue somewhere nobody
+    # links to.
+    #
+    # **The priority is explicit, for the reason the health router's comment
+    # spells out at length.** Traefik defaults it to the rule's length, which
+    # does put this ahead of `website` today purely because `&& PathPrefix(...)`
+    # makes the string longer — an accident of spelling, and rewording the
+    # website rule below would silently take the Atlas down and serve the static
+    # 404 instead. A number says what the file means. Below `health` at 1000, so
+    # /health keeps its CORS answer on every host.
+    #
+    # No rate-limit, matching `website`: these are public, anonymous, cacheable
+    # pages behind Cloudflare, and the API sets its own cache headers on them.
+    atlas:
+      rule: "Host(`kolonie.ai`) && PathPrefix(`/atlas`)"
+      priority: 500
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"
