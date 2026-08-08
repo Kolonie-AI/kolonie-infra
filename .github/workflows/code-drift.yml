@@ -1,0 +1,106 @@
+name: Code drift
+
+# Something fails when the platform reads a variable this repository never
+# passes (#93).
+#
+# `scripts/code-drift.sh` has existed since `#90` and answers the question
+# exactly. Nothing ran it. It was installed with a rehearsal against fixtures —
+# which proves the check works — and no wiring against the real pair of trees,
+# so the two `PAYOUT_*` pairs went missing on 2026-08-07, four hours apart, with
+# the instrument that would have named them sitting in `scripts/`.
+#
+# ## Why here and not in the deploy
+#
+# The deploy was the other candidate and it is the more satisfying one: it runs
+# at the moment the pairing matters, and `deploy.sh` already refuses a deploy
+# whose images declare an environment the host does not provide.
+#
+# It is rejected because of what it would do on a bad day. A platform merge that
+# adds an optional variable would block **every** production deploy — including
+# the unrelated fix somebody is shipping at the time — until this repository
+# catches up. `preflight_env()` states the rule this follows: *a preflight that
+# blocks good deploys is one somebody switches off, and then it is not there for
+# the deploy it was written for.* The consequence of the gap is a feature that
+# is silently absent; the consequence of a false gate is that nothing ships at
+# all. The second is worse, and this check is cross-repository, which is
+# precisely the shape that produces false gates.
+#
+# So it goes red here instead, and the daily schedule is what makes that
+# meaningful: the read is added in the other repository, so a trigger that only
+# fires on a push to this one would wait for an unrelated change to notice.
+# **A platform merge is caught within a day rather than at the merge.** That is
+# a real weakening and it is stated rather than hidden — a day is shorter than
+# the four hours plus a citizen's support ticket that the last two took, and far
+# shorter than `SMS_COLONY_NUMBER`, which was inert for its entire life.
+#
+# ## Why the clone needs no credential
+#
+# Both repositories are public since 2026-07-29. The other tree is a clone
+# rather than a secret, which is the property `code-drift.sh` was designed
+# around and the reason it takes a path rather than reaching for an API.
+
+on:
+  push:
+    branches: [main]
+    # Narrow on purpose, unlike `CI` one file over. What this compares is a pair
+    # — the compose file and the check itself — and a change to Traefik routing
+    # cannot alter the answer. The schedule below is what covers everything a
+    # path filter here cannot see, which is the whole other repository.
+    paths:
+      - docker-compose.yml
+      - scripts/code-drift.sh
+      - scripts/code-drift.allow
+      - .github/workflows/code-drift.yml
+  pull_request:
+    paths:
+      - docker-compose.yml
+      - scripts/code-drift.sh
+      - scripts/code-drift.allow
+      - .github/workflows/code-drift.yml
+  schedule:
+    # 06:20 UTC. Off the hour because everything else in the world runs on it,
+    # and early enough that a maintainer reading the morning's runs sees it
+    # beside the health report rather than after the day's work has started.
+    - cron: '20 6 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'kolonie-platform ref to check against. Defaults to main.'
+        type: string
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout kolonie-infra
+        uses: actions/checkout@v4
+        with:
+          path: infra
+
+      # The deployed code, by name and by ref rather than by whatever is
+      # cached. `fetch-depth: 1` because the check reads the working tree and
+      # has no opinion about history.
+      - name: Checkout kolonie-platform
+        uses: actions/checkout@v4
+        with:
+          repository: Kolonie-AI/kolonie-platform
+          ref: ${{ inputs.ref || 'main' }}
+          path: platform
+          fetch-depth: 1
+
+      - name: Say which pair is being compared
+        run: |
+          echo "infra:    ${{ github.repository }}@${{ github.sha }}"
+          echo "platform: Kolonie-AI/kolonie-platform@$(git -C platform rev-parse --short HEAD)"
+
+      - name: Every variable the code reads is passed by compose
+        run: bash infra/scripts/code-drift.sh "$GITHUB_WORKSPACE/platform"
+        env:
+          COMPOSE_FILE: ${{ github.workspace }}/infra/docker-compose.yml

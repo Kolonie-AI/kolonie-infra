@@ -227,6 +227,70 @@ out=$(drift); status=$?
 check "exit 1" "$status" "1"
 contains "$out" "ACADEMY_SENDER_ADDRESS" "named it"
 
+echo "== 11c. one hop: the name at the call site, the read in the callee"
+# The shape that cost four hours on 2026-08-07 (#93). Neither half looks like a
+# read of a name — the call site has a literal that is not next to `env`, and the
+# callee has `env[name]`, a parameter this check correctly refuses to resolve. It
+# reported a clean tree while two variables the payout pass cannot work without
+# were reaching nothing.
+platform
+cat > "$WORK/platform/apps/api/src/server.ts" <<'TS'
+const perTransaction = numericEnv('PAYOUT_MAX_LAMPORTS')
+const perDay = numericEnv('PAYOUT_DAILY_MAX_LAMPORTS')
+
+function numericEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim()
+  return raw === undefined || raw === '' ? undefined : Number(raw)
+}
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 1" "$status" "1"
+contains "$out" "PAYOUT_MAX_LAMPORTS" "named the first"
+contains "$out" "PAYOUT_DAILY_MAX_LAMPORTS" "and the second"
+absent "$out" "runtime value rather than a name" "and stopped calling the parameter an unknown"
+
+echo "== 11d. a call passing its own fallback is a default, not a gap"
+# `read(RHYTHM_MIN_HOURS_VAR, DEFAULT_RHYTHM_BOUNDS.minHours)`. The second
+# argument is the fallback, which is a claim about a shape rather than a fact
+# about the callee — stated in the script so it can be argued with.
+platform
+cat > "$WORK/platform/apps/api/src/rhythm.ts" <<'TS'
+export const RHYTHM_MIN_HOURS_VAR = 'RHYTHM_MIN_HOURS'
+export function boundsFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  const read = (name: string, fallback: number): number => {
+    const raw = env[name]?.trim()
+    return raw === undefined || raw === '' ? fallback : Number(raw)
+  }
+  return read(RHYTHM_MIN_HOURS_VAR, 1)
+}
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "RHYTHM_MIN_HOURS" "listed as deliberate"
+contains "$out" "OK" "and did not fail the run"
+
+echo "== 11e. a helper's other callers are not turned into variables"
+# `read('Canary')` is a dozen unrelated calls in the real tree. Only a
+# SCREAMING_SNAKE argument, and only in the file the helper is defined in.
+platform
+cat > "$WORK/platform/apps/api/src/rhythm.ts" <<'TS'
+export function boundsFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  const read = (name: string, fallback: number): number => Number(env[name] ?? fallback)
+  return read('RHYTHM_MIN_HOURS', 1)
+}
+TS
+cat > "$WORK/platform/apps/api/src/agents.ts" <<'TS'
+const one = read('Canary')
+const two = read('nobody')
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 0" "$status" "0"
+absent "$out" "Canary" "a name that is not a variable did not become one"
+absent "$out" "nobody" "nor the other"
+
 echo "== 12. it refuses a path that is not a platform checkout"
 out=$(COMPOSE_FILE="$WORK/compose.yml" bash "$ROOT/scripts/code-drift.sh" "$WORK/nowhere" 2>&1); status=$?
 check "exit 1" "$status" "1"

@@ -227,6 +227,90 @@ is_constant_shaped() {
 }
 
 # ---------------------------------------------------------------------------
+# One hop of indirection: a helper that reads whatever name it is handed.
+#
+# **The shape that got past every rule above, and it cost four hours of a
+# production afternoon** (`#93`). `PAYOUT_MAX_LAMPORTS` and
+# `PAYOUT_DAILY_MAX_LAMPORTS` are read like this:
+#
+#     const perTransaction = numericEnv('PAYOUT_MAX_LAMPORTS')
+#     function numericEnv(name: string) { const raw = process.env[name]?.trim() }
+#
+# The literal is at the call site and the read is in the callee, so neither half
+# looks like a read of a name: `literal_reads` sees no `env['…']`, and
+# `constant_reads` sees `env[name]` — a lowercase parameter, correctly refused as
+# unresolvable. The check reported a clean tree while two variables the payout
+# pass cannot work without were reaching nothing. It printed `name` under *this
+# check cannot say what those are*, which is the honest answer and is not a
+# finding anybody acts on.
+#
+# So: find the helpers, then read their call sites. Two rules keep this from
+# inventing variables, and both are needed.
+#
+# **Only the file the helper is defined in.** These helpers are local — a
+# `numericEnv` at the bottom of `server.ts`, a `read` inside
+# `rhythmBoundsFromEnv`. Searching the whole tree for a call to something named
+# `read` matches a dozen unrelated methods, measured 2026-08-08.
+#
+# **Only SCREAMING_SNAKE arguments.** An environment variable is spelled that way
+# by universal convention, and it is the same shape `passed_by_compose` matches
+# on the other side. `read('Canary')` is not a variable and must not become one.
+#
+# **A call with a second argument is passing its own fallback**, so the name is
+# defaulted rather than inert — `read(RHYTHM_MIN_HOURS_VAR,
+# DEFAULT_RHYTHM_BOUNDS.minHours)` is configuration with a shipped default. That
+# is a heuristic about a shape rather than a fact about the callee, and it is
+# stated here so it can be disagreed with.
+# ---------------------------------------------------------------------------
+
+# `name<TAB>param<TAB>file` for every helper whose parameter feeds `env[param]`.
+env_helpers() {
+    printf '%s\n' "$DEFINITION_FILES" | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        awk -v F="$file" '
+          match($0, /(function|const|let)[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(=[ \t]*(async[ \t]+)?)?\(/) {
+            if (match($0, /(function|const|let)[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+              decl = substr($0, RSTART, RLENGTH)
+              n = split(decl, a, /[ \t]+/); fn = a[n]
+            }
+            rest = substr($0, index($0, "(") + 1)
+            param = match(rest, /^[A-Za-z_][A-Za-z0-9_]*/) ? substr(rest, RSTART, RLENGTH) : ""
+            # A dozen lines is the body of a helper of this kind. Anything longer
+            # is a function that happens to take a string, not a reader.
+            if (fn != "" && param != "") { pending_fn = fn; pending_param = param; countdown = 12 }
+            next
+          }
+          countdown > 0 {
+            countdown--
+            if (index($0, "env[" pending_param "]") > 0) {
+              print pending_fn "\t" pending_param "\t" F
+              countdown = 0
+            }
+          }
+        ' "$file" 2>/dev/null || true
+    done | sort -u
+}
+
+# The SCREAMING_SNAKE first argument of every call to one helper, in its own
+# file. `<name><TAB>defaulted` where `defaulted` is 1 when the call passes a
+# fallback of its own.
+helper_reads() {
+    local fn="$1" file="$2"
+    { grep -oE "(^|[^.A-Za-z0-9_])${fn}\((\"[A-Z_][A-Z0-9_]*\"|'[A-Z_][A-Z0-9_]*'|[A-Z_][A-Z0-9_]*)[^)]*\)" "$file" 2>/dev/null || true; } |
+        while IFS= read -r call; do
+            local arg rest defaulted=0
+            arg=$(printf '%s' "$call" | sed -E "s/.*${fn}\(//; s/[\"']//g; s/[,)].*//")
+            rest=$(printf '%s' "$call" | sed -E "s/.*${fn}\([^,)]*//")
+            case "$rest" in *,*) defaulted=1 ;; esac
+            # A constant resolves to the name it holds; a literal is the name.
+            if is_constant_shaped "$arg" && [ -n "$(resolve_constant "$arg")" ]; then
+                arg="$(resolve_constant "$arg")"
+            fi
+            [ -n "$arg" ] && printf '%s\t%s\n' "$arg" "$defaulted"
+        done
+}
+
+# ---------------------------------------------------------------------------
 # Names deliberately absent from compose whose default this check cannot see.
 #
 # **The residue, and it is meant to stay short.** The `??`-on-the-line rule below
@@ -248,7 +332,31 @@ allowed() {
 READ_NAMES="$(mktemp)"
 UNRESOLVED="$(mktemp)"
 DYNAMIC="$(mktemp)"
-trap 'rm -f "$READ_NAMES" "$UNRESOLVED" "$DYNAMIC" 2>/dev/null || true' EXIT
+HELPER_DEFAULTED="$(mktemp)"
+HELPER_PARAMS="$(mktemp)"
+HELPERS_SEEN="$(mktemp)"
+trap 'rm -f "$READ_NAMES" "$UNRESOLVED" "$DYNAMIC" "$HELPER_DEFAULTED" "$HELPER_PARAMS" "$HELPERS_SEEN" 2>/dev/null || true' EXIT
+
+# One hop, before the identifiers are classified: a name reached this way is a
+# name the code reads, and its helper's parameter is then not an unknown.
+while IFS=$'\t' read -r fn param file; do
+    [ -n "$fn" ] || continue
+    found=0
+    while IFS=$'\t' read -r name defaulted; do
+        [ -n "$name" ] || continue
+        found=1
+        printf '%s\n' "$name" >> "$READ_NAMES"
+        [ "$defaulted" = "1" ] && printf '%s\n' "$name" >> "$HELPER_DEFAULTED"
+    done < <(helper_reads "$fn" "$file")
+    if [ "$found" = "1" ]; then
+        printf '%s\n' "$param" >> "$HELPER_PARAMS"
+        printf '%s reads whatever %s it is handed, in %s\n' "$fn" "$param" "${file#$PLATFORM/}" >> "$HELPERS_SEEN"
+    fi
+done < <(env_helpers)
+
+sort -u -o "$HELPER_DEFAULTED" "$HELPER_DEFAULTED"
+sort -u -o "$HELPER_PARAMS" "$HELPER_PARAMS"
+sort -u -o "$HELPERS_SEEN" "$HELPERS_SEEN"
 
 {
     literal_reads
@@ -262,6 +370,12 @@ while IFS= read -r identifier; do
         # `process.env[name]`, where `name` is a parameter. There is no name to
         # compare, and saying so is the honest answer — resolving it anyway is
         # what invented two variables on 2026-08-07.
+        #
+        # **Unless the helper it belongs to has been read** (`#93`): then the
+        # names are the literals at its call sites, they are already in
+        # `READ_NAMES`, and reporting the parameter as an unknown would hide
+        # that under a line saying nothing can be known.
+        grep -qxF "$identifier" "$HELPER_PARAMS" && continue
         printf '%s\n' "$identifier" >> "$DYNAMIC"
         continue
     fi
@@ -371,7 +485,8 @@ while IFS= read -r name; do
     [ -n "$name" ] || continue
     printf '%s\n' "$PASSED" | grep -qxF "$name" && continue
 
-    if allowed "$name" || has_default "$name" || has_default_via_constant "$name"; then
+    if allowed "$name" || has_default "$name" || has_default_via_constant "$name" ||
+        grep -qxF "$name" "$HELPER_DEFAULTED"; then
         DEFAULTED="${DEFAULTED}${name}"$'\n'
     else
         INERT="${INERT}${name}"$'\n'
@@ -400,15 +515,53 @@ if [ -s "$DYNAMIC" ]; then
     report "read through a runtime value rather than a name — this check cannot say what those are, and there is nothing to compare:" "$(cat "$DYNAMIC")"
 fi
 
+if [ -s "$HELPERS_SEEN" ]; then
+    report "resolved through one hop, because the name is at the call site and the read is in the callee (\`#93\`):" "$(cat "$HELPERS_SEEN")"
+fi
+
 if [ -s "$UNRESOLVED" ]; then
     report "read through an identifier this check could not resolve — a hole in the check itself, not a finding about the code:" "$(cat "$UNRESOLVED")"
     FAILED=1
 fi
 
+# **The message says what to do** (`#93`). Naming the variable and stopping
+# leaves the reader to work out which of three repositories to open, and the
+# answer is nearly always the same one line in the same file — so it is written
+# here rather than learned once per incident.
 if [ "$FAILED" -eq 0 ]; then
     echo "OK — every variable the code reads is passed by compose or has its own default"
 else
-    echo "DRIFT — a variable the code reads is permanently empty in production"
+    cat <<'ACTION'
+DRIFT — a variable the code reads is permanently empty in production.
+
+The name is read by the deployed code and docker-compose.yml never passes it, so
+setting it on the host changes nothing: the api service has no env_file, and a
+name compose does not list does not reach the process. Nothing will fail and
+nothing will log — the feature it controls is simply never there.
+
+What to do, in order of how often it is the answer:
+
+  1. Pass it. Add the name to that service's `environment:` block in
+     docker-compose.yml and to .env.example, so the next reader knows it exists.
+     Two spellings, and they are not the same: `NAME: ${NAME:-}` always sets the
+     variable, to the empty string when the host has nothing — while a bare
+     `- NAME` list entry passes it only when the host has it, leaving it unset
+     otherwise. Use the first where the code reads blank and unset alike; use
+     the second where it must tell them apart. Getting that backwards is
+     kolonie-platform#509: `MASTODON_VERIFIER_INSTANCES: ${...:-}` handed the
+     verifier an empty list, which it read as a decision to certify nothing.
+  2. Give it a default in the platform, beside the read, if unset is a working
+     configuration. `process.env[X] ?? value` — never `?? ''`, which is the
+     unconfigured branch wearing a default's clothes and is how SMS_COLONY_NUMBER
+     refused every call for its whole life.
+  3. Say it is deliberate. Add it to scripts/code-drift.allow with the reason on
+     the same line — for a default this check cannot see, applied inside the
+     callee or behind an early return. A name there does not fail the run, and a
+     line without a reason is one somebody should have argued for instead.
+
+Do not solve it by giving the service an env_file. That passes the host's whole
+.env into the container and makes every secret visible to every process in it.
+ACTION
 fi
 
 exit "$FAILED"

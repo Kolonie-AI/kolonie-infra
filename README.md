@@ -152,10 +152,12 @@ not heard of cannot drift from a template — and it is permanently empty in
 production, because the api service has no `env_file`. Nothing fails and nothing
 logs; the guard that depends on it simply always takes the unconfigured branch.
 
-That has shipped twice. `SMS_COLONY_NUMBER` (kolonie-platform#480) made
+That has shipped four times. `SMS_COLONY_NUMBER` (kolonie-platform#480) made
 `sms-receive` refuse every call from the day it shipped, and the Colony learned
 about it from a citizen's support ticket. `MASTODON_VERIFIER_INSTANCES` (#482)
-was the same shape.
+was the same shape. Then `PAYOUT_WALLET_ADDRESS`/`PAYOUT_WALLET_SECRET` and
+`PAYOUT_MAX_LAMPORTS`/`PAYOUT_DAILY_MAX_LAMPORTS` (#93), twice within four hours
+on 2026-08-07 — **with the check below already written and nothing running it.**
 
 ```bash
 # Both repositories are public, so the other tree is a clone rather than a credential
@@ -170,9 +172,23 @@ excludes test files by path rather than by matching their text. And a fallback t
 the empty string is not treated as a default: `process.env['X'] ?? ''` is the
 unconfigured branch, which is exactly what #480 looked like.
 
+It resolves **one hop of indirection** (#93): a helper that reads whatever name
+it is handed — `numericEnv('PAYOUT_MAX_LAMPORTS')` with `process.env[name]`
+inside — hides the name from every rule above, because neither half looks like a
+read. Only SCREAMING_SNAKE arguments count, and only in the file the helper is
+defined in, so a `read('Canary')` elsewhere does not become a variable.
+
 A name with a real in-code default is listed without failing the run.
 `scripts/code-drift.allow` holds the short residue whose default is applied by a
 *callee*, where no amount of grepping the call site would see it.
+
+**`Code drift` runs it** — on a change to the compose file or to the check, and
+daily at 06:20 UTC. Daily because the read is added in the *other* repository, so
+a trigger that only fired on a push here would wait for an unrelated change to
+notice. It is not in the deploy's preflight on purpose: a platform merge adding
+an optional variable would block every production deploy, including the unrelated
+fix somebody is shipping at the time, and `preflight_env()` in `deploy.sh` states
+why that is the worse failure.
 
 Run against `kolonie-platform@96cd078` — the commit before #480 landed — it names
 `SMS_COLONY_NUMBER` and exits non-zero, which is the only proof it earns its

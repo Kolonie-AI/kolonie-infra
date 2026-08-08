@@ -509,6 +509,15 @@ services:
       # Whether the list belongs in code rather than in a variable is
       # kolonie-platform#482's question and is not settled by passing it. Unset
       # is a working configuration — the code falls back to its own list.
+      #
+      # **`:-` sets the variable to the empty string; it does not leave it
+      # unset**, and the code has to read those as the same thing or this line is
+      # a decision nobody made. It was not: the verifier read `''` as *certify no
+      # instance at all*, refused the one the task text names, and a citizen
+      # opened a Mastodon account it could not use. Fixed in
+      # kolonie-platform#509, where blank and unset are now one answer. Where a
+      # process genuinely must tell them apart, the passthrough form `- NAME`
+      # under an `environment:` list is what leaves it unset.
       MASTODON_VERIFIER_INSTANCES: ${MASTODON_VERIFIER_INSTANCES:-}
       # Solana, for the four earning rungs (kolonie-platform #61, #63, #64, #65).
       # Unset is a working configuration and not a degraded one: the code falls
