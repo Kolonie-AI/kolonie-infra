@@ -87,6 +87,12 @@ cases = [
     ('traefik', '95.89.46.52 - - [05/Aug/2026:15:17:06 +0000] "GET /v1/x HTTP/2.0" 502 0 "-" "-" 15211 "api@file" "http://kolonie-api:3000" 12ms'),
     ('traefik', 'time="2026-08-05T15:17:06Z" level=error msg="something at the edge"'),
     ('website', '127.0.0.1 - - [05/Aug/2026:15:20:25 +0000] "GET / HTTP/1.1" 500 41518 "-" "Wget" "-"'),
+    # nginx's *error* log, which is a different shape from its access log and so
+    # matched nothing until #97. 942 lines a day arrived unlabelled this way.
+    ('website', '2026/08/09 04:12:07 [notice] 1#1: gracefully shutting down'),
+    ('website', '2026/08/09 04:12:07 [warn] 31#31: conflicting server name'),
+    ('website', '2026/08/09 04:12:07 [error] 31#31: open() failed (2: No such file or directory)'),
+    ('website', '2026/08/09 04:12:07 [emerg] 1#1: bind() to 0.0.0.0:80 failed (98: Address in use)'),
     ('pgadmin', '::ffff:127.0.0.1 - - [05/Aug/2026:15:21:47 +0000] "GET /misc/ping HTTP/1.1" 200 4 "-" "Wget"'),
     ('api', '{"level":"info","time":1785900000000,"msg":"a service that already says so"}'),
     # The observability stack (#81): the chatter goes, a warning stays, and a
@@ -115,19 +121,97 @@ PY
 echo "Running ${PROMTAIL_IMAGE} over $(wc -l < "$WORK/sample.log") fixture lines…"
 echo
 
+# **Asserted, not eyeballed** (`#97`). This printed its output under a heading
+# reading "What to look for" and exited 0 whatever the pipeline had done — so a
+# derivation that silently stopped matching would have produced a green run and a
+# list nobody compared against anything. `#97` names that exactly: *what is
+# missing is the measurement that would have said so*.
 $DOCKER run --rm -i -v "$WORK:/w" "$PROMTAIL_IMAGE" \
   -config.file=/w/promtail.yml -stdin -dry-run < "$WORK/sample.log" 2>/dev/null |
-  grep 'job=' |
-  sed -E 's/^[0-9T:+-]+//' |
-  cut -c1-160
+  grep 'job=' | sed -E 's/^[0-9T:+-]+//' > "$WORK/labelled.txt"
+
+cat "$WORK/labelled.txt" | cut -c1-160
+echo
+
+FAILED=()
+
+# `<service> <expected-level> <a substring of the line>`. An expected level of
+# `-` means the line must arrive with **no** level: some genuinely cannot have
+# one, and asserting that is as much the point as asserting the ones that can.
+# `DROPPED` means the line must not arrive at all.
+assert_level() {
+  local service=$1 expected=$2 needle=$3
+  local line
+  # `|| true`, and it is load-bearing: this file runs under `set -e -o pipefail`,
+  # and a `grep` that finds nothing is the *expected* result for every DROPPED
+  # assertion. Without it the script exits silently at the first such line and
+  # reports success by never reaching the failure count.
+  line=$(grep -F "$needle" "$WORK/labelled.txt" | head -1 || true)
+
+  if [ "$expected" = DROPPED ]; then
+    if [ -z "$line" ]; then echo "  ok   dropped: $needle"
+    else echo "  FAIL survived but should have been dropped: $needle"; FAILED+=("$needle"); fi
+    return
+  fi
+
+  if [ -z "$line" ]; then
+    echo "  FAIL missing entirely: $needle"
+    FAILED+=("$needle")
+    return
+  fi
+
+  local got
+  got=$(sed -E 's/.*level="?([a-z]*)"?.*/\1/' <<<"$line")
+  grep -q 'level=' <<<"$line" || got=""
+
+  if [ "$expected" = - ]; then
+    if [ -z "$got" ]; then echo "  ok   no level, correctly: $needle"
+    else echo "  FAIL got level=$got, expected none: $needle"; FAILED+=("$needle"); fi
+  elif [ "$got" = "$expected" ]; then
+    echo "  ok   level=$expected: $needle"
+  else
+    echo "  FAIL got level=${got:-none}, expected $expected: $needle"
+    FAILED+=("$needle")
+  fi
+}
+
+echo "postgres — its own severity, and a human at a prompt told apart"
+assert_level postgres info        'checkpoint starting'
+assert_level postgres error       'relation "verdicts" does not exist'
+assert_level postgres interactive 'syntax error at or near'
+assert_level postgres warn        'something mild'
 
 echo
-echo "What to look for:"
-echo "  · every line carries a level="
-echo "  · the psql ERROR is level=\"interactive\", not level=\"error\""
-echo "  · the application ERROR beside it is level=\"error\""
-echo "  · the 502 and the 500 are errors; the 200s are not"
-echo "  · the api line, which already said info, still says info"
-echo "  · loki's and promtail's info lines are absent — dropped at ingestion (#81)"
-echo "  · loki's warn line is present, and labelled, so a Loki refusing writes can say so"
-echo "  · loki's panic line is present: an unparseable level is kept, not dropped"
+echo "the edge — 5xx is an error, 4xx and 2xx are not"
+assert_level traefik info  '"POST / HTTP/2.0" 200'
+assert_level traefik error '"GET /v1/x HTTP/2.0" 502'
+assert_level traefik error 'something at the edge'
+assert_level website error '"GET / HTTP/1.1" 500'
+assert_level pgadmin info  '/misc/ping'
+
+echo
+echo "nginx's error log, which is not its access log (#97)"
+assert_level website info  'gracefully shutting down'
+assert_level website warn  'conflicting server name'
+assert_level website error 'open() failed'
+assert_level website error 'bind() to 0.0.0.0:80 failed'
+
+echo
+echo "a service that already says so keeps what it said"
+assert_level api info 'a service that already says so'
+
+echo
+echo "the observability stack: chatter dropped, warnings kept (#81)"
+assert_level loki     DROPPED 'no marks file found'
+assert_level promtail DROPPED 'received file watcher event'
+assert_level loki     warn    'refusing writes'
+assert_level loki     -       'panic: runtime error'
+
+echo
+if [ ${#FAILED[@]} -eq 0 ]; then
+  echo "all good"
+  exit 0
+fi
+echo "${#FAILED[@]} failed:"
+printf '  - %s\n' "${FAILED[@]}"
+exit 1

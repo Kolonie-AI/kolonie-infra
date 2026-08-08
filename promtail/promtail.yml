@@ -207,6 +207,90 @@ scrape_configs:
             - labels:
                 level:
 
+      # 5c. nginx's *error* log, which is not its access log (`kolonie-infra#97`).
+      #
+      # **942 lines a day from `website` carried no level**, measured 2026-08-09
+      # — 29 % of the 3,211 that had none. 5b above covers Common Log Format, and
+      # every one of these is the other thing nginx writes:
+      #
+      #     2026/08/09 04:12:07 [notice] 1#1: gracefully shutting down
+      #     2026/08/09 04:12:07 [notice] 31#31: worker process 32 exited with code 0
+      #
+      # A different shape entirely, so 5b's expressions match nothing and the
+      # line arrives unlabelled. It is the most ordinary log a container writes —
+      # start, reload, shut down — and it was invisible to every Watch Agent
+      # query, which all filter on `level`.
+      #
+      # **nginx's own severity is read, never guessed at.** The eight it can emit
+      # map onto the four we keep. `crit`, `alert` and `emerg` are worse than
+      # `error` and there is deliberately nothing above `error` here: a fifth
+      # value would be one more thing every query has to know about, and an
+      # `emerg` that arrives as `error` is still seen by everything that looks
+      # for errors. The severity itself stays in the line for anyone reading it.
+      #
+      # `debug` maps to `info` rather than being dropped. It needs a special
+      # build to appear at all, so this is a completeness case rather than a live
+      # one — and a line that says `[debug]` and arrives with no level would be
+      # in exactly the residue this stage exists to remove.
+      - match:
+          selector: '{service="website"}'
+          stages:
+            # `source: line` for the reason the postgres block gives: without it
+            # the expression runs against Docker's JSON envelope and can appear
+            # to work by matching the escaped copy inside it.
+            - regex:
+                source: line
+                expression: '^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} \[(?P<nginx_severity>[a-z]+)\]'
+            - template:
+                source: level
+                template: >-
+                  {{- $severity := .nginx_severity | default "" -}}
+                  {{- if or (eq $severity "error") (eq $severity "crit") (eq $severity "alert") (eq $severity "emerg") -}}
+                  error
+                  {{- else if eq $severity "warn" -}}
+                  warn
+                  {{- else if or (eq $severity "notice") (eq $severity "info") (eq $severity "debug") -}}
+                  info
+                  {{- else -}}
+                  {{- end -}}
+            - labels:
+                level:
+
+      # 5d. What is left, and why it is left (`kolonie-infra#97`).
+      #
+      # 3,211 lines a day carried no level, measured 2026-08-09 — 3.7 % of
+      # 85,363. Grouped by service, and read by hand rather than guessed at:
+      #
+      #   postgres  1,789   continuation lines of a multi-line statement
+      #   website     942   nginx's error log — FIXED by 5c above
+      #   api         476   npm lifecycle output and seed banners at startup
+      #   traefik       1
+      #   (none)        3   lines arriving with no service label at all
+      #
+      # **The two that remain genuinely cannot carry one, and naming them is the
+      # point.** `#97` asks for exactly this: a residue that is *understood*
+      # rather than merely tolerated.
+      #
+      # - **Postgres statement continuations.** When Postgres logs an error it
+      #   prints the offending SQL underneath, one line per line of the query.
+      #   Those lines are the *body* of a record whose first line already carries
+      #   `ERROR:` and is already labelled. Labelling them separately would count
+      #   one failure many times — the 177 occurrences of one bad column on
+      #   2026-08-08 dragged roughly 1,700 continuation lines with them, which is
+      #   where the largest share of this residue comes from and why it moves
+      #   with the incident rather than with the traffic.
+      #
+      # - **npm and seed banners.** `> node dist/migrate.js`, blank lines, and
+      #   `provider catalogue: 43 entries written` are the container starting up.
+      #   They are output, not events, and there is no severity to read.
+      #
+      # **A level is not invented for either.** `#97`: *a level that is derived is
+      # a guess dressed as a fact*, and *a real failure derived as `info` is worse
+      # than one with no level at all, because it looks handled.* Both of these
+      # would have to be guessed from surrounding context this pipeline does not
+      # have. They stay unlabelled, and the daily summary reports how many there
+      # were so that a change in the number is visible.
+
       # 6. **The cardinality rule, enforced rather than stated.**
       #
       # `filename` is attached automatically by the file target and its value is
