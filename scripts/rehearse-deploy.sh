@@ -158,9 +158,16 @@ case "$1 ${2:-}" in
 
       case "$*" in
         *"{{.State.Health.Status}}"*|*"{{.State.Running}}"*|*"{{.RestartCount}}"*) ;;
+        *"{{range .Config.Healthcheck.Test}}"*) ;;
         *"{{.State.StartedAt}}"*|*"{{range .Mounts}}"*) ;;
         *) echo "STUB: unknown docker inspect format: $*" >&2; exit 125 ;;
       esac
+
+      if echo "$*" | grep -qF '{{range .Config.Healthcheck.Test}}'; then
+        if [ "${NO_PROBE_FOR:-}" = "$container" ]; then exit 1; fi
+        printf '%s\n' CMD node -e "fetch('http://127.0.0.1:3004/health')"
+        exit 0
+      fi
 
       # What recreate_stale_mounted_config() asks, and it asks two things (#84).
       #
@@ -225,6 +232,21 @@ case "$1 ${2:-}" in
       # report_failure_logs() exists for.
       for container in "$@"; do :; done
       if [ "${LOG_FOR:-}" = "$container" ]; then printf '%s\n' "${LOG_TEXT:-}"; fi
+      exit 0 ;;
+  "exec"*)
+      container="${2:-}"
+      if [ "${PROBE_TIMEOUT_FOR:-}" = "$container" ]; then
+        [ -n "${PROBE_PARTIAL:-}" ] && printf '%s\n' "$PROBE_PARTIAL"
+        exec sleep 10
+      fi
+      if [ "${PROBE_UNREACHABLE_FOR:-}" = "$container" ]; then
+        echo "container is not running" >&2
+        exit 1
+      fi
+      if [ -z "${PROBE_BODY_FOR:-}" ] || [ "$PROBE_BODY_FOR" = "$container" ]; then
+        printf '%s\n' "${PROBE_BODY:-{\"status\":\"ok\"}}"
+      fi
+      [ "${PROBE_FAIL_FOR:-}" = "$container" ] && exit 1
       exit 0 ;;
   "login"*|"logout"*) exit 0 ;;
 esac
@@ -715,6 +737,60 @@ out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-api CRASHLOOP_SERVICE=kolonie-api
 contains "$out" "ERROR: not healthy after 5s" "waited for the deadline"
 absent "$out" "restarting in a loop" "and said nothing about restarts"
 
+echo "== 20g. a failed health check quotes the probe body before rollback (#106)"
+# The badge-runner incident printed only `runner.started`; its health endpoint
+# held the actual reason. Replaying the configured in-container request must keep
+# that body before rollback replaces the failing container.
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+PROBE_REASON='{"status":"stalled","loops":{"quest-refunds":{"status":"stalled","reason":"The loop is not running."}}}'
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-badge-runner \
+                    PROBE_BODY_FOR=kolonie-badge-runner PROBE_BODY="$PROBE_REASON" \
+                    PROBE_FAIL_FOR=kolonie-badge-runner)
+status=$?
+contains "$out" "[badge-runner probe] $PROBE_REASON" "quoted the health endpoint body and marked it as the probe"
+contains "$out" "The loop is not running." "preserved the reason the ordinary container log omitted"
+contains "$(cat "$WORK/docker.log")" "docker exec kolonie-badge-runner node -e" "ran the configured probe inside the failing container"
+contains "$(cat "$WORK/docker.log")" "http://127.0.0.1:3004/health" "asked the endpoint named by the configured health check"
+check "the deploy still failed" "$status" "1"
+probe_line=$(grep -n "docker exec kolonie-badge-runner" "$WORK/docker.log" | head -1 | cut -d: -f1)
+rollback_line=$(grep -n "up -d" "$WORK/docker.log" | tail -1 | cut -d: -f1)
+check "asked the probe before rollback ran" \
+  "$([ "$probe_line" -lt "$rollback_line" ] && echo yes || echo no)" "yes"
+
+echo "== 20h. a probe that cannot be asked says why and does not block rollback"
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-badge-runner \
+                    PROBE_UNREACHABLE_FOR=kolonie-badge-runner)
+status=$?
+contains "$out" "[badge-runner probe] container is not running" "printed why the probe could not answer"
+contains "$out" "Rollback completed" "rollback still completed"
+check "the run still failed for health, not diagnostics" "$status" "1"
+
+echo "== 20i. a service with no readable health check is diagnostic, not fatal"
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-badge-runner NO_PROBE_FOR=kolonie-badge-runner)
+status=$?
+contains "$out" "badge-runner probe: no configured health check could be read" "said there was no probe to replay"
+contains "$out" "Rollback completed" "and still rolled back"
+check "the run still failed" "$status" "1"
+
+echo "== 20j. a hanging probe is killed, reports partial output and still rolls back"
+seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+started=$SECONDS
+out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-badge-runner \
+                    HEALTH_PROBE_TIMEOUT=1 PROBE_TIMEOUT_FOR=kolonie-badge-runner \
+                    PROBE_PARTIAL='probe began answering')
+status=$?
+elapsed=$((SECONDS - started))
+contains "$out" "[badge-runner probe] probe began answering" "kept bounded partial output"
+contains "$out" "the output above may be partial" "said the diagnostic timed out"
+contains "$out" "Rollback completed" "rollback still completed after the timeout"
+check "the run still failed" "$status" "1"
+# The health verdict itself takes five seconds in rehearsal. Without the hard
+# probe timeout this case takes another ten; with it, the whole run stays below
+# nine seconds including rollback.
+check "the hard timeout did not wait for the 10s probe" "$([ "$elapsed" -lt 9 ] && echo yes || echo no)" "yes"
+
 echo "== 21. an image requiring a variable the host does not provide is refused"
 # #42, and the other half of the 2026-07-31 outage. BAN_MARK_SALT was mandatory
 # in the application and absent from this repository entirely — so compose never
@@ -1174,4 +1250,3 @@ contains "$out" "every container is at least as new" "and it is stated once, not
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
-
