@@ -59,14 +59,9 @@ STATE_FILE="${DEPLOY_DIR}/state/deployed.env"
 # Upstream images are not here on purpose. Traefik, Postgres, Loki, Promtail and
 # pgAdmin are pinned in `docker-compose.yml` to a version this organisation did
 # not build, so there is no record of intent for them to drift from.
-SERVICES=(
-    "api:API_IMAGE"
-    "verifier-runner:RUNNER_IMAGE"
-    "moderation-runner:MODERATION_IMAGE"
-    "support-triage-runner:TRIAGE_IMAGE"
-    "badge-runner:BADGE_IMAGE"
-    "website:WEBSITE_IMAGE"
-)
+# shellcheck source=scripts/services.sh
+. "$(dirname "$0")/services.sh"
+SERVICES=("${KOLONIE_SERVICE_IMAGES[@]}")
 
 docker_cmd() {
     # Same reasoning as health-report.sh and deployed-revision.sh, including the

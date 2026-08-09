@@ -31,9 +31,14 @@ set -uo pipefail
 
 DEPLOY_DIR="${KOLONIE_DEPLOY_DIR:-/opt/kolonie}"
 
-# The services whose images this organisation builds. Postgres and Traefik are
-# upstream images and carry somebody else's revision, which would be noise.
-SERVICES=(api verifier-runner moderation-runner website)
+# The services whose images this organisation builds, from the one place that
+# lists them (`#107`). This file used to carry its own four-name copy, which was
+# missing `badge-runner` and `support-triage-runner` — so the drift check was
+# blind to two of the six and reported the other four current while one of the
+# missing pair had been failing every deploy for seven hours.
+# shellcheck source=scripts/services.sh
+. "$(dirname "$0")/services.sh"
+SERVICES=("${KOLONIE_SERVICES[@]}")
 
 docker_cmd() {
     # Same reasoning as health-report.sh, including the `</dev/null`: without it

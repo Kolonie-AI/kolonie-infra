@@ -49,6 +49,7 @@ step() {
 
 step "deploy.sh, against a stub docker" bash scripts/rehearse-deploy.sh
 step "backup.sh, against a stub docker" bash scripts/rehearse-backup.sh
+step "the service list against compose" bash scripts/check-services.sh
 step "drift-triage.sh" bash scripts/rehearse-drift.sh
 step "the promtail level derivation" bash scripts/check-log-levels.sh
 
