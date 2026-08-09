@@ -1003,6 +1003,10 @@ HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
 # kilobytes, and one of those buries the message underneath it.
 HEALTH_LOG_LINES=${HEALTH_LOG_LINES:-40}
 HEALTH_LOG_COLS=${HEALTH_LOG_COLS:-500}
+# A diagnostic probe must not consume the rollback window if the container has
+# stopped answering. Docker's configured checks allow ten seconds today; five is
+# enough for one local request whose purpose is only to preserve the response.
+HEALTH_PROBE_TIMEOUT=${HEALTH_PROBE_TIMEOUT:-5}
 
 # When a crash loop is treated as decided, rather than waited out.
 #
@@ -1061,7 +1065,8 @@ failure_exit_code() {
     if [ "$IN_CASCADE" = 1 ]; then echo "$CASCADE_EXIT_CODE"; else echo 1; fi
 }
 
-# Quote what the failing containers printed, before rollback() replaces them.
+# Quote what the failing containers printed and what their own health endpoints
+# answer, before rollback() replaces them.
 #
 # From #43, and the 2026-07-31 outage: nineteen deploys reported
 # `not healthy after 180s: api(unhealthy)` and nothing else. That line reads as a
@@ -1077,13 +1082,15 @@ failure_exit_code() {
 # unpublished. `scripts/env-drift.sh` avoids this by never printing a value at
 # all; that option does not exist here, because the whole point is to quote what
 # the container said. So the mitigation is bounded rather than absolute: only
-# failing services, only on the failing path, capped in lines and in width. If a
-# service ever needs to print something sensitive at startup, it must not print
-# it to stdout or stderr.
+# failing services, only on the failing path, capped in lines and in width. The
+# probe body is the same risk surface and is bounded the same way. If a service
+# ever needs to print or return something sensitive, it must not put it in logs
+# or a health response.
 report_failure_logs() {
-    local svc container output
+    local svc container output probe_test probe_mode probe_url probe_output probe_rc
+    local -a probe_parts probe_command
 
-    log "--- what the failing containers printed (last ${HEALTH_LOG_LINES} lines each) ---"
+    log "--- what the failing containers printed and their probes answered (last ${HEALTH_LOG_LINES} lines each) ---"
 
     # **An empty section and a silent container are different findings** (#79).
     #
@@ -1097,7 +1104,7 @@ report_failure_logs() {
     if [ "$#" -eq 0 ]; then
         log "no failing service was named, so nothing was captured."
         log "That is a fault in the deploy script rather than in any container — the health check decided something was wrong and did not say what."
-        log "--- end of container output ---"
+        log "--- end of failing-container diagnostics ---"
         return
     fi
     for svc in "$@"; do
@@ -1119,8 +1126,67 @@ report_failure_logs() {
         else
             printf '%s\n' "$output" | cut -c1-"$HEALTH_LOG_COLS" | sed "s/^/    [$svc] /"
         fi
+
+        # Docker records the exact configured probe on the container. Ask the
+        # same local HTTP endpoint once more, but preserve its body instead of
+        # only its exit code: the badge-runner outage behind #106 answered 503
+        # with `The loop is not running.` while its one log line said only that
+        # it had started. Non-HTTP checks are replayed unchanged.
+        #
+        # This is deliberately best-effort. A missing health check, a stopped
+        # container, an absent client or a timeout is diagnostic information and
+        # must never prevent the rollback that follows.
+        probe_test=$(docker inspect --format='{{range .Config.Healthcheck.Test}}{{println .}}{{end}}' "$container" 2>&1) || probe_test=""
+        if [ -z "${probe_test//[[:space:]]/}" ]; then
+            log "$svc probe: no configured health check could be read."
+            continue
+        fi
+
+        mapfile -t probe_parts <<<"$probe_test"
+        probe_mode="${probe_parts[0]}"
+        probe_url=$(printf '%s\n' "${probe_parts[@]:1}" | grep -oE "https?://[^'\"\)[:space:]]+" | head -1 || true)
+        probe_command=()
+
+        if [ -n "$probe_url" ] && printf '%s\n' "${probe_parts[@]:1}" | grep -qx node; then
+            probe_command=(node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(${HEALTH_PROBE_TIMEOUT}000)}).then(async r=>{console.log(await r.text());process.exit(r.ok?0:1)}).catch(e=>{console.error(e.cause?.code||e.code||e.message);process.exit(1)})" "$probe_url")
+        elif [ -n "$probe_url" ] && printf '%s\n' "${probe_parts[@]:1}" | grep -qx curl; then
+            probe_command=(curl -sS --max-time "$HEALTH_PROBE_TIMEOUT" "$probe_url")
+        elif [ -n "$probe_url" ] && printf '%s\n' "${probe_parts[@]:1}" | grep -qx wget; then
+            probe_command=(wget -qO- -T "$HEALTH_PROBE_TIMEOUT" "$probe_url")
+        elif [ "$probe_mode" = CMD ]; then
+            probe_command=("${probe_parts[@]:1}")
+        elif [ "$probe_mode" = CMD-SHELL ] && [ "${#probe_parts[@]}" -ge 2 ]; then
+            probe_command=(/bin/sh -c "${probe_parts[1]}")
+        else
+            log "$svc probe: configured health check mode '$probe_mode' cannot be replayed."
+            continue
+        fi
+
+        set +e
+        # Bound before command substitution: limiting only the later print would
+        # still make Bash retain an arbitrarily large response and could kill the
+        # deploy before rollback. `--kill-after` makes the timeout hard even if
+        # docker exec or the in-container client ignores TERM.
+        probe_output=$(timeout --kill-after=1s "$HEALTH_PROBE_TIMEOUT" \
+            docker exec "$container" "${probe_command[@]}" 2>&1 \
+            | cut -c1-"$HEALTH_LOG_COLS" | tail -n "$HEALTH_LOG_LINES")
+        probe_rc=$?
+        set -e
+
+        if [ -n "${probe_output//[[:space:]]/}" ]; then
+            printf '%s\n' "$probe_output" | sed "s/^/    [$svc probe] /"
+            if [ "$probe_rc" -eq 124 ] || [ "$probe_rc" -eq 137 ]; then
+                log "$svc probe: stopped after ${HEALTH_PROBE_TIMEOUT}s; the output above may be partial."
+            fi
+        elif [ "$probe_rc" -eq 0 ]; then
+            log "$svc probe: answered with an empty body."
+        elif [ "$probe_rc" -eq 124 ] || [ "$probe_rc" -eq 137 ]; then
+            log "$svc probe: did not answer within ${HEALTH_PROBE_TIMEOUT}s."
+        else
+            log "$svc probe: could not be asked (exit $probe_rc, no output)."
+        fi
     done
-    log "--- end of container output ---"
+    log "--- end of failing-container diagnostics ---"
 }
 
 healthcheck() {
