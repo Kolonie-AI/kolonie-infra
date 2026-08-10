@@ -592,30 +592,33 @@ run_deploy_service api env API_VERSION="$SHA" FAIL_UP_NTH=2 > /dev/null 2>&1
 check "a cascade failure exits 3, not 1" "$?" "3"
 contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=2" "the attempt was counted"
 
-echo "== 16d. an ordinary deploy failure still exits 1"
-rm -f "$WORK/state/needs-redeploy.env"
-: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
-run_deploy_service api env API_VERSION="$SHA" FAIL_UP=1 > /dev/null 2>&1
-check "a deploy failure is still 1" "$?" "1"
-
-echo "== 16e. the cascade stops retrying the same image at the bound (#79)"
+echo "== 16d. repeated failures reach the bound and stop reddening unrelated deploys (#105)"
 # The marker pins a tag, so a build that is broken in itself reddens every
 # deploy of every service until somebody intervenes. At the bound the retry
 # stops, the marker is kept so the condition stays queryable, and the run
-# reports what is true: its own deploy is serving.
-cat > "$WORK/state/needs-redeploy.env" <<EOF
-NEEDS_REDEPLOY_SERVICE=badge-runner
-NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-badge-runner:$SHA
-NEEDS_REDEPLOY_ATTEMPTS=3
-EOF
+# reports what is true: its own deploy is serving. Reach that bound through
+# consecutive failures rather than manufacturing the terminal marker, so the
+# rehearsal proves the counter persists and actually leads to the escape.
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+run_deploy_service api env API_VERSION="$SHA" FAIL_UP_NTH=2 > /dev/null 2>&1
+check "the last allowed cascade failure still exits 3" "$?" "3"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=3" "repeated failures reached the bound"
+
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
 out=$(run_deploy_service api env API_VERSION="$SHA")
 check "the run succeeds rather than reddening on somebody else's image" "$?" "0"
 contains "$out" "is stuck, and is not being retried" "the bound is announced"
 contains "$out" "gh workflow run deploy.yml" "the way out is named"
 absent "$out" "Cascade re-deploy: badge-runner was rolled back" "no attempt was made"
+absent "$(cat "$WORK/docker.log")" "pull badge-runner" "the stuck image was not pulled again"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=3" "the terminal attempt count is retained"
 check "the marker is kept, not deleted" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "yes"
 rm -f "$WORK/state/needs-redeploy.env"
+
+echo "== 16e. an ordinary deploy failure still exits 1"
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+run_deploy_service api env API_VERSION="$SHA" FAIL_UP=1 > /dev/null 2>&1
+check "a deploy failure is still 1" "$?" "1"
 
 echo "== 17. the deploy set is ordered by dependency, and a typo is refused"
 # The policy behind #31's fix: one commit produces one deploy naming several
