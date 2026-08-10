@@ -1051,8 +1051,9 @@ CASCADE_EXIT_CODE=3
 # **A cascade that has failed on the same image three times will not succeed on
 # the fourth**, and until it stops it makes every unrelated deploy red — which is
 # how eleven good deploys came to look like eleven bad ones. At the bound the
-# marker is kept, so the state stays visible and queryable, and the retry stops:
-# the fix is a new build of that service, which the log names the command for.
+# marker is kept, so the state stays visible and queryable, and the retry stops.
+# The marker also counts distinct failed images: one may be a bad build, while
+# two prove rebuilding unchanged code is not a remedy (#108).
 #
 # Set to 0 to retry for ever, which is the behaviour before #79.
 CASCADE_MAX_ATTEMPTS=${CASCADE_MAX_ATTEMPTS:-3}
@@ -1425,21 +1426,34 @@ rollback() {
         website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
         *)                 redeploy_tag="" ;;
     esac
-    # How many times this exact image has now failed to re-deploy (#79).
+    # How many times this exact image has now failed to re-deploy (#79), and how
+    # many different images of this service have failed in this cascade (#108).
     #
     # Counted per service *and* per tag: a new build of the same service is a
     # new question and starts at one, because what the bound is about is
     # retrying an image that has already answered. A rollback outside the
     # cascade is the first attempt by definition — nothing has been retried yet.
-    local attempts=1
+    local attempts=1 failed_images=1
     if [ "$IN_CASCADE" = 1 ] && [ "${NEEDS_REDEPLOY_TAG:-}" = "$redeploy_tag" ]; then
         attempts=$((CASCADE_ATTEMPTS + 1))
+        failed_images=${NEEDS_REDEPLOY_IMAGES:-1}
+    elif [ "$IN_CASCADE" != 1 ] && [ -f "$STATE_DIR/needs-redeploy.env" ]; then
+        local previous_marker
+        previous_marker=$(set -a; . "$STATE_DIR/needs-redeploy.env"; set +a; echo "${NEEDS_REDEPLOY_SERVICE:-}|${NEEDS_REDEPLOY_TAG:-}|${NEEDS_REDEPLOY_IMAGES:-1}")
+        if [ "${previous_marker%%|*}" = "$SERVICE" ]; then
+            local previous_tag="${previous_marker#*|}"
+            previous_tag="${previous_tag%|*}"
+            failed_images="${previous_marker##*|}"
+            case "$failed_images" in ''|*[!0-9]*) failed_images=1 ;; esac
+            [ "$previous_tag" = "$redeploy_tag" ] || failed_images=$((failed_images + 1))
+        fi
     fi
 
     cat > "$STATE_DIR/needs-redeploy.env" <<REDEPLOY
 NEEDS_REDEPLOY_SERVICE=$SERVICE
 NEEDS_REDEPLOY_TAG=$redeploy_tag
 NEEDS_REDEPLOY_ATTEMPTS=$attempts
+NEEDS_REDEPLOY_IMAGES=$failed_images
 REDEPLOY
     log "Recorded $SERVICE for cascade re-deploy in $STATE_DIR/needs-redeploy.env (attempt $attempts)"
 
@@ -1542,11 +1556,19 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
         # is deliberately zero here: a standing condition somebody has to fix is
         # not a reason to fail an unrelated deploy for ever. It is loud instead.
         if [ "$CASCADE_MAX_ATTEMPTS" -gt 0 ] && [ "$CASCADE_ATTEMPTS" -ge "$CASCADE_MAX_ATTEMPTS" ]; then
+            failed_images=${NEEDS_REDEPLOY_IMAGES:-1}
+            case "$failed_images" in ''|*[!0-9]*) failed_images=1 ;; esac
             log "WARN: === Cascade re-deploy of $NEEDS_REDEPLOY_SERVICE is stuck, and is not being retried ==="
             log "WARN: it has failed $CASCADE_ATTEMPTS time(s) on the same image, ${NEEDS_REDEPLOY_TAG:-unknown} — the next attempt would pull the same build and fail the same way."
             log "WARN: this run's own deploy of $SERVICE succeeded and is serving; the stuck cascade is a separate fact and does not fail it."
-            log "WARN: the fix is a new build of $NEEDS_REDEPLOY_SERVICE, deployed by naming it and a good commit:"
-            log "WARN:   gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=$NEEDS_REDEPLOY_SERVICE -f version=<a good full sha>"
+            if [ "$failed_images" -ge 2 ]; then
+                known_good=$(set -a; . "$DEPLOYED_STATE"; set +a; case "$NEEDS_REDEPLOY_SERVICE" in api) echo "${API_IMAGE:-unknown}" ;; verifier-runner) echo "${RUNNER_IMAGE:-unknown}" ;; moderation-runner) echo "${MODERATION_IMAGE:-unknown}" ;; support-triage-runner) echo "${TRIAGE_IMAGE:-unknown}" ;; badge-runner) echo "${BADGE_IMAGE:-unknown}" ;; website) echo "${WEBSITE_IMAGE:-unknown}" ;; esac)
+                log "WARN: $failed_images different images of $NEEDS_REDEPLOY_SERVICE have failed; the code is at fault, and another rebuild will not help."
+                log "WARN: deploy the known-good image recorded in deployed.env: $known_good"
+                log "WARN:   gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=$NEEDS_REDEPLOY_SERVICE"
+            else
+                log "WARN: only this image has failed; a rebuild may help if this was a bad build."
+            fi
             log "WARN: that path clears the marker at $STATE_DIR/needs-redeploy.env, which is kept rather than deleted so the condition stays queryable."
         else
             log "=== Cascade re-deploy: $NEEDS_REDEPLOY_SERVICE was rolled back by a prior deploy ==="
