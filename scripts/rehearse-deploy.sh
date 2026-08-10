@@ -608,14 +608,42 @@ contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=3" "
 out=$(run_deploy_service api env API_VERSION="$SHA")
 check "the run succeeds rather than reddening on somebody else's image" "$?" "0"
 contains "$out" "is stuck, and is not being retried" "the bound is announced"
-contains "$out" "gh workflow run deploy.yml" "the way out is named"
+contains "$out" "a rebuild may help if this was a bad build" "one failed image still suggests a rebuild"
+absent "$out" "the code is at fault" "one failed image does not blame the code"
 absent "$out" "Cascade re-deploy: badge-runner was rolled back" "no attempt was made"
 absent "$(cat "$WORK/docker.log")" "pull badge-runner" "the stuck image was not pulled again"
 contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=3" "the terminal attempt count is retained"
 check "the marker is kept, not deleted" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "yes"
+
+echo "== 16e. two failed images blame the code and name the recorded rollback target (#108)"
+# A new image of the same service is a distinct failure even though its own
+# retry count starts over. Once that image also reaches the bound, rebuilding
+# unchanged code is no longer defensible advice; deployed.env already names the
+# image that is known to serve.
+NEW_SHA=$(printf %040d 8)
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+run_deploy_service badge-runner env BADGE_VERSION="$NEW_SHA" FAIL_UP=1 > /dev/null 2>&1
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_IMAGES=2" "the replacement image is counted separately"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=1" "the replacement image starts its own retry count"
+
+for expected in 2 3; do
+  : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+  run_deploy_service api env API_VERSION="$SHA" FAIL_UP_NTH=2 > /dev/null 2>&1
+  contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_ATTEMPTS=$expected" "replacement image reached attempt $expected"
+done
+
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
+out=$(run_deploy_service api env API_VERSION="$SHA")
+known_good_badge="ghcr.io/kolonie-ai/kolonie-badge-runner@sha256:$(printf %064d 6)"
+contains "$out" "2 different images of badge-runner have failed; the code is at fault" "two images identify a code failure"
+contains "$out" "another rebuild will not help" "a rebuild is explicitly rejected"
+contains "$out" "known-good image recorded in deployed.env: $known_good_badge" "the actual rollback target is named"
+contains "$out" "gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=badge-runner" "the recorded-image deploy is named"
+absent "$out" "version=<a good full sha>" "no unknown version placeholder remains"
+absent "$out" "a rebuild may help" "multi-image failure does not suggest a rebuild"
 rm -f "$WORK/state/needs-redeploy.env"
 
-echo "== 16e. an ordinary deploy failure still exits 1"
+echo "== 16f. an ordinary deploy failure still exits 1"
 : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed" "$WORK/docker.log.upcount"
 run_deploy_service api env API_VERSION="$SHA" FAIL_UP=1 > /dev/null 2>&1
 check "a deploy failure is still 1" "$?" "1"
