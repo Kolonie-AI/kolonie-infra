@@ -26,9 +26,14 @@
 #
 #   NAME  STATE  HEALTH  FAILING_STREAK  APPROX_SECONDS  IMAGE
 #
-# Plus one row that is not a container, on a host that has a deploy directory:
+# Plus rows that are not containers, on a host that has a deploy directory:
 #
 #   backup  ok|never  -  0  <seconds since the last successful backup>  -
+#   disk  ok|unknown  -  0  <percentage used>  -
+#   memory  ok|unknown  -  <available KiB>  <percentage available>  <total KiB>
+#   inodes  ok|unknown  -  0  <percentage used>  <mount>
+#   load  ok|unknown  <cores>  <window seconds>  <percentage of cores>  <load>
+#   oom  clear|detected|unknown  -  0  <events in the lookback>  -
 #
 # And one row per systemd timer the Colony installs, on the same hosts:
 #
@@ -206,6 +211,99 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # Say nothing rather than report 0%. An unreadable df reported as an
         # empty disk is the direction that hides the problem.
         printf 'disk\tunknown\t-\t0\t0\t-\n'
+    fi
+
+    # Memory available, not memory used (#101). Linux deliberately fills spare
+    # memory with reclaimable cache, so `used` rises on a healthy host and is the
+    # wrong number to put in front of a threshold. MemAvailable already accounts
+    # for what the kernel can give an application without swapping.
+    meminfo="${MEMINFO_PATH:-/proc/meminfo}"
+    mem_total=$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo" 2>/dev/null)
+    mem_available=$(awk '$1 == "MemAvailable:" { print $2; exit }' "$meminfo" 2>/dev/null)
+    if [ "${mem_total:-0}" -gt 0 ] 2>/dev/null && [ -n "$mem_available" ]; then
+        mem_available_pct=$((mem_available * 100 / mem_total))
+        printf 'memory\tok\t-\t%s\t%s\t%s\n' \
+            "$mem_available" "$mem_available_pct" "$mem_total"
+    else
+        printf 'memory\tunknown\t-\t0\t0\t-\n'
+    fi
+
+    # Inodes are a second, independent way for a writable partition to become
+    # full (#101). Use the Docker partition when it exists and the root
+    # partition otherwise, exactly as the byte check above does.
+    inode_mount=/var/lib/docker
+    inode_pct=$(df -Pi "$inode_mount" 2>/dev/null |
+        awk 'NR > 1 { value=$5 } END { gsub(/%/, "", value); print value }')
+    if [ -z "$inode_pct" ]; then
+        inode_mount=/
+        inode_pct=$(df -Pi "$inode_mount" 2>/dev/null |
+            awk 'NR > 1 { value=$5 } END { gsub(/%/, "", value); print value }')
+    fi
+    if [ -n "$inode_pct" ]; then
+        printf 'inodes\tok\t-\t0\t%s\t%s\n' "$inode_pct" "$inode_mount"
+    else
+        printf 'inodes\tunknown\t-\t0\t0\t-\n'
+    fi
+
+    # sysstat already samples the host every ten minutes. Read its last hour
+    # rather than adding a collector or treating one instantaneous spike as an
+    # incident (#101). `sar -q`'s Average row is the mean of the recorded
+    # 15-minute load averages in that window; normalising it by the online core
+    # count makes the result comparable if the host size changes.
+    load_window_seconds="${LOAD_WINDOW_SECONDS:-3600}"
+    load_start=$(date -d "$load_window_seconds seconds ago" +%H:%M:%S 2>/dev/null || echo "")
+    load_start_day=$(date -d "$load_window_seconds seconds ago" +%d 2>/dev/null || echo "")
+    today=$(date +%d)
+    cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "")
+    load_average=""
+    if [ -n "$load_start" ] && [ "${cores:-0}" -gt 0 ] 2>/dev/null && command -v sar >/dev/null 2>&1; then
+        # `sar -s` reads today's archive. During the first hour after midnight
+        # the window starts in yesterday's, so read both rather than reporting
+        # a daily blind spot. Average the actual ten-minute samples, not each
+        # file's Average row, so a short side of the boundary is not overweighted.
+        if [ "$load_start_day" != "$today" ] && [ -r "/var/log/sysstat/sa${load_start_day}" ]; then
+            load_samples=$(
+                LC_ALL=C S_TIME_FORMAT=ISO sar -q -f "/var/log/sysstat/sa${load_start_day}" \
+                    -s "$load_start" 2>/dev/null
+                LC_ALL=C S_TIME_FORMAT=ISO sar -q 2>/dev/null
+            )
+        else
+            load_samples=$(LC_ALL=C S_TIME_FORMAT=ISO sar -q -s "$load_start" 2>/dev/null)
+        fi
+        load_average=$(printf '%s\n' "$load_samples" | awk \
+            '$1 ~ /^[0-9]{2}:[0-9]{2}:[0-9]{2}$/ && $6 ~ /^[0-9]+([.][0-9]+)?$/ {
+                total += $6; samples++
+            }
+            END { if (samples > 0) printf "%.2f", total / samples }')
+    fi
+    if [ -n "$load_average" ]; then
+        load_pct=$(awk -v avg="$load_average" -v ncores="$cores" \
+            'BEGIN { printf "%d", (avg * 100 / ncores) + 0.5 }')
+        printf 'load\tok\t%s\t%s\t%s\t%s\n' \
+            "$cores" "$load_window_seconds" "$load_pct" "$load_average"
+    else
+        printf 'load\tunknown\t%s\t%s\t0\t-\n' "${cores:-0}" "$load_window_seconds"
+    fi
+
+    # An OOM kill is an event, not a low-memory state: by the next sample the
+    # killed process is gone and MemAvailable may look healthy again (#101).
+    # Twenty minutes overlaps the fifteen-minute watcher cadence so a delayed
+    # scheduled run does not leave a gap. A repeated observation has the same
+    # fingerprint downstream, so the overlap does not repeat notifications.
+    oom_lookback_minutes="${OOM_LOOKBACK_MINUTES:-20}"
+    oom_log=$(sudo -n journalctl -k --since "$oom_lookback_minutes minutes ago" \
+        --no-pager -q 2>/dev/null)
+    oom_status=$?
+    if [ "$oom_status" -ne 0 ]; then
+        printf 'oom\tunknown\t-\t0\t0\t-\n'
+    else
+        oom_events=$(printf '%s\n' "$oom_log" |
+            grep -Eic 'oom-kill:|Out of memory: Killed process|Killed process [0-9]+')
+        if [ "$oom_events" -gt 0 ]; then
+            printf 'oom\tdetected\t-\t0\t%s\t-\n' "$oom_events"
+        else
+            printf 'oom\tclear\t-\t0\t0\t-\n'
+        fi
     fi
 
     # The Twilio balance, when there is a Twilio account (#83).

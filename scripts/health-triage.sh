@@ -51,6 +51,23 @@ BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
 # images, volumes and the Postgres data directory are not bounded by anything.
 DISK_FULL_PERCENT="${DISK_FULL_PERCENT:-85}"
 
+# How little memory may remain immediately available before it is a fault
+# (#101). 20% means roughly 1.6 GiB on the measured 7.8 GiB host. On 2026-08-09
+# it had 6.1 GiB available (78%), leaving a wide healthy margin while still
+# reporting pressure early enough to identify a growing process before OOM.
+MEMORY_AVAILABLE_PERCENT="${MEMORY_AVAILABLE_PERCENT:-20}"
+
+# How full the Docker partition's inode table may get (#101). The host measured
+# 7% on 2026-08-09; 85% therefore cannot fire on its ordinary small-file load
+# and leaves the same intervention margin as the byte-capacity alarm.
+INODE_FULL_PERCENT="${INODE_FULL_PERCENT:-85}"
+
+# Average load over health-report.sh's one-hour window, expressed as a percentage
+# of online cores (#101). 100% means one runnable task per core for the sustained
+# window: saturation rather than a spike. The measured host was at 0.73 on four
+# cores on 2026-08-09 (18%), well clear of this threshold.
+LOAD_SUSTAINED_PERCENT="${LOAD_SUSTAINED_PERCENT:-100}"
+
 # How few messages the Twilio balance may be worth before it is a problem (#83).
 #
 # **Expressed in messages remaining at the most expensive allowed destination,
@@ -92,6 +109,10 @@ fingerprint_parts=()
 container_problems=()
 backup_problems=()
 disk_problems=()
+memory_problems=()
+inode_problems=()
+load_problems=()
+oom_problems=()
 sms_problems=()
 timer_problems=()
 
@@ -143,6 +164,70 @@ while IFS=$'\t' read -r name state health streak approx image; do
             fingerprint_parts+=("disk:full")
         else
             healthy+=("disk (${approx}% used)")
+        fi
+        continue
+    fi
+
+    # These host-resource rows borrow the container columns in documented ways
+    # so the report remains a stable six-column stream. Judge them before the
+    # container rules, as with disk and backup.
+    if [ "$name" = "memory" ]; then
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _memory_ | unknown | - | - | the host could not read MemAvailable |")
+            memory_problems+=("unknown")
+            fingerprint_parts+=("memory:unknown")
+        elif [ "${approx:-0}" -le "$MEMORY_AVAILABLE_PERCENT" ]; then
+            problems+=("| _memory_ | low | - | - | ${approx}% available (${streak} of ${image} KiB) |")
+            memory_problems+=("low")
+            fingerprint_parts+=("memory:low")
+        else
+            healthy+=("memory (${approx}% available; ${streak} of ${image} KiB)")
+        fi
+        continue
+    fi
+
+    if [ "$name" = "inodes" ]; then
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _inodes_ | unknown | - | - | the host could not report inode use |")
+            inode_problems+=("unknown")
+            fingerprint_parts+=("inodes:unknown")
+        elif [ "${approx:-0}" -ge "$INODE_FULL_PERCENT" ]; then
+            problems+=("| _inodes_ | filling | - | - | ${image} is ${approx}% full by inode count |")
+            inode_problems+=("full")
+            fingerprint_parts+=("inodes:full")
+        else
+            healthy+=("inodes (${approx}% used on ${image})")
+        fi
+        continue
+    fi
+
+    if [ "$name" = "load" ]; then
+        load_window="$(human "${streak:-0}")"
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _processor load_ | unknown | - | - | sysstat has no readable load data for the ${load_window} window |")
+            load_problems+=("unknown")
+            fingerprint_parts+=("load:unknown")
+        elif [ "${approx:-0}" -ge "$LOAD_SUSTAINED_PERCENT" ]; then
+            problems+=("| _processor load_ | saturated | - | - | ${image} over ${load_window} on ${health} cores (${approx}% of capacity) |")
+            load_problems+=("saturated")
+            fingerprint_parts+=("load:saturated")
+        else
+            healthy+=("load (${image} over ${load_window} on ${health} cores; ${approx}% of capacity)")
+        fi
+        continue
+    fi
+
+    if [ "$name" = "oom" ]; then
+        if [ "$state" = "unknown" ]; then
+            problems+=("| _OOM kills_ | unknown | - | - | the kernel journal could not be read |")
+            oom_problems+=("unknown")
+            fingerprint_parts+=("oom:unknown")
+        elif [ "$state" = "detected" ]; then
+            problems+=("| _OOM kills_ | detected | - | - | ${approx} out-of-memory kill event(s) in the report lookback |")
+            oom_problems+=("detected")
+            fingerprint_parts+=("oom:detected")
+        else
+            healthy+=("OOM kills (none in the report lookback)")
         fi
         continue
     fi
@@ -311,6 +396,32 @@ if [ "${#disk_problems[@]}" -gt 0 ]; then
     echo "\`docker system prune\` removes stopped containers and unused images. It also"
     echo "removes the image a rollback would return to, so read \`state/deployed.env\`"
     echo "first and keep what it names."
+fi
+
+if [ "${#memory_problems[@]}" -gt 0 ] || [ "${#load_problems[@]}" -gt 0 ] ||
+    [ "${#oom_problems[@]}" -gt 0 ]; then
+    echo
+    echo "Memory pressure, sustained processor saturation and an OOM kill are related"
+    echo "signals, but not interchangeable. Read the current availability, the hour of"
+    echo "sysstat history and the kernel event together:"
+    echo
+    echo '```'
+    echo "free -h"
+    echo "uptime"
+    echo "sar -q"
+    echo "journalctl -k --since '20 minutes ago'"
+    echo '```'
+fi
+
+if [ "${#inode_problems[@]}" -gt 0 ]; then
+    echo
+    echo "A filesystem with free bytes can still refuse every write after its inodes"
+    echo "are exhausted. Count files before deleting anything:"
+    echo
+    echo '```'
+    echo "df -i /var/lib/docker"
+    echo "sudo du --inodes -x --max-depth=2 /var/lib/docker | sort -n | tail"
+    echo '```'
 fi
 
 # Sorted so the same set of problems in a different order is the same
