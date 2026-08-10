@@ -330,6 +330,13 @@ journalctl -u kolonie-image-prune.service -n 30
 systemctl list-timers kolonie-image-prune.timer
 ```
 
+Each successful run prints the filesystem bytes it freed and records that figure
+in `/var/lib/kolonie/image-prune.env`, outside the Git checkout. Health Watch
+reports both the last successful run and Docker's current reclaimable image bytes
+beside the partition percentage. It also reports a missing timer, a failed
+service, or a successful run older than eight days, so an installed schedule
+that stops working is not silent.
+
 **Why not `docker system prune -a`**, which is what the issue's own diagnosis
 suggested and what an operator reaches for: it removes every image no *container*
 references, and the rollback target usually is not one. `rollback.sh` returns to
@@ -351,7 +358,8 @@ pinned by tag rather than digest, so deleting one and pulling it back is not
 guaranteed to return the same bytes — and eleven images against fifteen hundred
 is not where the disk went.
 
-`./scripts/rehearse-image-prune.sh` runs it against a stub daemon. What the stubs
+`./scripts/rehearse-image-prune.sh` runs it against a stub daemon and is part of
+`bash scripts/check.sh`. What the stubs
 are for is the half a live run cannot show: on a healthy host the rollback target
 is also the running image, so every protection covers it at once and a script
 with none of them would still pass. The fixtures pull the cases apart — the

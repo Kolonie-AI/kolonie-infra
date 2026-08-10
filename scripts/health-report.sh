@@ -29,7 +29,8 @@
 # Plus rows that are not containers, on a host that has a deploy directory:
 #
 #   backup  ok|never  -  0  <seconds since the last successful backup>  -
-#   disk  ok|unknown  -  0  <percentage used>  -
+#   disk  ok|partial|unknown  -  <reclaimable image bytes>  <percentage used>  <image bytes>
+#   image-prune  ok|never|missing|failed  -  <bytes freed>  <seconds since success>  -
 #   memory  ok|unknown  -  <available KiB>  <percentage available>  <total KiB>
 #   inodes  ok|unknown  -  0  <percentage used>  <mount>
 #   load  ok|unknown  <cores>  <window seconds>  <percentage of cores>  <load>
@@ -89,6 +90,25 @@ docker_cmd() {
     else
         sudo -n docker "$@" </dev/null
     fi
+}
+
+size_bytes() {
+    # Docker's system-df format is human-readable SI. Keep the conversion here
+    # so the report remains numeric and triage does not have to parse daemon UI.
+    local value="$1" number multiplier
+    case "$value" in
+        *kB) number=${value%kB}; multiplier=1000 ;;
+        *MB) number=${value%MB}; multiplier=1000000 ;;
+        *GB) number=${value%GB}; multiplier=1000000000 ;;
+        *TB) number=${value%TB}; multiplier=1000000000000 ;;
+        *PB) number=${value%PB}; multiplier=1000000000000000 ;;
+        *EB) number=${value%EB}; multiplier=1000000000000000000 ;;
+        *B) number=${value%B}; multiplier=1 ;;
+        *) return 1 ;;
+    esac
+    [[ "$number" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    awk -v number="$number" -v multiplier="$multiplier" \
+        'BEGIN { printf "%.0f", number * multiplier }'
 }
 
 containers() {
@@ -200,17 +220,53 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     # there is nowhere left to record it. The cap makes that slower; only a
     # threshold makes it visible.
     #
-    # APPROX_SECONDS carries the percentage used, because the row format has no
-    # other numeric column and adding one would change what health-triage.sh
-    # parses. Ugly, and confined to these two files.
+    # APPROX_SECONDS carries the percentage used. FAILING_STREAK and IMAGE carry
+    # reclaimable and total image bytes: the six-column stream stays stable while
+    # the reader sees capacity and removable image growth as one disk fact.
     disk_pct=$(df --output=pcent /var/lib/docker 2>/dev/null | tail -1 | tr -dc '0-9')
     [ -z "$disk_pct" ] && disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
     if [ -n "$disk_pct" ]; then
-        printf 'disk\tok\t-\t0\t%s\t-\n' "$disk_pct"
+        image_df=$(docker_cmd system df --format '{{.Type}}\t{{.Size}}\t{{.Reclaimable}}' 2>/dev/null |
+            awk -F'\t' '$1 == "Images" { print; exit }')
+        IFS=$'\t' read -r _image_type image_size image_reclaimable <<<"$image_df"
+        image_size_bytes=$(size_bytes "${image_size:-}" 2>/dev/null || echo "")
+        image_reclaimable_bytes=$(size_bytes "${image_reclaimable%% *}" 2>/dev/null || echo "")
+        if [ -n "$image_size_bytes" ] && [ -n "$image_reclaimable_bytes" ]; then
+            printf 'disk\tok\t-\t%s\t%s\t%s\n' \
+                "$image_reclaimable_bytes" "$disk_pct" "$image_size_bytes"
+        else
+            printf 'disk\tpartial\t-\t0\t%s\t-\n' "$disk_pct"
+        fi
     else
         # Say nothing rather than report 0%. An unreadable df reported as an
         # empty disk is the direction that hides the problem.
         printf 'disk\tunknown\t-\t0\t0\t-\n'
+    fi
+
+    # The timer's next elapse says whether it will be invoked again; its service
+    # result and success marker say whether invocation actually works. All three
+    # are needed: a timer can remain scheduled while its service fails forever.
+    prune_unit=kolonie-image-prune.timer
+    prune_service=kolonie-image-prune.service
+    prune_marker="${KOLONIE_STATE_DIR:-/var/lib/kolonie}/image-prune.env"
+    prune_load=$(systemctl show "$prune_unit" -p LoadState --value 2>/dev/null || echo "")
+    prune_result=$(systemctl show "$prune_service" -p Result --value 2>/dev/null || echo "")
+    prune_epoch=""
+    prune_freed=0
+    if [ -r "$prune_marker" ]; then
+        prune_epoch=$(sed -n 's/^LAST_SUCCESS_EPOCH=//p' "$prune_marker" | tail -1)
+        prune_freed=$(sed -n 's/^LAST_FREED_BYTES=//p' "$prune_marker" | tail -1)
+    fi
+    case "$prune_freed" in ''|*[!0-9]*) prune_freed=0 ;; esac
+    if [ "$prune_load" != loaded ]; then
+        printf 'image-prune\tmissing\t-\t0\t0\t-\n'
+    elif [ -n "$prune_result" ] && [ "$prune_result" != success ]; then
+        printf 'image-prune\tfailed\t-\t%s\t0\t-\n' "$prune_freed"
+    elif [[ "$prune_epoch" =~ ^[0-9]+$ ]]; then
+        printf 'image-prune\tok\t-\t%s\t%s\t-\n' \
+            "$prune_freed" "$(( $(date +%s) - prune_epoch ))"
+    else
+        printf 'image-prune\tnever\t-\t0\t0\t-\n'
     fi
 
     # Memory available, not memory used (#101). Linux deliberately fills spare

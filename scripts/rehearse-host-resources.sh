@@ -23,6 +23,11 @@ fail() {
 
 cat > "$BIN/docker" <<'EOF'
 #!/bin/bash
+if [ "${1:-}" = info ]; then exit 0; fi
+if [ "${1:-} ${2:-}" = "system df" ]; then
+    [ "${STUB_DOCKER_DF_FAIL:-0}" = 1 ] && exit 1
+    printf 'Images\t10.31GB\t6.634GB (64%%)\n'
+fi
 exit 0
 EOF
 
@@ -67,6 +72,12 @@ EOF
 
 cat > "$BIN/systemctl" <<'EOF'
 #!/bin/bash
+if [ "${1:-}" = show ]; then
+    case "$2:$4" in
+        kolonie-image-prune.timer:LoadState) printf '%s\n' "${STUB_PRUNE_LOAD:-loaded}" ;;
+        kolonie-image-prune.service:Result) printf '%s\n' "${STUB_PRUNE_RESULT:-success}" ;;
+    esac
+fi
 exit 0
 EOF
 
@@ -80,13 +91,14 @@ EOF
     PATH="$BIN:$PATH" \
     KOLONIE_DEPLOY_DIR="$DEPLOY" \
     KOLONIE_BACKUP_DIR="$WORK/backups" \
+    KOLONIE_STATE_DIR="$DEPLOY/state" \
     MEMINFO_PATH="$WORK/meminfo" \
         bash "$ROOT/scripts/health-report.sh" 2>/dev/null
 }
 
 resource_rows() {
     printf '%s\n' "$1" | awk -F'\t' \
-        '$1 == "memory" || $1 == "inodes" || $1 == "load" || $1 == "oom"'
+        '$1 == "disk" || $1 == "image-prune" || $1 == "memory" || $1 == "inodes" || $1 == "load" || $1 == "oom"'
 }
 
 triage() {
@@ -94,6 +106,10 @@ triage() {
 }
 
 echo "rehearsing host resource alarms (#101)"
+
+mkdir -p "$DEPLOY/state"
+printf 'LAST_SUCCESS_EPOCH=%s\nLAST_FREED_BYTES=2000000000\n' \
+    "$(( $(date +%s) - 3600 ))" > "$DEPLOY/state/image-prune.env"
 
 out=$(report)
 rows=$(resource_rows "$out")
@@ -122,12 +138,62 @@ else
     fail "a quiet kernel journal reports no OOM event" "$rows"
 fi
 
+if printf '%s\n' "$rows" | grep -q $'disk\tok\t-\t6634000000\t15\t10310000000'; then
+    pass "disk reports reclaimable image bytes beside partition use"
+else
+    fail "disk reports reclaimable image bytes beside partition use" "$rows"
+fi
+
+if printf '%s\n' "$rows" | grep -q $'image-prune\tok\t-\t2000000000\t'; then
+    pass "the last successful prune remains visible between weekly runs"
+else
+    fail "the last successful prune remains visible between weekly runs" "$rows"
+fi
+
 healthy=$(triage "$rows")
 if printf '%s\n' "$healthy" | grep -q '77% available' &&
-    printf '%s\n' "$healthy" | grep -q '18% of capacity'; then
+    printf '%s\n' "$healthy" | grep -q '18% of capacity' &&
+    printf '%s\n' "$healthy" | grep -q '6.2 GiB of 9.6 GiB in images reclaimable' &&
+    printf '%s\n' "$healthy" | grep -q '1.9 GiB freed'; then
     pass "healthy measurements stay below their alarms"
 else
     fail "healthy measurements stay below their alarms" "$healthy"
+fi
+
+out=$(STUB_PRUNE_LOAD=not-found report)
+degraded=$(triage "$(resource_rows "$out")")
+if printf '%s\n' "$degraded" | grep -q 'weekly timer is not installed'; then
+    pass "a missing image-prune timer is visible"
+else
+    fail "a missing image-prune timer is visible" "$degraded"
+fi
+
+out=$(STUB_PRUNE_RESULT=exit-code report)
+degraded=$(triage "$(resource_rows "$out")")
+if printf '%s\n' "$degraded" | grep -q 'timer ran, but its service failed'; then
+    pass "a failed scheduled prune is visible"
+else
+    fail "a failed scheduled prune is visible" "$degraded"
+fi
+
+printf 'LAST_SUCCESS_EPOCH=%s\nLAST_FREED_BYTES=2000000000\n' \
+    "$(( $(date +%s) - 691200 ))" > "$DEPLOY/state/image-prune.env"
+out=$(report)
+degraded=$(triage "$(resource_rows "$out")")
+if printf '%s\n' "$degraded" | grep -q 'last successful prune was 8d ago'; then
+    pass "a missed weekly prune becomes stale after eight days"
+else
+    fail "a missed weekly prune becomes stale after eight days" "$degraded"
+fi
+printf 'LAST_SUCCESS_EPOCH=%s\nLAST_FREED_BYTES=2000000000\n' \
+    "$(( $(date +%s) - 3600 ))" > "$DEPLOY/state/image-prune.env"
+
+out=$(STUB_DOCKER_DF_FAIL=1 report)
+degraded=$(triage "$(resource_rows "$out")")
+if printf '%s\n' "$degraded" | grep -q 'Docker did not report reclaimable image storage'; then
+    pass "missing reclaimable-image data is unknown, not zero"
+else
+    fail "missing reclaimable-image data is unknown, not zero" "$degraded"
 fi
 
 out=$(STUB_MEM_AVAILABLE=1200000 STUB_INODE_PERCENT=90 STUB_LOAD=4.40 \

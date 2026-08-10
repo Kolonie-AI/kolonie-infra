@@ -171,6 +171,24 @@ exec "$@"
 STUB
 chmod +x "$BIN/sudo"
 
+cat > "$BIN/df" <<'STUB'
+#!/bin/bash
+if printf '%s\n' "$@" | grep -q -- '--output=pcent'; then
+  printf 'Use%%\n15%%\n'
+elif printf '%s\n' "$@" | grep -q -- '--output=used'; then
+  if [ -s "$STUB_REMOVED" ]; then
+    printf 'Used\n7000000000\n'
+  else
+    printf 'Used\n9000000000\n'
+  fi
+elif printf '%s\n' "$@" | grep -q -- '--output=size'; then
+  printf 'Size\n96G\n'
+else
+  exit 1
+fi
+STUB
+chmod +x "$BIN/df"
+
 # --- the harness ----------------------------------------------------------
 pass=0; fail=0
 check()    { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1: expected [$3], got [$2]"; fail=$((fail+1)); fi; }
@@ -182,7 +200,8 @@ prune() {
   PATH="$BIN:$PATH" \
   STUB_IMAGES="$WORK/images" STUB_CONTAINERS="$WORK/containers" \
   STUB_DANGLING="$WORK/dangling" STUB_REMOVED="$WORK/removed" \
-  DEPLOY_DIR="$WORK" "$@" bash "$ROOT/scripts/image-prune.sh" ${PRUNE_ARGS:-}
+  DEPLOY_DIR="$WORK" IMAGE_PRUNE_STATE_DIR="${IMAGE_PRUNE_STATE_DIR:-$WORK/state}" \
+  "$@" bash "$ROOT/scripts/image-prune.sh" ${PRUNE_ARGS:-}
 }
 
 removed() { cat "$WORK/removed"; }
@@ -201,6 +220,8 @@ out=$(KEEP_BUILDS=3 prune 2>&1); status=$?
 check "exit 0" "$status" "0"
 absent "$(removed)" "$GH/kolonie-api:f0000008" "the deployed.env digest was not removed"
 contains "$out" "Protected by a state record:   2" "counted both digests it could resolve"
+contains "$out" "Freed:  2000000000 bytes" "reported the bytes freed by the run"
+contains "$(cat "$WORK/state/image-prune.env")" "LAST_FREED_BYTES=2000000000" "recorded the result for Health Watch"
 
 echo "== 2. …and the builds beyond the margin do go"
 contains "$(removed)" "$GH/kolonie-api:f0000004" "the fourth-newest api build was removed"
@@ -226,6 +247,7 @@ check "exit 0" "$status" "0"
 check "nothing removed" "$(wc -l < "$WORK/removed" | tr -d ' ')" "0"
 contains "$out" "Mode: dry run" "said so"
 contains "$out" "Old builds to remove:" "and still counted them"
+contains "$out" "Freed:  0 bytes" "reported that the dry run freed nothing"
 
 echo "== 7. the cascade marker is protected when it exists"
 # #79: needs-redeploy.env holds the image reference of a build that was rolled
@@ -274,6 +296,12 @@ echo "== 13. an unknown argument is refused rather than ignored"
 out=$(PRUNE_ARGS=--force KEEP_BUILDS=3 prune 2>&1); status=$?
 check "exit 1" "$status" "1"
 contains "$out" "unknown argument" "named it"
+
+echo "== 14. no writable status directory means no deletion"
+out=$(IMAGE_PRUNE_STATE_DIR="$WORK/missing" KEEP_BUILDS=3 prune 2>&1); status=$?
+check "exit 1" "$status" "1"
+check "nothing removed" "$(wc -l < "$WORK/removed" | tr -d ' ')" "0"
+contains "$out" "status directory is not writable" "refused before changing the image store"
 
 echo
 echo "passed $pass, failed $fail"
