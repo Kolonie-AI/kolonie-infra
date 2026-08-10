@@ -51,6 +51,10 @@ BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
 # images, volumes and the Postgres data directory are not bounded by anything.
 DISK_FULL_PERCENT="${DISK_FULL_PERCENT:-85}"
 
+# The timer is weekly with up to thirty minutes of jitter. Eight days allows a
+# delayed watcher or reboot catch-up without letting a missed weekly run hide.
+IMAGE_PRUNE_STALE_SECONDS="${IMAGE_PRUNE_STALE_SECONDS:-691200}"
+
 # How little memory may remain immediately available before it is a fault
 # (#101). 20% means roughly 1.6 GiB on the measured 7.8 GiB host. On 2026-08-09
 # it had 6.1 GiB available (78%), leaving a wide healthy margin while still
@@ -98,6 +102,16 @@ human() {
     fi
 }
 
+human_bytes() {
+    awk -v bytes="${1:-0}" 'BEGIN {
+        split("B KiB MiB GiB TiB", units, " ")
+        value = bytes + 0; unit = 1
+        while (value >= 1024 && unit < 5) { value /= 1024; unit++ }
+        if (unit == 1) printf "%d %s", value, units[unit]
+        else printf "%.1f %s", value, units[unit]
+    }'
+}
+
 healthy=()
 problems=()
 fingerprint_parts=()
@@ -109,6 +123,7 @@ fingerprint_parts=()
 container_problems=()
 backup_problems=()
 disk_problems=()
+prune_problems=()
 memory_problems=()
 inode_problems=()
 load_problems=()
@@ -155,6 +170,10 @@ while IFS=$'\t' read -r name state health streak approx image; do
             problems+=("| _disk_ | unknown | - | - | the host could not report how full its partition is |")
             disk_problems+=("unknown")
             fingerprint_parts+=("disk:unknown")
+        elif [ "$state" = "partial" ]; then
+            problems+=("| _disk_ | partial | - | - | the partition is ${approx}% full, but Docker did not report reclaimable image storage |")
+            disk_problems+=("image-storage-unknown")
+            fingerprint_parts+=("disk:image-storage-unknown")
         elif [ "${approx:-0}" -ge "$DISK_FULL_PERCENT" ]; then
             problems+=("| _disk_ | filling | - | - | the Docker partition is ${approx}% full |")
             disk_problems+=("full")
@@ -163,7 +182,30 @@ while IFS=$'\t' read -r name state health streak approx image; do
             # every run while the condition simply persists.
             fingerprint_parts+=("disk:full")
         else
-            healthy+=("disk (${approx}% used)")
+            healthy+=("disk (${approx}% used; $(human_bytes "$streak") of $(human_bytes "$image") in images reclaimable)")
+        fi
+        continue
+    fi
+
+    if [ "$name" = "image-prune" ]; then
+        if [ "$state" = "missing" ]; then
+            problems+=("| _image prune_ | missing | - | - | the weekly timer is not installed on the host |")
+            prune_problems+=("missing")
+            fingerprint_parts+=("image-prune:missing")
+        elif [ "$state" = "failed" ]; then
+            problems+=("| _image prune_ | failed | - | - | the timer ran, but its service failed |")
+            prune_problems+=("failed")
+            fingerprint_parts+=("image-prune:failed")
+        elif [ "$state" = "never" ]; then
+            problems+=("| _image prune_ | never | - | - | the timer is installed, but no successful prune has been recorded |")
+            prune_problems+=("never")
+            fingerprint_parts+=("image-prune:never")
+        elif [ "${approx:-0}" -ge "$IMAGE_PRUNE_STALE_SECONDS" ]; then
+            problems+=("| _image prune_ | stale | - | - | the last successful prune was $duration ago |")
+            prune_problems+=("stale")
+            fingerprint_parts+=("image-prune:stale")
+        else
+            healthy+=("image prune ($duration ago; $(human_bytes "$streak") freed)")
         fi
         continue
     fi
@@ -396,6 +438,19 @@ if [ "${#disk_problems[@]}" -gt 0 ]; then
     echo "\`docker system prune\` removes stopped containers and unused images. It also"
     echo "removes the image a rollback would return to, so read \`state/deployed.env\`"
     echo "first and keep what it names."
+fi
+
+if [ "${#prune_problems[@]}" -gt 0 ]; then
+    echo
+    echo "The weekly image prune keeps five previous builds per application repository"
+    echo "and protects every container and recorded rollback digest. Check the timer,"
+    echo "the service result and the last run together:"
+    echo
+    echo '```'
+    echo "systemctl list-timers kolonie-image-prune.timer"
+    echo "systemctl status kolonie-image-prune.service"
+    echo "journalctl -u kolonie-image-prune.service -n 50"
+    echo '```'
 fi
 
 if [ "${#memory_problems[@]}" -gt 0 ] || [ "${#load_problems[@]}" -gt 0 ] ||

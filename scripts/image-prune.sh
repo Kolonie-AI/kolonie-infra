@@ -66,6 +66,7 @@
 # Environment:
 #   KEEP_BUILDS   builds kept per application repository (default 5)
 #   DEPLOY_DIR    where state/deployed.env lives (default /opt/kolonie)
+#   IMAGE_PRUNE_STATE_DIR  status directory (default /var/lib/kolonie)
 #
 # Exit status:
 #   0  the prune ran, whether or not it had anything to remove
@@ -80,6 +81,7 @@ set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/kolonie}"
 KEEP_BUILDS="${KEEP_BUILDS:-5}"
+IMAGE_PRUNE_STATE_DIR="${IMAGE_PRUNE_STATE_DIR:-/var/lib/kolonie}"
 REGISTRY_PREFIX="ghcr.io/kolonie-ai/"
 
 DRY_RUN=no
@@ -110,13 +112,25 @@ if [[ "$KEEP_BUILDS" -lt 1 ]]; then
     exit 1
 fi
 
+if [[ "$DRY_RUN" == no ]]; then
+    # The scheduled service gets this from StateDirectory. Refuse before any
+    # deletion if the run cannot leave the success record Health Watch relies on.
+    if [ ! -d "$IMAGE_PRUNE_STATE_DIR" ] || [ ! -w "$IMAGE_PRUNE_STATE_DIR" ]; then
+        echo "FAIL: image-prune status directory is not writable — nothing has been changed"
+        exit 1
+    fi
+fi
+
 echo "=== Image prune ==="
 echo "Deploy directory: $DEPLOY_DIR"
 echo "Builds kept per repository: $KEEP_BUILDS"
 [[ "$DRY_RUN" == yes ]] && echo "Mode: dry run — nothing will be removed"
 echo
 
-before_used=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+disk_path=/var/lib/docker
+df --output=used -B1 "$disk_path" >/dev/null 2>&1 || disk_path=/
+before_used=$(df --output=pcent "$disk_path" | tail -1 | tr -dc '0-9')
+before_bytes=$(df --output=used -B1 "$disk_path" | tail -1 | tr -dc '0-9')
 before_images=$("${DOCKER[@]}" images -q | sort -u | wc -l)
 
 # ---------------------------------------------------------------------------
@@ -265,10 +279,24 @@ if [[ "$DRY_RUN" == no && "$dangling" -gt 0 ]]; then
 fi
 
 echo
-after_used=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+after_used=$(df --output=pcent "$disk_path" | tail -1 | tr -dc '0-9')
+after_bytes=$(df --output=used -B1 "$disk_path" | tail -1 | tr -dc '0-9')
 after_images=$("${DOCKER[@]}" images -q | sort -u | wc -l)
+freed_bytes=$((before_bytes - after_bytes))
+[ "$freed_bytes" -lt 0 ] && freed_bytes=0
 echo "Images: $before_images -> $after_images"
-echo "Disk:   ${before_used}% -> ${after_used}% of $(df -h --output=size / | tail -1 | tr -d ' ')"
+echo "Disk:   ${before_used}% -> ${after_used}% of $(df -h --output=size "$disk_path" | tail -1 | tr -d ' ')"
+echo "Freed:  $freed_bytes bytes"
+
+if [[ "$DRY_RUN" == no ]]; then
+    # Health Watch reads this rather than the journal so one successful weekly
+    # run remains visible between elapses. Replace atomically: a partial marker
+    # must not make an interrupted prune look successful.
+    status_tmp=$(mktemp "$IMAGE_PRUNE_STATE_DIR/.image-prune.XXXXXX")
+    printf 'LAST_SUCCESS_EPOCH=%s\nLAST_FREED_BYTES=%s\n' \
+        "$(date +%s)" "$freed_bytes" > "$status_tmp"
+    mv "$status_tmp" "$IMAGE_PRUNE_STATE_DIR/image-prune.env"
+fi
 
 # A prune that removed nothing is a normal quiet run and exits 0, the same way
 # helius-payment-webhook.sh treats a webhook that is already correct. What this script must

@@ -14,14 +14,16 @@ Type=oneshot
 # signal anybody thinks to check and never fires again. That failure cost
 # `kolonie-origin-firewall.timer` three days and was found by hand.
 ExecStart=/opt/kolonie/scripts/image-prune.sh
+StateDirectory=kolonie
 
 # The margin is deliberately larger than the number of builds a busy day
 # produces between two runs, so a weekly prune never has to reason about how
 # many deploys happened since the last one.
 Environment=KEEP_BUILDS=5
 
-# It reads /opt/kolonie/state and the Docker socket, and writes nothing on this
-# host outside the image store.
+# It reads the deploy records and writes image-prune.env under /var/lib/kolonie
+# after success. StateDirectory keeps root-owned runtime state out of the Git
+# checkout, where it would obstruct deploy.sh's reset of /opt/kolonie.
 ProtectHome=true
 NoNewPrivileges=true
 
