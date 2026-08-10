@@ -391,7 +391,7 @@ working tree.
 bash scripts/check.sh
 ```
 
-The three rehearsals and the log-level fixtures, in one command. §6 lists them
+The rehearsals and the log-level fixtures, in one command. §6 lists them
 individually and §7 requires them conditionally; this is the single thing to run
 before a commit.
 
