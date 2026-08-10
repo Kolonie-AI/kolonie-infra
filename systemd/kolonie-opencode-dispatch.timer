@@ -1,0 +1,23 @@
+[Unit]
+Description=Keep the opencode worker running on a host that keeps time (kolonie-infra#111)
+# **This exists because GitHub's own scheduler does not deliver.** Measured on
+# the night of 2026-08-09: `20,50` produced six runs in four hours, and `*/10`
+# produced one in three. Three times the triggers, a sixth of the runs. A manual
+# dispatch started within seconds every time it was tried.
+#
+# The `schedule:` block in the workflow stays as a fallback for a night when this
+# host is down. Two firings cannot collide: the workflow's own
+# `Am I already running?` step exits the second one.
+
+[Timer]
+OnCalendar=*:0/10
+# A dispatch missed because the host was rebooting is worth catching up on: the
+# queue does not empty itself, and one late run is better than a gap.
+Persistent=true
+# Every other timer on this box fires on the quarter hour and this one lands on
+# it twice an hour. A minute apart is enough that the two do not contend, and
+# short enough that ten minutes still means ten minutes.
+RandomizedDelaySec=1m
+
+[Install]
+WantedBy=timers.target

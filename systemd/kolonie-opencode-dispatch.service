@@ -1,0 +1,28 @@
+[Unit]
+Description=Start the opencode coding worker on GitHub (kolonie-docs#142, kolonie-infra#111)
+# It talks to api.github.com and nothing on this host, so it needs the network
+# and nothing else. Deliberately no `Requires=docker.service`: the worker runs on
+# GitHub's runners, and a host whose Docker is down should still be able to keep
+# the queue moving.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Left at the default `no`, for the reason kolonie-payments-reconcile.service
+# records: systemd will not schedule the next elapse of a timer whose triggered
+# unit is still active, so a `yes` here gives a timer that reads healthy on every
+# signal anybody checks and never fires again.
+ExecStart=/opt/kolonie/scripts/dispatch-opencode.sh
+
+# It reads one file and makes one HTTPS call.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A dispatch that failed is not an incident — the next pass is ten minutes away,
+# and a unit retrying in a tight loop against a rate-limited API is the one thing
+# that would turn a missed run into a blocked account.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
