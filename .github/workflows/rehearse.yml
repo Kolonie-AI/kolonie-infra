@@ -66,6 +66,15 @@ jobs:
       - name: the pin check
         run: bash scripts/rehearse-pin.sh
 
+      # The wiring rather than the scripts (#104). Every triage script above was
+      # rehearsed and correct while the four lines of `health-watch.yml` that
+      # call them threw their exit status away — `bash -e` ended the step before
+      # `status=$?` could read it, so a drifted host killed the watcher at the
+      # moment it had something to say. Two of three watchers went quiet for a
+      # day behind a green health report.
+      - name: the health watcher's own wiring
+        run: bash scripts/rehearse-watch-wiring.sh
+
       # The balance alarm (#83). An alarm's two failure modes — silent when it
       # should fire, and firing on a blip — are both invisible in production
       # until the day they matter, and the balance had four hundred messages of
