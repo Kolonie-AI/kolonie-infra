@@ -53,6 +53,7 @@ step "the service list against compose" bash scripts/check-services.sh
 step "deployed-revision.sh, against a stub docker" bash scripts/rehearse-deployed-revision.sh
 step "drift-triage.sh" bash scripts/rehearse-drift.sh
 step "the promtail level derivation" bash scripts/check-log-levels.sh
+step "the host resource alarms" bash scripts/rehearse-host-resources.sh
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
