@@ -48,6 +48,11 @@ env:
   # its own record does not name*, which is the failure that hid on 2026-08-06
   # precisely because the two read alike (#89).
   PIN_ISSUE_TITLE: 'The deploy host is not running the images its own record names'
+  # The one report that is about this workflow rather than about the host (#104).
+  # It is deliberately not phrased as a host fault: what it says is that the
+  # other three reports stopped being evidence, which is a claim about the
+  # watcher and reads wrongly as anything else.
+  SELF_ISSUE_TITLE: 'Health Watch is not watching: a run failed part-way through'
 
 jobs:
   watch:
@@ -282,13 +287,29 @@ jobs:
           set -uo pipefail
 
           chmod +x scripts/drift-triage.sh
-          ./scripts/drift-triage.sh < revisions.out > drift.md 2> drift-verdict.env
-          status=$?
 
-          # Exit 2 is the script saying it could not run — an empty probe rather
-          # than a behind host. Fail the run so it is visible in the Actions tab,
-          # for the same reason the health triage does: a broken watcher that
-          # reports "ok" is the failure this workflow exists to end.
+          # **`|| status=$?` and not a bare call.** The step runs under
+          # `bash -e`, which GitHub sets on the interpreter — `set -uo pipefail`
+          # above does not unset it, and omitting `-e` from a `set` line never
+          # could. A bare call therefore ends the step the moment the script
+          # exits non-zero, and `status=$?` on the next line never runs.
+          #
+          # That is the whole of `#104`. `drift-triage.sh` reports drift *by*
+          # exiting 1 — its own header says so, and `rehearse-drift.sh` asserts
+          # it — so from 2026-08-09 08:02, the first moment the host actually
+          # drifted, this step died at exactly the point it had something to
+          # say. Everything below it was skipped, including the step that files
+          # the report, and two of this workflow's three watchers went quiet for
+          # a day while it went on reporting the third as green.
+          status=0
+          ./scripts/drift-triage.sh < revisions.out > drift.md 2> drift-verdict.env || status=$?
+
+          # 0 is current and 1 is drifted; both are answers, and this step
+          # succeeds for either. Exit 2 is the script saying it could not run —
+          # an empty probe rather than a behind host. Fail the run so it is
+          # visible in the Actions tab, for the same reason the health triage
+          # does: a broken watcher that reports "ok" is the failure this
+          # workflow exists to end.
           if [ "$status" -eq 2 ]; then
             echo "::error::The revision probe returned no rows. SSH reachable but the report is empty?"
             exit 1
@@ -384,12 +405,18 @@ jobs:
           set -uo pipefail
 
           chmod +x scripts/pin-triage.sh
-          ./scripts/pin-triage.sh < pins.out > pins.md 2> pins-verdict.env
-          status=$?
 
-          # Exit 2 is the script saying it could not run — an empty probe rather
-          # than a disagreeing host. Fail the run so it is visible in the
-          # Actions tab, for the same reason the other two triages do.
+          # `|| status=$?` for the reason the drift step above spells out. This
+          # step carried the identical defect and had never shown it, because
+          # the drift step dies first and this one is skipped — so `#104` found
+          # one broken watcher and there were two.
+          status=0
+          ./scripts/pin-triage.sh < pins.out > pins.md 2> pins-verdict.env || status=$?
+
+          # 0 and 1 are both answers. Exit 2 is the script saying it could not
+          # run — an empty probe rather than a disagreeing host. Fail the run so
+          # it is visible in the Actions tab, for the same reason the other two
+          # triages do.
           if [ "$status" -eq 2 ]; then
             echo "::error::The pin probe returned no rows. SSH reachable but the report is empty?"
             exit 1
@@ -468,3 +495,87 @@ jobs:
           gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file pins-body.md
           gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file pins-changed.md
           echo "updated #$number"
+
+      # --- the watcher watching itself --------------------------------------
+      #
+      # **A partly-failing monitor is quieter than a fully-failing one** (#104).
+      # On 2026-08-09 the drift step died at 08:02 and every step after it was
+      # skipped. The health step kept succeeding, kept its issue up to date and
+      # kept reading as a working watcher — so two of the three things this
+      # workflow watches went unwatched for a day and the only trace was a red
+      # tick in a tab nobody opens. It was found by looking, while answering an
+      # unrelated question.
+      #
+      # The steps above report what they *find*. This reports that they did not
+      # get to look, which is a different fact and was the one with no channel.
+      #
+      # **One issue, opened once and closed on the next clean run**, matching
+      # the three reports above rather than inventing a fourth idiom. It carries
+      # `p1` because a watcher that is not watching invalidates the silence of
+      # every other watcher — reading *no open issue* as *nothing is wrong* is
+      # exactly what this failure made untrue.
+      #
+      # `if: failure()` and not `always()`: a run that succeeded has nothing to
+      # say here, and the close below is what turns the issue off.
+      - name: Say so when this watcher could not do its job
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$SELF_ISSUE_TITLE\"" --json number --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          {
+            printf 'A Health Watch run failed part-way through, so some of what this\n'
+            printf 'workflow watches was not watched.\n\n'
+            printf '**Read the silence of the other reports with that in mind.** They report\n'
+            printf 'what a step found; a step that did not run finds nothing, and an issue\n'
+            printf 'that stays closed is then not evidence of a healthy host.\n\n'
+            printf 'Which step failed, and the log: %s\n\n' "$RUN_URL"
+            printf 'This closes itself on the next run that gets all the way through.\n'
+          } > self-body.md
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$SELF_ISSUE_TITLE" \
+              --label p1 --label area:infra \
+              --body-file self-body.md
+            echo "filed a new watcher report"
+            exit 0
+          fi
+
+          # **The body is rewritten rather than appended to**, so the issue
+          # always names the newest failing run. A comment per failed run, every
+          # fifteen minutes, is how a p1 issue becomes something people mute.
+          gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file self-body.md
+          echo "updated #$number — still failing"
+
+      # Closed only from a run that reached the end, which is what makes the
+      # issue's absence mean something.
+      - name: Close the watcher report once a run gets through
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$SELF_ISSUE_TITLE\"" --json number --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          if [ -z "$number" ]; then
+            echo "nothing open — saying nothing"
+            exit 0
+          fi
+
+          printf 'Resolved. A run reached the end, so every step reported.\n\n%s\n' "$RUN_URL" \
+            > self-recovered.md
+          gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file self-recovered.md
+          gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+            --reason completed --comment "Closed automatically by Health Watch."
+          echo "closed #$number"
