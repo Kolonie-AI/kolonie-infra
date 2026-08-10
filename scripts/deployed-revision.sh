@@ -10,7 +10,9 @@
 # not, quickly.
 #
 # The images carry `org.opencontainers.image.revision` since kolonie-platform#75.
-# This script reads it. That is the whole of it.
+# This script reads it. A report is written only after Docker has answered every
+# read: otherwise a daemon failure partway through looks like a successful empty
+# or partial report, which gives the watcher no way to tell whether it ran.
 #
 # Output, one tab-separated row per service:
 #
@@ -51,15 +53,40 @@ docker_cmd() {
     fi
 }
 
+report=$(mktemp)
+containers_file=$(mktemp)
+trap 'rm -f "$report" "$containers_file"' EXIT
+
+# Establish absence separately from inspection failure. A service that is not
+# running is a valid `-` row; Docker being unable to list containers means the
+# probe itself did not run and must be a non-zero exit, not six plausible rows.
+if ! docker_cmd ps --all --format '{{.Names}}' >"$containers_file"; then
+    echo "deployed-revision: Docker could not list containers" >&2
+    exit 2
+fi
+
 for svc in "${SERVICES[@]}"; do
     container="kolonie-${svc}"
 
-    # Two separate reads rather than one template with both fields: a container
-    # that is absent must still produce a row, and merging them means one missing
-    # container drops a service out of the report entirely.
-    revision=$(docker_cmd inspect "$container" \
-        --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null)
-    image=$(docker_cmd inspect "$container" --format '{{.Config.Image}}' 2>/dev/null)
+    if ! grep -qxF "$container" "$containers_file"; then
+        printf '%s\t-\t-\n' "$svc" >>"$report"
+        continue
+    fi
+
+    # One Docker call makes revision and image one snapshot. Buffer every row in
+    # a temporary file so a failure halfway through cannot look like a complete
+    # report to a caller that only sees stdout.
+    if ! row=$(docker_cmd inspect "$container" \
+        --format 'row{{printf "\t"}}{{index .Config.Labels "org.opencontainers.image.revision"}}{{printf "\t"}}{{.Config.Image}}' \
+        2>/dev/null); then
+        echo "deployed-revision: Docker could not inspect $container" >&2
+        exit 2
+    fi
+    # Parameter expansion rather than `read`: tab is IFS whitespace, so `read`
+    # collapses the two tabs around an empty revision and shifts the image left.
+    row="${row#*$'\t'}"
+    revision="${row%%$'\t'*}"
+    image="${row#*$'\t'}"
 
     # Docker 29 renders an absent label as an empty string; older versions render
     # `<no value>`, and an image with no labels at all can render `map[]`. None of
@@ -67,7 +94,9 @@ for svc in "${SERVICES[@]}"; do
     case "$revision" in "<no value>"|"map[]"|"") revision="-" ;; esac
     [ -z "$image" ] && image="-"
 
-    printf '%s\t%s\t%s\n' "$svc" "$revision" "$image"
+    printf '%s\t%s\t%s\n' "$svc" "$revision" "$image" >>"$report"
 done
+
+cat "$report"
 
 exit 0

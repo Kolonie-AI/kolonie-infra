@@ -17,7 +17,7 @@
 #
 # ## What it runs, and what it deliberately does not
 #
-# The three rehearsals, which are the tests: they run anywhere, with no Docker,
+# The rehearsal tests run anywhere, with no Docker,
 # no VPS and no credentials, which is the property `AGENTS.md` §6 makes a point
 # of and the only reason a check command is possible here at all.
 #
@@ -50,6 +50,7 @@ step() {
 step "deploy.sh, against a stub docker" bash scripts/rehearse-deploy.sh
 step "backup.sh, against a stub docker" bash scripts/rehearse-backup.sh
 step "the service list against compose" bash scripts/check-services.sh
+step "deployed-revision.sh, against a stub docker" bash scripts/rehearse-deployed-revision.sh
 step "drift-triage.sh" bash scripts/rehearse-drift.sh
 step "the promtail level derivation" bash scripts/check-log-levels.sh
 
