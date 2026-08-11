@@ -200,6 +200,7 @@ services:
       - kolonie
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:-}
       DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
       JWT_SECRET: ${JWT_SECRET}
       # The Auth0 `sub` of the identity that holds the `maintainer` role
