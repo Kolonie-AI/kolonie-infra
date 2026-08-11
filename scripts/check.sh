@@ -57,6 +57,7 @@ step "the health watcher's own wiring" bash scripts/rehearse-watch-wiring.sh
 step "the promtail level derivation" bash scripts/check-log-levels.sh
 step "the host resource alarms" bash scripts/rehearse-host-resources.sh
 step "the deploy alarm's counting rules" bash scripts/rehearse-deploy-alarm.sh
+step "what the host publishes as resource pressure" bash scripts/rehearse-pressure.sh
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then

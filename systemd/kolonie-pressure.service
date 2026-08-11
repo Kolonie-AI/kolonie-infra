@@ -1,0 +1,29 @@
+[Unit]
+Description=Publish whether this host is under resource pressure (kolonie-infra#103)
+# It reads Docker's container states through health-report.sh, so there has to be
+# a daemon. On a boot where Docker is slow this orders the run after it rather
+# than racing it — and a run that could not read is published as *degraded*, so
+# racing would raise a real alarm about nothing.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kolonie/scripts/pressure-report.sh
+StateDirectory=kolonie
+
+# It writes one file under /var/lib/kolonie/public and reads the Docker socket
+# and the deploy records. StateDirectory keeps root-owned runtime state out of
+# the Git checkout, where it would obstruct deploy.sh's reset of /opt/kolonie —
+# kolonie-infra#119 is what happens when this line is missing on the host.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A publish that could not run is not an incident on the day it happens: the file
+# it did not rewrite is the *previous* verdict, and the next elapse is five
+# minutes away. What must not happen is a unit retrying in a tight loop against a
+# daemon that is already struggling.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

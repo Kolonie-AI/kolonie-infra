@@ -1101,6 +1101,20 @@ services:
     logging: *logging
     networks:
       - kolonie
+    volumes:
+      # **One file, read-only, and it is how a full disk reaches a person on a
+      # Sunday** (#103). `kolonie-pressure.timer` writes `pressure.json` here
+      # every five minutes; nginx serves it at `/status/pressure.json`; and the
+      # sixth monitor in `scripts/uptime-monitors.sh` alerts when the keyword
+      # inside it stops appearing.
+      #
+      # **Read-only into the container, deliberately.** nginx has no reason to
+      # write to the host's state directory, and a static file server that could
+      # would be a place to put things.
+      #
+      # It contains one bit and never a number — `scripts/pressure-report.sh`
+      # says why. This is a public URL.
+      - /var/lib/kolonie/public:/usr/share/nginx/html/status:ro
     healthcheck:
       # 127.0.0.1, never localhost. The image's /etc/hosts maps localhost to
       # both 127.0.0.1 and ::1; BusyBox wget tries ::1 first and nginx listens

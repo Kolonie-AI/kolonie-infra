@@ -68,12 +68,30 @@ API="https://api.uptimerobot.com/v3"
 # `name|url` — the URL is the identity. Renaming a monitor in the dashboard is
 # harmless; changing its URL creates a new one and leaves the old, which is the
 # behaviour wanted from a script that never deletes.
+#
+# **The sixth is not an endpoint and is the one that carries `#103`.** The first
+# five ask *is this service answering*. `pressure.json` answers *is this host
+# about to stop being able to serve any of them* — a disk over threshold, inodes
+# exhausted, or a backup that has stopped happening. `#69` sent those to a GitHub
+# issue and `#103` says that is the wrong side of the line it drew: they get
+# worse on their own, and the issue announcing one sits in a list nobody is
+# looking at on a Sunday.
+#
+# **It needs no new alerting service, which `#103` requires**, because the shape
+# already fits: `kolonie-pressure.timer` on the host writes the keyword while the
+# three conditions hold and writes something else when they do not, and
+# `ALERT_NOT_EXISTS` turns *the disk is full* into *the keyword is gone*. A file
+# that stops being written, or a host that stops serving it, alarms for the same
+# reason and by the same route — which is the inversion `#103` asks for.
+#
+# `scripts/pressure-report.sh` holds what it does and does not publish.
 read -r -d '' DESIRED <<'EOF'
 kolonie api /health|https://api.kolonie.ai/health
 kolonie academy /health|https://academy.kolonie.ai/health
 kolonie mcp /health|https://mcp.kolonie.ai/health
 kolonie challenge /health|https://challenge.kolonie.ai/health
 kolonie console /health|https://console.kolonie.ai/health
+kolonie host pressure|https://kolonie.ai/status/pressure.json
 EOF
 
 # A keyword monitor, because all five answer `{"status":"ok"}` and a plain HTTP
