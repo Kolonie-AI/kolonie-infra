@@ -632,8 +632,14 @@ services:
       # exit code Compose actually reads.
       #
       # 127.0.0.1 rather than localhost, for the reason spelled out on the
-      # website service below. No curl in this image, and none is added for one
-      # request that Node can make itself.
+      # website service below.
+      #
+      # **The sentence that stood here said there was no `curl` in this image and
+      # that none would be added for a request Node can make itself.** The first
+      # half is still true and the second was reasoning from it to a conclusion
+      # that never followed: the image is Alpine and has carried `/usr/bin/wget`
+      # all along, so no client had to be added to stop paying for a Node start.
+      # Nobody checked, for four months, because the premise sounded like one.
       #
       # **It prints what it saw** (#54). Every branch used to end in a bare
       # `process.exit`, so a dead process, a 503 from a stalled poll loop and a
@@ -646,17 +652,57 @@ services:
       # is read into a public issue by Health Watch, so no body, no headers, no
       # environment. One short line keeps the healthy path from burying the
       # failing entries — Docker keeps only the last five.
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3001/health').then(r=>{console.log('health '+r.status);process.exit(r.ok?0:1)}).catch(e=>{console.log('health unreachable: '+(e.cause?.code||e.code||e.message));process.exit(1)})",
-        ]
+      #
+      # **BusyBox `wget`, because the probe was measuring the contention it was
+      # part of** (#100). `node -e` boots a whole Node runtime on every probe.
+      # Idle that is fine — measured on the host, 0.34 s against wget's 0.18 s,
+      # both far inside the 10 s timeout. During a deploy it is not: the cascade
+      # recreates four runners about 45 s apart while the api runs migrations,
+      # and a Node start competing with that can exceed its timeout. **A timed-out
+      # probe counts as a failure exactly like a refused connection**, so the
+      # check calls a listening service dead and the deploy rolls back a correct
+      # build. Twice on 2026-08-09, on unrelated commits, with the port open the
+      # whole time.
+      #
+      # **The reason it was `node -e` does not hold.** #100 asks this to be
+      # confirmed rather than assumed: every one of these images is Alpine and
+      # carries `/usr/bin/wget`, checked in all five containers on 2026-08-11.
+      # The website service has used exactly this call since #11.
+      #
+      # **It still prints what it saw** (#54), which is the property that must
+      # not be lost — `.State.Health.Log` keeps five entries and Health Watch
+      # reads them into a public issue. Under `-q` a success is silent and a
+      # failure is one line naming which of the three it was:
+      #
+      #     wget: server returned error: HTTP/1.1 503 Service Unavailable
+      #     wget: can't connect to remote host (127.0.0.1): Connection refused
+      #     wget: download timed out
+      #
+      # A stalled poll loop, a dead process and a slow one, told apart — which
+      # is more than the old probe managed, since it printed the same
+      # `health unreachable` for the last two.
+      #
+      # `-T 5` is wget's own timeout and it is deliberately under Docker's 10 s:
+      # a probe that gives up itself leaves a diagnostic, and one Docker kills
+      # leaves nothing at all.
+      #
+      # `deploy.sh` replays the configured check when a container fails, and it
+      # already has a `wget` branch — this loses no diagnostics there either.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "-T", "5", "http://127.0.0.1:3001/health"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # **Long enough to cover the cascade, and no longer** (#100). The four
+      # runners are recreated over roughly three minutes; a 30 s start period
+      # expired while the machine was still at its busiest, so the probes that
+      # counted were the ones taken under the worst load of the deploy.
+      #
+      # Docker probes every 5 s inside the start period and flips to healthy on
+      # the first success, so a longer one costs a fast container nothing. The
+      # ceiling is `deploy.sh`'s own `HEALTH_TIMEOUT` of 180 s: past that, a
+      # broken container would still read `starting` when the deploy gives up,
+      # and a verdict of *still starting* is less useful than one of *unhealthy*.
+      start_period: 120s
     profiles:
       - full
 
@@ -718,17 +764,57 @@ services:
       # It matters more here — a stalled moderator publishes nothing, and a
       # Colony that publishes nothing looks exactly like one where nobody has
       # written anything.
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3002/health').then(r=>{console.log('health '+r.status);process.exit(r.ok?0:1)}).catch(e=>{console.log('health unreachable: '+(e.cause?.code||e.code||e.message));process.exit(1)})",
-        ]
+      #
+      # **BusyBox `wget`, because the probe was measuring the contention it was
+      # part of** (#100). `node -e` boots a whole Node runtime on every probe.
+      # Idle that is fine — measured on the host, 0.34 s against wget's 0.18 s,
+      # both far inside the 10 s timeout. During a deploy it is not: the cascade
+      # recreates four runners about 45 s apart while the api runs migrations,
+      # and a Node start competing with that can exceed its timeout. **A timed-out
+      # probe counts as a failure exactly like a refused connection**, so the
+      # check calls a listening service dead and the deploy rolls back a correct
+      # build. Twice on 2026-08-09, on unrelated commits, with the port open the
+      # whole time.
+      #
+      # **The reason it was `node -e` does not hold.** #100 asks this to be
+      # confirmed rather than assumed: every one of these images is Alpine and
+      # carries `/usr/bin/wget`, checked in all five containers on 2026-08-11.
+      # The website service has used exactly this call since #11.
+      #
+      # **It still prints what it saw** (#54), which is the property that must
+      # not be lost — `.State.Health.Log` keeps five entries and Health Watch
+      # reads them into a public issue. Under `-q` a success is silent and a
+      # failure is one line naming which of the three it was:
+      #
+      #     wget: server returned error: HTTP/1.1 503 Service Unavailable
+      #     wget: can't connect to remote host (127.0.0.1): Connection refused
+      #     wget: download timed out
+      #
+      # A stalled poll loop, a dead process and a slow one, told apart — which
+      # is more than the old probe managed, since it printed the same
+      # `health unreachable` for the last two.
+      #
+      # `-T 5` is wget's own timeout and it is deliberately under Docker's 10 s:
+      # a probe that gives up itself leaves a diagnostic, and one Docker kills
+      # leaves nothing at all.
+      #
+      # `deploy.sh` replays the configured check when a container fails, and it
+      # already has a `wget` branch — this loses no diagnostics there either.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "-T", "5", "http://127.0.0.1:3002/health"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # **Long enough to cover the cascade, and no longer** (#100). The four
+      # runners are recreated over roughly three minutes; a 30 s start period
+      # expired while the machine was still at its busiest, so the probes that
+      # counted were the ones taken under the worst load of the deploy.
+      #
+      # Docker probes every 5 s inside the start period and flips to healthy on
+      # the first success, so a longer one costs a fast container nothing. The
+      # ceiling is `deploy.sh`'s own `HEALTH_TIMEOUT` of 180 s: past that, a
+      # broken container would still read `starting` when the deploy gives up,
+      # and a verdict of *still starting* is less useful than one of *unhealthy*.
+      start_period: 120s
     profiles:
       - full
 
@@ -838,17 +924,57 @@ services:
       # deep queue answer 503 — a backlog is the failure this service exists to
       # prevent and restarting the container would do nothing about it. Read the
       # body to see it; the status code is about the loop alone.
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3003/health').then(r=>{console.log('health '+r.status);process.exit(r.ok?0:1)}).catch(e=>{console.log('health unreachable: '+(e.cause?.code||e.code||e.message));process.exit(1)})",
-        ]
+      #
+      # **BusyBox `wget`, because the probe was measuring the contention it was
+      # part of** (#100). `node -e` boots a whole Node runtime on every probe.
+      # Idle that is fine — measured on the host, 0.34 s against wget's 0.18 s,
+      # both far inside the 10 s timeout. During a deploy it is not: the cascade
+      # recreates four runners about 45 s apart while the api runs migrations,
+      # and a Node start competing with that can exceed its timeout. **A timed-out
+      # probe counts as a failure exactly like a refused connection**, so the
+      # check calls a listening service dead and the deploy rolls back a correct
+      # build. Twice on 2026-08-09, on unrelated commits, with the port open the
+      # whole time.
+      #
+      # **The reason it was `node -e` does not hold.** #100 asks this to be
+      # confirmed rather than assumed: every one of these images is Alpine and
+      # carries `/usr/bin/wget`, checked in all five containers on 2026-08-11.
+      # The website service has used exactly this call since #11.
+      #
+      # **It still prints what it saw** (#54), which is the property that must
+      # not be lost — `.State.Health.Log` keeps five entries and Health Watch
+      # reads them into a public issue. Under `-q` a success is silent and a
+      # failure is one line naming which of the three it was:
+      #
+      #     wget: server returned error: HTTP/1.1 503 Service Unavailable
+      #     wget: can't connect to remote host (127.0.0.1): Connection refused
+      #     wget: download timed out
+      #
+      # A stalled poll loop, a dead process and a slow one, told apart — which
+      # is more than the old probe managed, since it printed the same
+      # `health unreachable` for the last two.
+      #
+      # `-T 5` is wget's own timeout and it is deliberately under Docker's 10 s:
+      # a probe that gives up itself leaves a diagnostic, and one Docker kills
+      # leaves nothing at all.
+      #
+      # `deploy.sh` replays the configured check when a container fails, and it
+      # already has a `wget` branch — this loses no diagnostics there either.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "-T", "5", "http://127.0.0.1:3003/health"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # **Long enough to cover the cascade, and no longer** (#100). The four
+      # runners are recreated over roughly three minutes; a 30 s start period
+      # expired while the machine was still at its busiest, so the probes that
+      # counted were the ones taken under the worst load of the deploy.
+      #
+      # Docker probes every 5 s inside the start period and flips to healthy on
+      # the first success, so a longer one costs a fast container nothing. The
+      # ceiling is `deploy.sh`'s own `HEALTH_TIMEOUT` of 180 s: past that, a
+      # broken container would still read `starting` when the deploy gives up,
+      # and a verdict of *still starting* is less useful than one of *unhealthy*.
+      start_period: 120s
     profiles:
       - full
 
@@ -896,17 +1022,57 @@ services:
       # **No queue depth here, unlike the triage runner.** This loop sweeps every
       # criterion every pass, so *how far behind* is not a question it can be
       # asked. The status code is about the loop alone.
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3004/health').then(r=>{console.log('health '+r.status);process.exit(r.ok?0:1)}).catch(e=>{console.log('health unreachable: '+(e.cause?.code||e.code||e.message));process.exit(1)})",
-        ]
+      #
+      # **BusyBox `wget`, because the probe was measuring the contention it was
+      # part of** (#100). `node -e` boots a whole Node runtime on every probe.
+      # Idle that is fine — measured on the host, 0.34 s against wget's 0.18 s,
+      # both far inside the 10 s timeout. During a deploy it is not: the cascade
+      # recreates four runners about 45 s apart while the api runs migrations,
+      # and a Node start competing with that can exceed its timeout. **A timed-out
+      # probe counts as a failure exactly like a refused connection**, so the
+      # check calls a listening service dead and the deploy rolls back a correct
+      # build. Twice on 2026-08-09, on unrelated commits, with the port open the
+      # whole time.
+      #
+      # **The reason it was `node -e` does not hold.** #100 asks this to be
+      # confirmed rather than assumed: every one of these images is Alpine and
+      # carries `/usr/bin/wget`, checked in all five containers on 2026-08-11.
+      # The website service has used exactly this call since #11.
+      #
+      # **It still prints what it saw** (#54), which is the property that must
+      # not be lost — `.State.Health.Log` keeps five entries and Health Watch
+      # reads them into a public issue. Under `-q` a success is silent and a
+      # failure is one line naming which of the three it was:
+      #
+      #     wget: server returned error: HTTP/1.1 503 Service Unavailable
+      #     wget: can't connect to remote host (127.0.0.1): Connection refused
+      #     wget: download timed out
+      #
+      # A stalled poll loop, a dead process and a slow one, told apart — which
+      # is more than the old probe managed, since it printed the same
+      # `health unreachable` for the last two.
+      #
+      # `-T 5` is wget's own timeout and it is deliberately under Docker's 10 s:
+      # a probe that gives up itself leaves a diagnostic, and one Docker kills
+      # leaves nothing at all.
+      #
+      # `deploy.sh` replays the configured check when a container fails, and it
+      # already has a `wget` branch — this loses no diagnostics there either.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "-T", "5", "http://127.0.0.1:3004/health"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # **Long enough to cover the cascade, and no longer** (#100). The four
+      # runners are recreated over roughly three minutes; a 30 s start period
+      # expired while the machine was still at its busiest, so the probes that
+      # counted were the ones taken under the worst load of the deploy.
+      #
+      # Docker probes every 5 s inside the start period and flips to healthy on
+      # the first success, so a longer one costs a fast container nothing. The
+      # ceiling is `deploy.sh`'s own `HEALTH_TIMEOUT` of 180 s: past that, a
+      # broken container would still read `starting` when the deploy gives up,
+      # and a verdict of *still starting* is less useful than one of *unhealthy*.
+      start_period: 120s
     profiles:
       - full
 
