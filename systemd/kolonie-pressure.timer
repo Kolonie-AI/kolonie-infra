@@ -5,13 +5,32 @@ Description=Publish the host's resource pressure every five minutes (kolonie-inf
 # Five minutes, matching the interval the UptimeRobot monitors already poll at.
 # Publishing faster than it is read buys nothing; publishing slower would let a
 # stale *ok* outlive the condition it describes for longer than one poll.
-OnBootSec=2min
-OnUnitActiveSec=5min
+#
+# **`OnCalendar` and not `OnBootSec` + `OnUnitActiveSec`** (kolonie-infra#130).
+# This was the only one of the six timers here driven by monotonic triggers, and
+# it was the only one Health Watch found not scheduling. That is not a
+# coincidence: `OnUnitActiveSec` names the next elapse relative to the unit's
+# **last activation**, and `OnBootSec` relative to boot. Once boot is long past
+# and the last activation is further back than the interval, both triggers are
+# in the past and there is no future elapse to compute — `systemctl` reports
+# `NextElapseUSecRealtime=0` and the timer never fires again until a reboot,
+# while `is-active` says active, `is-enabled` says enabled and the last run says
+# success. That is #65's signature exactly, and #66 is the row that caught it.
+#
+# A calendar expression cannot get into that state: it always has a next
+# occurrence, whatever happened before. The other five timers here have always
+# used one, which is why none of them has ever gone quiet this way.
+#
+# **The two-minute boot delay is not carried over, and is not missed.** What it
+# bought was a fresh answer shortly after boot; `*:0/5` gives one within five
+# minutes of boot on its own, and re-adding a monotonic trigger beside the
+# calendar would put back the half of this unit that failed.
+OnCalendar=*:0/5
 
 # **`Persistent` is deliberately absent, unlike the backup timer.** A publish
 # missed while the host was down is worthless: the file it would have written
 # describes a moment that has passed, and the next elapse writes the current
-# answer two minutes after boot anyway.
+# answer within five minutes of boot anyway.
 AccuracySec=30s
 
 [Install]
