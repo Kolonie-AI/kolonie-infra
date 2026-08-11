@@ -316,6 +316,15 @@ jobs:
             cd ${{ env.DEPLOY_DIR }}
             sudo ./scripts/host-hardening.sh verify
 
+      # **This is an annotation, not an alarm, and #124 is the difference.** It
+      # puts the reason at the top of a run somebody has already opened. Nothing
+      # about it reaches a reader who has not, which is why twenty consecutive
+      # failures went unnoticed for twenty hours with this line present and
+      # working every time.
+      #
+      # `deploy-alarm.yml` is the alarm. It watches this workflow's runs *and*
+      # `build-and-deploy.yml`'s in kolonie-platform, because a `workflow_call`
+      # run belongs to the caller and is invisible from here.
       - name: Notify on failure
         if: failure()
-        run: echo "::error::Deployment failed! Check VPS logs."
+        run: echo "::error::Deployment failed! Check VPS logs. Deploy Alarm files an issue if the next one fails too (#124)."

@@ -109,6 +109,14 @@ jobs:
       - name: image-prune.sh
         run: bash scripts/rehearse-image-prune.sh
 
+      # The deploy alarm (#124). Everything worth asserting about it is a case a
+      # live run cannot be made to produce: a single transient failure, a streak
+      # broken by a cancellation, and an API that will not answer. The last is
+      # the dangerous one — an unreadable answer must never read as *no
+      # failures*, which is the alarm switching itself off quietly.
+      - name: deploy-alarm.sh
+        run: bash scripts/rehearse-deploy-alarm.sh
+
       # Syntax alone would not have caught anything above, but it is free and it
       # catches the class of mistake that never reaches a test case.
       - name: shell syntax
