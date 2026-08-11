@@ -39,6 +39,7 @@
 # And one row per systemd timer the Colony installs, on the same hosts:
 #
 #   timer:<unit>  ok|not-scheduled  -  0  <seconds until the next elapse>  -
+#   timer:<unit>  running|stuck     -  0  <seconds the service has been active>  <service>
 #
 # And one row per unit file this repository carries, on a host that has a
 # checkout of it (#126):
@@ -53,6 +54,13 @@
 # not was `NextElapseUSecRealtime`, empty, which nobody reads. It was found by
 # hand while verifying something else, and the rules it maintains had simply
 # stopped being refreshed in the meantime.
+#
+# **What #66 got right and #138 completes**: the field is still the one that
+# tells the truth, but empty has two causes. A timer whose `Type=oneshot` service
+# is running has no next elapse *yet* — systemd computes one when the unit
+# finishes — so the honest reading of an empty field asks the triggered service
+# whether it is running before calling the timer unscheduled. See the block
+# itself for the measurement.
 #
 # A backup that quietly stops is the failure this catches, and it is the one
 # failure mode a backup system reliably has. Nothing else on the host notices:
@@ -478,6 +486,57 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
             # exactly what makes the obvious version of this check useless.
             next="$(systemctl show "$unit" -p NextElapseUSecRealtime --value 2>/dev/null)"
             if [ -z "$next" ]; then
+                # **Empty has two causes and only one of them is the failure**
+                # (#138). While a `Type=oneshot` service is active, its timer has
+                # no next elapse to report — systemd recomputes one when the unit
+                # finishes — so the field is empty for the length of every run.
+                # Measured 2026-08-11 on `kolonie-pressure.timer`: empty at
+                # 16:20:5x with the service active, populated forty seconds later
+                # on the same working timer.
+                #
+                # That window is not rare. `kolonie-pressure.timer` fires every
+                # five minutes and its service reads Docker, and health watch runs
+                # on its own schedule with nothing keeping the two apart — so the
+                # collision is a matter of arithmetic rather than luck, and #135
+                # is one that already happened.
+                #
+                # **The triggered service is the discriminator**, and it is the
+                # only signal that separates the two: a timer whose service is
+                # running now has an explanation for the empty field, and a timer
+                # whose service is not running does not.
+                service="$(systemctl show "$unit" -p Unit --value 2>/dev/null)"
+                active=""
+                [ -n "$service" ] &&
+                    active="$(systemctl is-active "$service" 2>/dev/null)"
+
+                if [ "$active" = "activating" ] || [ "$active" = "active" ]; then
+                    # **Bounded, because forever is a different failure.** A run
+                    # that never ends would otherwise buy the timer permanent
+                    # silence on exactly the check that exists to end permanent
+                    # silence (#66). Past the bound the row goes back to being a
+                    # problem, with its own state so the reader is told the
+                    # service is stuck rather than that the timer stopped
+                    # scheduling — those need different commands.
+                    since="$(systemctl show "$service" \
+                                 -p ActiveEnterTimestampMonotonic --value 2>/dev/null)"
+                    now_mono="$(awk '{printf "%d", $1 * 1000000}' /proc/uptime 2>/dev/null)"
+                    running_for=0
+                    if [ -n "$since" ] && [ "$since" -gt 0 ] 2>/dev/null &&
+                           [ -n "$now_mono" ]; then
+                        running_for=$(( (now_mono - since) / 1000000 ))
+                        [ "$running_for" -lt 0 ] && running_for=0
+                    fi
+
+                    if [ "$running_for" -gt "${KOLONIE_TIMER_RUN_SECONDS:-900}" ]; then
+                        printf 'timer:%s\tstuck\t-\t0\t%s\t%s\n' \
+                               "$unit" "$running_for" "$service"
+                    else
+                        printf 'timer:%s\trunning\t-\t0\t%s\t%s\n' \
+                               "$unit" "$running_for" "$service"
+                    fi
+                    continue
+                fi
+
                 printf 'timer:%s\tnot-scheduled\t-\t0\t0\t-\n' "$unit"
                 continue
             fi

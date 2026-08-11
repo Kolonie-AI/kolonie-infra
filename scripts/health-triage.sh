@@ -315,6 +315,21 @@ while IFS=$'\t' read -r name state health streak approx image; do
                 problems+=("| \`$unit\` | not scheduled | - | - | no next elapse — it has stopped scheduling, whatever it reports about being active |")
                 timer_problems+=("$unit")
                 fingerprint_parts+=("timer:$unit:not-scheduled")
+            elif [ "$state" = "running" ]; then
+                # Healthy, and the row says why it is not reporting a next
+                # elapse (#138). A timer caught mid-run is the ordinary state of
+                # a five-minute timer read by a watcher on its own schedule, and
+                # reporting it as a fault is how a watcher gets muted.
+                healthy+=("$unit (its service is running now, ${duration} in)")
+            elif [ "$state" = "stuck" ]; then
+                # Also no next elapse, and also not *stopped scheduling* — the
+                # timer is waiting on a run that is not ending, which is a
+                # different fault needing a different command. Naming it as
+                # unscheduled would send the reader to `reenable`, which fixes
+                # nothing here.
+                problems+=("| \`$unit\` | service stuck | - | - | \`$image\` has been active for $duration, so the timer has no next elapse — the run is not ending |")
+                timer_problems+=("$unit")
+                fingerprint_parts+=("timer:$unit:stuck")
             else
                 healthy+=("$unit (next in $duration)")
             fi
@@ -438,6 +453,15 @@ if [ "${#timer_problems[@]}" -gt 0 ]; then
     echo "Nothing is necessarily broken yet: what these timers maintain — a backup, an"
     echo "allowlist — stays correct for a while after the refresh stops, which is why"
     echo "this is worth catching before the thing it refreshes goes stale."
+    echo
+    echo "**A \`service stuck\` row above is the other shape and needs the other command**"
+    echo "(#138). There the timer is fine and is waiting on a run that is not ending, so"
+    echo "\`reenable\` fixes nothing — the service is what to look at:"
+    echo
+    echo '```'
+    echo "systemctl status <the service named in the row>"
+    echo "journalctl -u <the service named in the row> -n 50"
+    echo '```'
 fi
 
 if [ "${#unit_problems[@]}" -gt 0 ]; then

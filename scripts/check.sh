@@ -59,6 +59,7 @@ step "the host resource alarms" bash scripts/rehearse-host-resources.sh
 step "the deploy alarm's counting rules" bash scripts/rehearse-deploy-alarm.sh
 step "what the host publishes as resource pressure" bash scripts/rehearse-pressure.sh
 step "the unit-drift rows" bash scripts/rehearse-unit-drift.sh
+step "the timer rows, and the window a running service opens in them" bash scripts/rehearse-timer-window.sh
 step "every timer schedules from a calendar" bash scripts/check-timers.sh
 
 echo
