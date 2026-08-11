@@ -1,0 +1,144 @@
+name: Deploy Alarm
+
+# Says so when the deploy pipeline has stopped working. `kolonie-infra#124`.
+#
+# Production ran a twenty-hour-old build for twenty hours and nothing said so.
+# Twenty consecutive deploy runs failed and the whole of the failure signalling
+# was one `::error::` line in a workflow log. **A red run is a thing somebody has
+# to go and look at, and the failure mode this exists for is nobody looking.**
+#
+# Every other class of breakage here already has a channel that comes to the
+# reader — `red-on-main.yml`, Health Watch, `board-self-check.yml` all file
+# issues. A failed deploy had nothing, which made it the one silent failure in a
+# system that is noisy about far less. The mechanism below is Health Watch's,
+# copied deliberately rather than invented: one reused issue, silent on a good
+# day, closed by the run that fixes it.
+#
+# The counting rules, the threshold and why it watches two repositories are in
+# `scripts/deploy-alarm.sh`, which is also what the rehearsal drives. This file
+# is the wiring and the wording.
+#
+# ## Why a schedule and not `workflow_run`
+#
+# `deploy.yml` runs here on pushes to this repository, and is **also**
+# `workflow_call`-ed by `build-and-deploy.yml` in `kolonie-platform` — where the
+# run belongs to the caller and is invisible from here. Thirteen of the nineteen
+# consecutive failures were on that side. `workflow_run` cannot fire across
+# repositories, so the question is asked rather than pushed.
+#
+# **No new credential**, which `#124` requires: both repositories are public and
+# their Actions runs answer an unauthenticated `GET`. `GITHUB_TOKEN` is passed
+# anyway so the run spends from this repository's rate limit rather than the
+# anonymous one — it is not needed for the read, and the script works without it.
+
+on:
+  schedule:
+    # Every fifteen minutes, matching Health Watch. The thing being caught sat
+    # broken for twenty hours; the win is measured in hours, not in minutes, and
+    # a tighter schedule would be precision GitHub's scheduler cannot give.
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+# A second run starting while one is mid-way through filing would duplicate the
+# issue. Queue rather than cancel: a cancelled run reports nothing, and silence
+# is the failure mode this workflow exists to end.
+concurrency:
+  group: deploy-alarm
+  cancel-in-progress: false
+
+env:
+  ISSUE_TITLE: 'The deploy pipeline is failing and nothing else says so'
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask both repositories
+        id: ask
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          chmod +x scripts/deploy-alarm.sh
+          if ./scripts/deploy-alarm.sh check report.tsv; then
+            echo "VERDICT=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERDICT=failing" >> "$GITHUB_OUTPUT"
+          fi
+          cat report.tsv
+
+      - name: File or close the alarm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT: ${{ steps.ask.outputs.VERDICT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$ISSUE_TITLE\"" --json number --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+
+          if [ "$VERDICT" = ok ]; then
+            # **Recovery closes it**, for the reason `#124` gives: an issue that
+            # stays open after the thing is fixed trains people to ignore the
+            # next one. On a day with nothing open this job says nothing at all.
+            if [ -n "$number" ]; then
+              printf 'Recovered. The most recent completed deploy run on `main` succeeded in every\nwatched repository.\n\n%s\n' \
+                "$RUN_URL" > recovered.md
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file recovered.md
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+                --reason completed --comment "Closed automatically by Deploy Alarm."
+              echo "closed #$number"
+            else
+              echo "deploys are landing, nothing open — saying nothing"
+            fi
+            exit 0
+          fi
+
+          {
+            printf 'The deploy pipeline has failed more than once in a row. Production is running\n'
+            printf 'whatever was last deployed successfully, which is **not** what is on `main`.\n\n'
+            printf '| Repository | Consecutive failures | Failing since | First failing run |\n'
+            printf '|---|---:|---|---|\n'
+            while IFS=$'\t' read -r repo count url at title; do
+              [ "$repo" = unreadable ] && continue
+              printf '| `%s` | %s | %s | [%s](%s) |\n' \
+                "$repo" "$count" "$at" "${title:-the run}" "$url"
+            done < report.tsv
+            printf '\n'
+            if grep -q '^unreadable' report.tsv; then
+              printf '**One repository could not be read on this run, so the table is partial.**\n'
+              printf 'An unreadable answer is not counted as a green one — that would be the alarm\n'
+              printf 'switching itself off quietly.\n\n'
+            fi
+            printf '**Since when is the first question and it is answered above.** `#123` reported\n'
+            printf 'the symptom — a deployed revision "behind by 28" — and could not say when it\n'
+            printf 'started or why. The first failing run of the streak is the run to open.\n\n'
+            printf 'Filed automatically by [Deploy Alarm](%s). **It closes itself when a deploy\n' "$RUN_URL"
+            printf 'next succeeds** — do not close it by hand while deploys are still failing, or\n'
+            printf 'the next run will simply file it again.\n'
+          } > body.md
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$ISSUE_TITLE" \
+              --label bug --label p1 --label area:infra --label from:watcher \
+              --body-file body.md
+            echo "filed a new alarm"
+            exit 0
+          fi
+
+          # Rewritten in place rather than commented on. The count and the
+          # failing-since are the whole content and both change on every run; a
+          # comment per run would bury the one number that matters under a
+          # hundred copies of itself.
+          gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          echo "updated #$number"
