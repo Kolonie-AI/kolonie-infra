@@ -183,7 +183,24 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            chmod +x scripts/*.sh
+            # Only the scripts that are missing the bit, because `chmod` on a
+            # file owned by another user is EPERM *even when the mode already
+            # matches* — and this line runs under `set -e`, before deploy.sh.
+            #
+            # That is not hypothetical. Someone ran `sudo git reset --hard` in
+            # this directory on 2026-08-10 while repairing a token in `.env`;
+            # git rewrote one changed file, root owned it afterwards, and the
+            # next twenty deploys died here without reaching a single service.
+            # Production served a twenty-hour-old build and every run reported
+            # only "Deployment failed! Check VPS logs."
+            #
+            # The exec bit is carried in the tree, so the reset above has already
+            # set it and this loop normally does nothing. A script that genuinely
+            # is not executable still fails the deploy, loudly, which is what the
+            # line was for.
+            for script in scripts/*.sh; do
+              [ -x "$script" ] || chmod +x "$script"
+            done
 
             # A list is deployed as a sequence of single-service deploys in one
             # session, not as a new mode inside deploy.sh (#31).
