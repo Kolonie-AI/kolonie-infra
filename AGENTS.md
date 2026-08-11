@@ -30,6 +30,7 @@ scripts/health-why.sh       why an unhealthy container says so — the probe's o
 scripts/health-triage.sh    interprets health-report output
 scripts/origin-firewall.sh  restricts origin to Cloudflare edge IPs
 scripts/rehearse-unit-drift.sh  exercises the unit-drift rows without a host (#126)
+scripts/check-timers.sh     refuses a timer that schedules only from its own history (#130)
 .github/workflows/          deploy, diagnose, health-watch
 cloudflare/                 edge configuration
 state/                      deploy state — deployed.env, deploy.lock
