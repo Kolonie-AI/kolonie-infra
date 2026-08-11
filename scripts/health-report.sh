@@ -40,6 +40,11 @@
 #
 #   timer:<unit>  ok|not-scheduled  -  0  <seconds until the next elapse>  -
 #
+# And one row per unit file this repository carries, on a host that has a
+# checkout of it (#126):
+#
+#   unit:<name>  ok|drifted|absent  -  0  0  -
+#
 # **The field is the next elapse, and deliberately not whether the unit is
 # active** (#66). `kolonie-origin-firewall.timer` had not scheduled anything for
 # three days while reporting `is-active: active`, `is-enabled: enabled`,
@@ -497,6 +502,61 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # altogether reports nothing at all here, and silence is what this whole
         # row exists to stop being an answer.
         [ "$timers" -eq 0 ] && printf 'timer\tnone\t-\t0\t0\t-\n'
+    fi
+
+    # One row per unit whose file on the host differs from this repository's
+    # (#126). **Nothing installs `systemd/`**: `deploy.sh` resets /opt/kolonie
+    # from the checkout and `/etc/systemd/system` is not in it, so a unit change
+    # merged here is green, reviewed and inert — no failure, no log line, no red
+    # tick, and the only way to learn which is to go and look.
+    #
+    # **Measured, not feared.** Audited on 2026-08-11: one of the ten had
+    # drifted. `kolonie-image-prune.service` had gained `StateDirectory=kolonie`
+    # here and the host's copy never got it, so /var/lib/kolonie did not exist,
+    # the weekly prune had nowhere to write its marker, and the `image-prune` row
+    # above reported *no successful prune has been recorded* against a host that
+    # had freed 8 GiB on schedule. That is #119: an alarm open for two days
+    # describing the opposite of what happened. Nine units were fine and nothing
+    # said which nine.
+    #
+    # **This is a detector and not an installer**, deliberately. Making a deploy
+    # write /etc/systemd/system and reload systemd hands the deploy path root
+    # over unit files, including the unit that runs the deploy — a larger
+    # decision that may well be right and is not this one. A drift nobody can see
+    # cannot be argued about; a drift on a report is fixed by hand in one
+    # command, which is what happened here.
+    #
+    # **Both sides are already on this machine, in this process, for free.**
+    # health-report.sh runs from $DEPLOY_DIR, which *is* the checkout — the same
+    # arrangement code-drift.sh and env-drift.sh use for this shape of question.
+    #
+    #   unit:<name>  ok|drifted|absent  -  0  0  -
+    #
+    # `absent` is its own state and not a drift: a unit this repository carries
+    # and the host has never had is a different thing from one whose copy has
+    # fallen behind, and it is the state every unit is in on a host built before
+    # the file existed. Both are degraded; only one is fixed by copying.
+    if [ -d "$DEPLOY_DIR/systemd" ]; then
+        units=0
+        for source in "$DEPLOY_DIR"/systemd/*.service "$DEPLOY_DIR"/systemd/*.timer; do
+            [ -f "$source" ] || continue
+            units=$((units + 1))
+            name=$(basename "$source")
+            installed="${KOLONIE_UNIT_DIR:-/etc/systemd/system}/$name"
+
+            if [ ! -f "$installed" ]; then
+                printf 'unit:%s\tabsent\t-\t0\t0\t-\n' "$name"
+            elif cmp -s "$source" "$installed"; then
+                printf 'unit:%s\tok\t-\t0\t0\t-\n' "$name"
+            else
+                printf 'unit:%s\tdrifted\t-\t0\t0\t-\n' "$name"
+            fi
+        done
+
+        # The same rule as the timer rows above and for the same reason: a
+        # checkout carrying no units at all must not read as every unit being
+        # fine.
+        [ "$units" -eq 0 ] && printf 'unit\tnone\t-\t0\t0\t-\n'
     fi
 fi
 

@@ -130,6 +130,8 @@ load_problems=()
 oom_problems=()
 sms_problems=()
 timer_problems=()
+# Units whose file on the host does not match this repository's (#126).
+unit_problems=()
 
 while IFS=$'\t' read -r name state health streak approx image; do
     [ -z "${name:-}" ] && continue
@@ -318,6 +320,34 @@ while IFS=$'\t' read -r name state health streak approx image; do
             fi
             continue
             ;;
+        unit|unit:*)
+            # A unit file is not a running thing at all, and the question asked
+            # of it is neither *is it running* nor *will it run again* but
+            # **does the host have the copy this repository thinks it has**
+            # (#126). Nothing installs `systemd/`, so a merged unit fix can be
+            # inert with no failure and no log line anywhere.
+            file="${name#unit:}"
+            if [ "$state" = "none" ]; then
+                problems+=("| _units_ | none | - | - | the checkout carries no unit files to compare against |")
+                unit_problems+=("none")
+                fingerprint_parts+=("unit:none")
+            elif [ "$state" = "drifted" ]; then
+                problems+=("| \`$file\` | drifted | - | - | the host's copy differs from this repository's |")
+                unit_problems+=("$file")
+                fingerprint_parts+=("unit:$file:drifted")
+            elif [ "$state" = "absent" ]; then
+                # Its own row rather than folded into drift: a unit the host has
+                # never had is fixed by installing it, and one that has fallen
+                # behind is fixed by copying over it. Same remedy, different
+                # sentence, and reading the wrong one wastes a look at the diff.
+                problems+=("| \`$file\` | absent | - | - | this repository carries it and the host has no copy at all |")
+                unit_problems+=("$file")
+                fingerprint_parts+=("unit:$file:absent")
+            else
+                healthy+=("$file (matches the repository)")
+            fi
+            continue
+            ;;
     esac
 
     if [ "$state" = "gone" ]; then
@@ -408,6 +438,29 @@ if [ "${#timer_problems[@]}" -gt 0 ]; then
     echo "Nothing is necessarily broken yet: what these timers maintain — a backup, an"
     echo "allowlist — stays correct for a while after the refresh stops, which is why"
     echo "this is worth catching before the thing it refreshes goes stale."
+fi
+
+if [ "${#unit_problems[@]}" -gt 0 ]; then
+    echo
+    echo "**A unit file that differs from this repository's is a change that was merged,"
+    echo "reviewed, green — and inert.** Nothing deploys \`systemd/\`: \`deploy.sh\` resets"
+    echo "/opt/kolonie from the checkout and \`/etc/systemd/system\` is not in it, so the"
+    echo "repository says one thing and the host does another with no failure, no log"
+    echo "line and no red tick anywhere (#126)."
+    echo
+    echo "Read the diff before copying. The drift may be the *host's* copy being right:"
+    echo "a unit edited by hand during an incident is a fix somebody made under pressure"
+    echo "and did not bring back, and overwriting it loses that."
+    echo
+    echo '```'
+    echo "diff -u /etc/systemd/system/<unit> /opt/kolonie/systemd/<unit>"
+    echo "sudo cp /opt/kolonie/systemd/<unit> /etc/systemd/system/<unit>"
+    echo "sudo systemctl daemon-reload && sudo systemctl reenable <unit>"
+    echo '```'
+    echo
+    echo "This is what #119 was: \`kolonie-image-prune.service\` gained \`StateDirectory\`"
+    echo "here, the host's copy never got it, and Health Watch spent two days reporting"
+    echo "that no prune had succeeded against a host that had freed 8 GiB on schedule."
 fi
 
 if [ "${#sms_problems[@]}" -gt 0 ]; then

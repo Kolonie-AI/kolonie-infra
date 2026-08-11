@@ -29,6 +29,7 @@ scripts/health-report.sh    structured health report for the diagnose workflow
 scripts/health-why.sh       why an unhealthy container says so — the probe's own output
 scripts/health-triage.sh    interprets health-report output
 scripts/origin-firewall.sh  restricts origin to Cloudflare edge IPs
+scripts/rehearse-unit-drift.sh  exercises the unit-drift rows without a host (#126)
 .github/workflows/          deploy, diagnose, health-watch
 cloudflare/                 edge configuration
 state/                      deploy state — deployed.env, deploy.lock
@@ -97,6 +98,15 @@ script.
   prints variable *names*, never values — keep it that way.
 - **Writing to the host needs the maintainer's confirmation** — see
   `kolonie-docs/AGENTS.md` §8.
+- **A change to `systemd/` does not reach the host on its own** (#126).
+  `deploy.sh` resets `/opt/kolonie` from the checkout; `/etc/systemd/system` is
+  not in it, and nothing else installs those ten files either. So a unit fix
+  merged here is green, reviewed and **inert** — no failure, no log line, no red
+  tick. Health Watch now carries a `unit:<name>` row per file saying whether the
+  host's copy matches, which is how you find out; installing it is still a
+  deliberate copy on the host. This was measured on 2026-08-11: one of ten had
+  drifted, and #119 is the alarm it produced — two days describing the opposite
+  of what had happened.
 
 ## 4. The rehearsal test
 
