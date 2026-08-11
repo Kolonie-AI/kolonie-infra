@@ -572,6 +572,30 @@ services:
       # Per-service now, which keeps that property where it matters most: a typo
       # in one of these names degrades one service instead of failing the stack.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_VERIFIER:-}
+      # **The LLM gateway, and the whole of `kolonie-infra#131`** (`kolonie-platform#674`,
+      # `#726`).
+      #
+      # `#674` shipped the routing and this file never told the container the
+      # gateway existed, so every call went to OpenRouter for a fortnight and the
+      # log said so on every line. The code was correct throughout; the four
+      # names simply reached no service but the api, which reads only the base
+      # URL and only to redact it.
+      #
+      # **Every one keeps `:-}`.** An unset variable leaves this service on
+      # OpenRouter exactly as before, which is what makes a half-landed deploy
+      # survivable — `gatewayFromEnvironment` wants the address, the key and a
+      # model together, and answers *not configured* rather than *misconfigured*
+      # when any is missing.
+      #
+      # **`_MODEL_VERIFIER` overrides `_MODEL` for this service alone**
+      # (`kolonie-platform#726`). One model across four services would send the
+      # verifier's images to a text model on the day somebody set the global.
+      # A per-service variable nothing reads is inert, not harmful, so this and
+      # the platform change may land in either order.
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:-}
+      LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
+      LLM_GATEWAY_API_KEY_VERIFIER: ${LLM_GATEWAY_API_KEY_VERIFIER:-}
+      LLM_GATEWAY_MODEL_VERIFIER: ${LLM_GATEWAY_MODEL_VERIFIER:-}
       # Which model looks at the image. Unset means the code's own default, the
       # same arrangement OPENROUTER_MODEL has one service down. It has to accept
       # an image *and* honour a JSON schema, which rules out most cheap vision
@@ -731,6 +755,30 @@ services:
       # refusing to interpolate would instead take the container down, and the
       # health endpoint is how anyone would find out it was missing.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_MODERATION:-}
+      # **The LLM gateway, and the whole of `kolonie-infra#131`** (`kolonie-platform#674`,
+      # `#726`).
+      #
+      # `#674` shipped the routing and this file never told the container the
+      # gateway existed, so every call went to OpenRouter for a fortnight and the
+      # log said so on every line. The code was correct throughout; the four
+      # names simply reached no service but the api, which reads only the base
+      # URL and only to redact it.
+      #
+      # **Every one keeps `:-}`.** An unset variable leaves this service on
+      # OpenRouter exactly as before, which is what makes a half-landed deploy
+      # survivable — `gatewayFromEnvironment` wants the address, the key and a
+      # model together, and answers *not configured* rather than *misconfigured*
+      # when any is missing.
+      #
+      # **`_MODEL_MODERATION` overrides `_MODEL` for this service alone**
+      # (`kolonie-platform#726`). One model across four services would send the
+      # verifier's images to a text model on the day somebody set the global.
+      # A per-service variable nothing reads is inert, not harmful, so this and
+      # the platform change may land in either order.
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:-}
+      LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
+      LLM_GATEWAY_API_KEY_MODERATION: ${LLM_GATEWAY_API_KEY_MODERATION:-}
+      LLM_GATEWAY_MODEL_MODERATION: ${LLM_GATEWAY_MODEL_MODERATION:-}
       # Which model judges is a decision that will be revisited against a real
       # corpus, so it is configuration. Unset means the code's own default.
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
@@ -845,6 +893,30 @@ services:
       # before this service did — tickets accumulate `open` and nobody reads
       # them.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY_TRIAGE:-}
+      # **The LLM gateway, and the whole of `kolonie-infra#131`** (`kolonie-platform#674`,
+      # `#726`).
+      #
+      # `#674` shipped the routing and this file never told the container the
+      # gateway existed, so every call went to OpenRouter for a fortnight and the
+      # log said so on every line. The code was correct throughout; the four
+      # names simply reached no service but the api, which reads only the base
+      # URL and only to redact it.
+      #
+      # **Every one keeps `:-}`.** An unset variable leaves this service on
+      # OpenRouter exactly as before, which is what makes a half-landed deploy
+      # survivable — `gatewayFromEnvironment` wants the address, the key and a
+      # model together, and answers *not configured* rather than *misconfigured*
+      # when any is missing.
+      #
+      # **`_MODEL_TRIAGE` overrides `_MODEL` for this service alone**
+      # (`kolonie-platform#726`). One model across four services would send the
+      # verifier's images to a text model on the day somebody set the global.
+      # A per-service variable nothing reads is inert, not harmful, so this and
+      # the platform change may land in either order.
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:-}
+      LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
+      LLM_GATEWAY_API_KEY_TRIAGE: ${LLM_GATEWAY_API_KEY_TRIAGE:-}
+      LLM_GATEWAY_MODEL_TRIAGE: ${LLM_GATEWAY_MODEL_TRIAGE:-}
       # Which model triages. Unset means the code's own default.
       TRIAGE_MODEL: ${TRIAGE_MODEL:-}
       # The GitHub App this files issues as (kolonie-infra#55).
