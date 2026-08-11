@@ -295,6 +295,15 @@ if [[ "$DRY_RUN" == no ]]; then
     status_tmp=$(mktemp "$IMAGE_PRUNE_STATE_DIR/.image-prune.XXXXXX")
     printf 'LAST_SUCCESS_EPOCH=%s\nLAST_FREED_BYTES=%s\n' \
         "$(date +%s)" "$freed_bytes" > "$status_tmp"
+    # **The reader is not the writer, and that is #119.** This runs as root
+    # under systemd; `health-report.sh` runs as the deploy user over SSH. A
+    # `mktemp` default of 0600 is therefore unreadable to the only thing that
+    # consults the marker, and `health-report.sh` answers `never` for a prune
+    # that has just succeeded — which is the alarm #119 was, for two days,
+    # against a host that had freed 8 GiB on schedule.
+    #
+    # It carries a timestamp and a byte count. There is nothing here to protect.
+    chmod 0644 "$status_tmp"
     mv "$status_tmp" "$IMAGE_PRUNE_STATE_DIR/image-prune.env"
 fi
 

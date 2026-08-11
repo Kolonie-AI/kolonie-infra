@@ -222,6 +222,11 @@ absent "$(removed)" "$GH/kolonie-api:f0000008" "the deployed.env digest was not 
 contains "$out" "Protected by a state record:   2" "counted both digests it could resolve"
 contains "$out" "Freed:  2000000000 bytes" "reported the bytes freed by the run"
 contains "$(cat "$WORK/state/image-prune.env")" "LAST_FREED_BYTES=2000000000" "recorded the result for Health Watch"
+# #119: the marker is written by root under systemd and read by the deploy user
+# over SSH. A mode that only the writer can read makes a successful prune report
+# `never`, which is the whole of that issue.
+check "the marker is readable by its reader, not only its writer" \
+    "$(stat -c '%a' "$WORK/state/image-prune.env")" "644"
 
 echo "== 2. …and the builds beyond the margin do go"
 contains "$(removed)" "$GH/kolonie-api:f0000004" "the fourth-newest api build was removed"
