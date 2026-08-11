@@ -374,7 +374,11 @@ services:
       #   - no QUEST_AUDIT_ENABLED, and a quest with a non-zero reward cannot be
       #     published (kolonie-platform#221). Correct for the pilot, which pays
       #     nothing; it has to become `true` before the first paying quest, and
-      #     that is a decision rather than a deploy step
+      #     that is a decision rather than a deploy step. **Publication itself
+      #     is the moderation runner's since kolonie-platform#693**, so this
+      #     variable withholds it there and not here; what the api still reads
+      #     it for is the audit sampling behind `kolonie.quests.audit`. Both
+      #     services need it, which is why it is now named in both blocks
       #   - no CONSOLE_URL, and no console is served at all — rather than one
       #     served at the API's own host, where nothing expects a form
       #   - no RPC_URL, and the reconciliation pass reports zeros. The webhook
@@ -804,6 +808,29 @@ services:
       # costs every citizen its publication"*. Unset, it says so at `warn` on
       # every start, and that line is now readable in Loki.
       MODERATION_GITHUB_TOKEN: ${MODERATION_GITHUB_TOKEN:-}
+      # **The audit brake, and this service is the one that needs it now**
+      # (kolonie-platform#693).
+      #
+      # `#693` abolished the steward review of a submitted quest and moved
+      # `publishQuest` out of the api and into this runner: the moderation
+      # verdict publishes the quest. The two variables did not move with it.
+      # They are still passed to the api above, which no longer publishes
+      # anything, and reached this container not at all.
+      #
+      # The symptom is not a crash. `questAuditPolicy()` defaults to *off*, and
+      # off refuses to publish paid work rather than publishing it unguarded —
+      # so a quest that cleared moderation stayed in `pending_review` with no
+      # rejection reason, no invoice and nothing said to its sponsor, while the
+      # runner re-picked it every fifteen seconds and logged `audit-missing`
+      # forever. First hit on 2026-08-11 by the maintainer agent's own quest.
+      # `apps/moderation-runner/src/main.ts` says these two are wired "by the
+      # same compose file" as the api's; this is the line that makes that true.
+      #
+      # **`:-` and not `:?`, matching the api.** Unset, this service keeps
+      # withholding publication of paid quests, which is the safe half of the
+      # brake and the right behaviour for a deployment that has not decided yet.
+      QUEST_AUDIT_ENABLED: ${QUEST_AUDIT_ENABLED:-}
+      QUEST_AUDIT_RATE: ${QUEST_AUDIT_RATE:-}
     depends_on:
       postgres:
         condition: service_healthy
