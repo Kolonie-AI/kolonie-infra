@@ -1,0 +1,18 @@
+[Unit]
+Description=Publish the host's resource pressure every five minutes (kolonie-infra#103)
+
+[Timer]
+# Five minutes, matching the interval the UptimeRobot monitors already poll at.
+# Publishing faster than it is read buys nothing; publishing slower would let a
+# stale *ok* outlive the condition it describes for longer than one poll.
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+# **`Persistent` is deliberately absent, unlike the backup timer.** A publish
+# missed while the host was down is worthless: the file it would have written
+# describes a moment that has passed, and the next elapse writes the current
+# answer two minutes after boot anyway.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -117,6 +117,13 @@ jobs:
       - name: deploy-alarm.sh
         run: bash scripts/rehearse-deploy-alarm.sh
 
+      # What the host publishes as resource pressure (#103). An external monitor
+      # alerts on the *absence* of the keyword this writes, so every way the
+      # script can fail to notice pressure is an alarm that does not ring. Half
+      # the cases are the report being missing, truncated or non-numeric.
+      - name: pressure-report.sh
+        run: bash scripts/rehearse-pressure.sh
+
       # Syntax alone would not have caught anything above, but it is free and it
       # catches the class of mistake that never reaches a test case.
       - name: shell syntax
