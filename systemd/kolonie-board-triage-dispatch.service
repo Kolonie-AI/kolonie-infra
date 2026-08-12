@@ -1,0 +1,37 @@
+[Unit]
+Description=Start the board triage pass on GitHub (kolonie-docs#262, kolonie-infra#111)
+# The same argument as kolonie-opencode-dispatch: GitHub's scheduler drops
+# scheduled runs and a `workflow_dispatch` is not rationed the same way.
+# Measured on 2026-08-12 over the 12.5 hours to 17:26 UTC: `board-triage.yml` is
+# on `*/15` and twelve firings arrived — about a quarter of what the cron asks
+# for, and the gaps between them ran from 43 to 107 minutes.
+#
+# **What it costs when triage is late** is the half worth stating: an issue that
+# has been written carries no route and sits in Inbox until this pass reads it,
+# and `opencode-worker.yml` takes from Ready and nowhere else. So a triage that
+# runs hourly is a queue that fills hourly, whatever the worker's own cadence is.
+#
+# It talks to api.github.com and nothing on this host, so it needs the network
+# and nothing else.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Left at the default `no`, for the reason kolonie-payments-reconcile.service
+# records: systemd will not schedule the next elapse of a timer whose triggered
+# unit is still active, so a `yes` here gives a timer that reads healthy on every
+# signal anybody checks and never fires again.
+ExecStart=/opt/kolonie/scripts/dispatch-workflow.sh board-triage.yml
+
+# It reads one file and makes one HTTPS call.
+ProtectHome=true
+NoNewPrivileges=true
+
+# A dispatch that failed is not an incident — the next pass is half an hour away,
+# and a unit retrying in a tight loop against a rate-limited API is the one thing
+# that would turn a missed run into a blocked account.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

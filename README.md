@@ -366,6 +366,45 @@ with none of them would still pass. The fixtures pull the cases apart — the
 recorded digest is made the *oldest* build there is, held by no container, and
 asserted to survive.
 
+### Step 10: The two workflow dispatches
+
+**GitHub's scheduler does not deliver, so the cadence of two workflows lives on
+this host.** Measured on `opencode-worker.yml` on the night of 2026-08-09:
+`*/10` produced **one run in three hours**. Measured on `board-triage.yml` on
+2026-08-12 over the 12.5 hours to 17:26 UTC: `*/15` produced **twelve** firings,
+gaps from 43 to 107 minutes. A `workflow_dispatch` is not rationed the same way —
+every one tried started within seconds.
+
+Both timers call one script with the workflow as its argument:
+
+```bash
+# The token first: a GitHub token that may write Actions on Kolonie-AI/kolonie-docs
+# and wants no other power. Names only in any log — never the value.
+grep -c '^OPENCODE_DISPATCH_TOKEN=' /opt/kolonie/.env
+
+sudo install -m 644 systemd/kolonie-opencode-dispatch.{service,timer} /etc/systemd/system/
+sudo install -m 644 systemd/kolonie-board-triage-dispatch.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kolonie-opencode-dispatch.timer kolonie-board-triage-dispatch.timer
+
+# Prove each one end to end rather than waiting for the timer
+sudo systemctl start kolonie-board-triage-dispatch.service
+journalctl -u kolonie-board-triage-dispatch.service -n 5
+
+# As with every timer here: `NEXT` must not be empty (kolonie-infra#66)
+systemctl list-timers 'kolonie-*-dispatch.timer'
+```
+
+| Timer | Workflow | Cadence |
+|---|---|---|
+| `kolonie-opencode-dispatch` | `opencode-worker.yml` | every 10 minutes |
+| `kolonie-board-triage-dispatch` | `board-triage.yml` | every 30 minutes |
+
+**The `schedule:` blocks stay in both workflows**, as the fallback for a night
+when this host is down — and each workflow says in its own header that the real
+cadence comes from here, so nobody reading only the workflow concludes the cron
+is what runs it.
+
 ## Deployment
 
 ### Automatic (GitHub Actions)

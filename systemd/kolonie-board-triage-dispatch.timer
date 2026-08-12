@@ -1,0 +1,23 @@
+[Unit]
+Description=Keep board triage running on a host that keeps time (kolonie-infra#111)
+# The maintainer's instruction, 2026-08-12: triage every thirty minutes, from
+# here rather than from GitHub. `board-triage.yml` keeps its `schedule:` block as
+# a fallback for a night when this host is down — and that block was pulled to
+# `*/30` in the same change, so the two do not claim two different cadences.
+#
+# Two firings cannot collide: the workflow takes the board as it finds it and a
+# second pass over an already-triaged board decides nothing.
+
+[Timer]
+OnCalendar=*:0/30
+# A pass missed because the host was rebooting is worth catching up on: an
+# untriaged issue is invisible to the worker until somebody reads it.
+Persistent=true
+# Every other timer on this box fires on the hour and the half hour. Two minutes
+# is enough that they do not contend, and short enough that thirty minutes still
+# means thirty minutes. The opencode dispatch uses one minute, so the two
+# dispatches do not land on the same second either.
+RandomizedDelaySec=2m
+
+[Install]
+WantedBy=timers.target

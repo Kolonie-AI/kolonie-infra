@@ -13,7 +13,9 @@ Type=oneshot
 # records: systemd will not schedule the next elapse of a timer whose triggered
 # unit is still active, so a `yes` here gives a timer that reads healthy on every
 # signal anybody checks and never fires again.
-ExecStart=/opt/kolonie/scripts/dispatch-opencode.sh
+# The workflow is an argument since 2026-08-12, when `board-triage.yml` got a
+# timer of its own and the script stopped being about one workflow.
+ExecStart=/opt/kolonie/scripts/dispatch-workflow.sh opencode-worker.yml
 
 # It reads one file and makes one HTTPS call.
 ProtectHome=true
