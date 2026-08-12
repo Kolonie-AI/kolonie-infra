@@ -395,6 +395,32 @@ services:
       # in this file; `DEPOSIT_SEALING_KEY` was the other, and the note that the
       # two must never share a value went with it (`kolonie-infra#94`).
       OPERATOR_DROP_SEALING_KEY: ${OPERATOR_DROP_SEALING_KEY:-}
+      # The operator desk on Telegram (kolonie-platform#793, #794, #795) — the
+      # other channel an operator is reached on, beside the mail address
+      # `operator_addresses` holds. `@KolonieDeskBot`, created 2026-08-12.
+      #
+      # **All three `:-`, and none of them in `ai.kolonie.required-env`.** They
+      # are optional by design: absent, the operator channel is email, which is
+      # what runs today and what ran before the bot existed. A `required-env`
+      # entry would make `preflight_env()` refuse every deploy until they are
+      # set — including on a host that has no reason to have a bot at all — and
+      # §8's rule is that a variable is declared mandatory only when the process
+      # cannot run without it.
+      #
+      # **Named here because otherwise `.env` cannot reach them.** This service
+      # has no `env_file`, so a variable absent from this block is invisible to
+      # the container however carefully it is set on the host — which is #142,
+      # and before it the rhythm bounds and `CONSOLE_SENDER_ADDRESS` above. The
+      # host's `.env` carried all three from 2026-08-12; these two lines are what
+      # make that setting do anything.
+      #
+      # `TELEGRAM_OPERATOR_BOT_USERNAME` is the name in every deep link the
+      # Colony issues, and it is read from here rather than compiled in: a bot
+      # can be renamed, and a hardcoded name breaks every link ever handed out
+      # at the moment it is.
+      TELEGRAM_OPERATOR_BOT_TOKEN: ${TELEGRAM_OPERATOR_BOT_TOKEN:-}
+      TELEGRAM_OPERATOR_BOT_USERNAME: ${TELEGRAM_OPERATOR_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       # What a Helius delivery presents as its `Authorization` header to
       # `POST /v1/payments/webhook` (kolonie-platform#503).
       #
