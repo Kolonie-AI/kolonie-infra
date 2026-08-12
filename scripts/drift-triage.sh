@@ -46,18 +46,39 @@ set -uo pipefail
 
 ORG="${KOLONIE_ORG:-Kolonie-AI}"
 
-# Which GHCR package holds each service's images. The container name is
-# `kolonie-<service>` and so is the package, but stating it beats deriving it:
-# a service whose package is renamed should break loudly here rather than report
-# `unknown` forever.
+# The one list of what this organisation builds images for (`#107`).
+#
+# Sourced rather than restated, which is the whole of `#149`: this file kept its
+# own copy of the list and the copy was two services short. `services.sh` exists
+# because that had already happened once, between `pin-report.sh` and
+# `deployed-revision.sh`, and the two services missing from that copy were the
+# same two — `support-triage-runner` and `badge-runner`.
+# shellcheck source=scripts/services.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/services.sh"
+
+# Which GHCR package holds each service's images.
+#
+# **Derived, and the earlier reasoning for stating it is answered rather than
+# overruled.** That argument was: *a service whose package is renamed should
+# break loudly here rather than report `unknown` forever.* It still holds, and a
+# derived name gives it — a package that is not there is `GHCR refused the
+# request` with GitHub's own words attached, which is loud and says why. What the
+# stated list gave instead was the silent half: a service nobody added fell to
+# the empty case and reported *no GHCR package is mapped*, which reads as a gap
+# at GHCR and was a `case` statement in this file. Measured on `#147`, where two
+# of six rows said exactly that while both services were running a labelled
+# revision on the host.
+#
+# **The empty answer stays, and now means something.** A service that is not one
+# of ours is a row the probe produced that this organisation does not build, and
+# that is worth saying rather than guessing a package name for.
 package_for() {
-    case "$1" in
-        api)               echo "kolonie-api" ;;
-        verifier-runner)   echo "kolonie-verifier-runner" ;;
-        moderation-runner) echo "kolonie-moderation-runner" ;;
-        website)           echo "kolonie-website" ;;
-        *)                 echo "" ;;
-    esac
+    local known
+    for known in "${KOLONIE_SERVICES[@]}"; do
+        [ "$known" = "$1" ] && { echo "kolonie-$1"; return; }
+    done
+
+    echo ""
 }
 
 # Every commit sha this package has been tagged with, newest build first.

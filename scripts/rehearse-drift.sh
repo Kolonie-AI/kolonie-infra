@@ -142,6 +142,21 @@ echo "== 10. it never deploys anything"
 out=$(printf 'api\t%s\timg\n' "$OLD" | triage 2>/dev/null)
 contains "$out" "This reports; it does not deploy" "said so in the report a person reads"
 
+echo "== 11. every service this organisation builds is one the check can place (#149)"
+# `support-triage-runner` and `badge-runner` were absent from the mapping and
+# reported `unknown — no GHCR package is mapped to this service`, which reads as
+# a gap at GHCR and was a `case` statement here. Both are built on every deploy.
+#
+# Asserted over `KOLONIE_SERVICES` rather than over the two that were missing:
+# the fault was a list kept in two places, so a test naming today's two would
+# pass again the next time a seventh service is added to one of them.
+# shellcheck source=scripts/services.sh
+. "$ROOT/scripts/services.sh"
+for svc in "${KOLONIE_SERVICES[@]}"; do
+  out=$(printf '%s\t%s\timg\n' "$svc" "$NEW" | triage 2>/dev/null)
+  absent "$out" "no GHCR package is mapped" "$svc can be placed"
+done
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
