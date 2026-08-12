@@ -1,11 +1,11 @@
 #!/bin/bash
-# Kolonie AI — start the coding worker, because GitHub's own schedule does not
+# Kolonie AI — start a scheduled workflow, because GitHub's own schedule does not
 # (kolonie-docs#142, kolonie-infra#111).
 #
 # ## Why this exists
 #
-# `opencode-worker.yml` carries a `schedule:` block and GitHub honours very
-# little of it. Measured across the night of 2026-08-09:
+# A workflow carries a `schedule:` block and GitHub honours very little of it.
+# Measured on `opencode-worker.yml` across the night of 2026-08-09:
 #
 #   cron          window            runs started
 #   20,50         20:12 – 23:51     6   (of 8 due)
@@ -26,30 +26,54 @@
 #
 # ## What it does not do
 #
-# **It does not decide anything.** The workflow still reads the board, still
-# takes at most one issue, and still exits early if a run is already going —
-# `Am I already running?` is what makes a duplicate dispatch harmless, and it is
-# why this script can be simple and why the `schedule:` block can stay as a
+# **It does not decide anything.** The workflow it starts still reads the board,
+# still takes at most one issue, and still exits early if a run is already going
+# — `Am I already running?` is what makes a duplicate dispatch harmless, and it
+# is why this script can be simple and why the `schedule:` block can stay as a
 # fallback for a night when this host is down.
 #
-# **It does not know what the worker will do.** No issue number, no repository,
+# **It does not know what the workflow will do.** No issue number, no repository,
 # no filter. Everything about which issue is next lives in the queue, where two
 # people can read it.
 #
+# ## One script, two timers (2026-08-12)
+#
+# It was `dispatch-opencode.sh` and dispatched one workflow. `board-triage.yml`
+# turned out to have the same problem — measured that day, twelve of its
+# `*/15` firings arrived over twelve and a half hours, about a quarter of what
+# the cron asks for — and the fix is the same fix. So the workflow became an
+# argument rather than a constant, and a second timer passes a second name.
+#
+# A copy of this file with one string changed would have been the other option,
+# and it is the one where a fix to the error handling reaches one of the two.
+#
 # Usage, on the deploy host:
 #
-#   ./scripts/dispatch-opencode.sh
+#   ./scripts/dispatch-workflow.sh opencode-worker.yml
+#   ./scripts/dispatch-workflow.sh board-triage.yml
 #
 # Needs `OPENCODE_DISPATCH_TOKEN` in /opt/kolonie/.env — a GitHub token that may
-# write Actions on `Kolonie-AI/kolonie-docs` and wants no other power.
+# write Actions on `Kolonie-AI/kolonie-docs` and wants no other power. **The name
+# keeps the `OPENCODE_` prefix**: it is one token for one repository's Actions,
+# it is already on the host, and renaming a variable in `.env` is three edits
+# (§8) bought for a prefix.
 set -uo pipefail
 
 DEPLOY_DIR="${KOLONIE_DEPLOY_DIR:-/opt/kolonie}"
 REPO="${OPENCODE_REPO:-Kolonie-AI/kolonie-docs}"
-WORKFLOW="${OPENCODE_WORKFLOW:-opencode-worker.yml}"
+# The argument, and it is required rather than defaulted. A default would mean a
+# unit that forgot its argument silently dispatches the *other* workflow — which
+# is the failure this script would then be reporting as a success, every ten
+# minutes, in a journal nobody reads on a good day.
+WORKFLOW=${1:-}
 REF="${OPENCODE_REF:-main}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
+if [ -z "$WORKFLOW" ]; then
+    log "usage: $(basename "$0") <workflow-file>   e.g. opencode-worker.yml"
+    exit 2
+fi
 
 # Read in a subshell so a file of `NAME=value` lines cannot overwrite anything
 # above — `deployed-revision.sh`'s rule, and for the same reason.
