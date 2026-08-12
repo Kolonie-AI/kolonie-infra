@@ -1278,6 +1278,33 @@ out=$(run_deploy env || true)
 absent "$(cat "$WORK/docker.log")" "--force-recreate" "nothing is recreated on an ordinary deploy"
 contains "$out" "every container is at least as new" "and it is stated once, not per service"
 
+echo "== 28. a host with no Telegram configuration deploys exactly as before"
+# kolonie-infra#142. The operator desk on Telegram is three variables the api
+# reads, and every one of them is optional: absent, an operator is reached by
+# mail, which is what every host did before the bot existed and what a host
+# without a bot must keep doing. The failure this guards against is the one #7
+# and #93 both are — a variable made mandatory somewhere, and every deploy
+# refused until somebody finds out where.
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env || true)
+contains "$out" "=== Deployment completed ===" "the deploy ran with none of the three set"
+absent "$out" "TELEGRAM_" "and named none of them, so nothing waits on a bot"
+
+echo "== 28b. and the compose file is where that has to be asserted"
+# **The stub cannot see this and it is honest to say so.** `docker` is a stub
+# here, so `${VAR:?}` never gets interpolated and case 28 above would keep
+# passing the day somebody made one of these mandatory. Compose's own file is
+# the artefact that decides it, so the assertion is against the text: each of
+# the three carries `:-`, which is what makes an unset value a working
+# configuration rather than a refused deploy.
+for v in TELEGRAM_OPERATOR_BOT_TOKEN TELEGRAM_OPERATOR_BOT_USERNAME TELEGRAM_WEBHOOK_SECRET; do
+  line=$(grep -F "      $v: " "$ROOT/docker-compose.yml" || true)
+  check "$v is passed to a service at all" "$([ -n "$line" ] && echo yes || echo no)" "yes"
+  check "$v is optional (\${$v:-})" "$(grep -qF "\${$v:-}" <<<"$line" && echo yes || echo no)" "yes"
+  check "$v is documented in .env.example" \
+    "$(grep -qE "^#?$v=" "$ROOT/.env.example" && echo yes || echo no)" "yes"
+done
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
