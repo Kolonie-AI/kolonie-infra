@@ -361,6 +361,32 @@ Adding a variable is therefore three edits here — `docker-compose.yml`,
 `.env.example`, the host's `.env` — plus the label there. Miss the host and the
 deploy stops before it moves anything, naming the variable.
 
+### The one step a deploy does not take: the Telegram webhook
+
+**`kolonie-platform#795` requires this to be written down rather than
+rediscovered**, and it is the only thing about the operator desk that a deploy
+does not do for you:
+
+```bash
+./scripts/telegram-webhook.sh report   # what Telegram currently has
+./scripts/telegram-webhook.sh apply    # point it at this host's API
+```
+
+Run on the deploy host, once, after the route exists. It reads the token, the
+secret and `API_URL` from the host's `.env` and prints neither of the first two.
+
+**Not something the API does on boot, and that is the whole reason it is here.**
+`setWebhook` points Telegram at whichever host the calling process believes it is
+on — so a staging copy, or a container started on a laptop with the production
+token, would quietly take delivery of every operator's replies. Which host
+receives them is a deployment decision, so it is taken by somebody who can see
+which host they mean.
+
+**Nothing breaks while it is unregistered.** No updates arrive, so no operator
+can answer in Telegram; the message they were sent carries the durable page link
+and that path is unchanged. It is a channel that is off, not a deployment that is
+broken.
+
 ### Cascade re-deploy
 
 When a service rolls back (typically because it built faster than the api and
