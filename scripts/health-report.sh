@@ -248,6 +248,12 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
             printf 'disk\tok\t-\t%s\t%s\t%s\n' \
                 "$image_reclaimable_bytes" "$disk_pct" "$image_size_bytes"
         else
+            # `partial` is a degraded *reading* and not a degraded host: the
+            # percentage is right there and only the image figures are missing.
+            # It happens on every deploy, where `docker system df` competes with
+            # a pull writing layers. Anything judging this row judges it on the
+            # percentage — `pressure-report.sh` read the state instead and
+            # paged a person for two deploys (#157).
             printf 'disk\tpartial\t-\t0\t%s\t-\n' "$disk_pct"
         fi
     else

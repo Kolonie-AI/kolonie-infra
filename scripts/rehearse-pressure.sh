@@ -73,10 +73,23 @@ check "a report with no disk row at all is pressure" \
   "$(verdict $'memory\tok\t-\t1\t50\t2')" "degraded"
 check "a percentage that is not a number is pressure" \
   "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tok\t-\t9345000000\t?'}")" "degraded"
-check "a disk row the host could not fully read is pressure" \
-  "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tpartial\t-\t0\t18'}")" "degraded"
 check "and an unknown inode reading is pressure" \
   "$(verdict "${healthy/$'inodes\tok\t-\t0\t10'/$'inodes\tunknown\t-\t0\t-'}")" "degraded"
+check "a disk row df could not read at all is pressure, and its 0 % is not a reading" \
+  "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tunknown\t-\t0\t0'}")" "degraded"
+
+# The two below are one rule read from both sides, and they are only worth
+# anything as a pair. `#157`: a `partial` row is `df` answering and
+# `docker system df` not, which happens on every deploy — so it is judged on the
+# percentage that is sitting right there, and *judged* is the point. The second
+# case is what stops the first being read as *partial is fine*.
+echo "== a reading the host could only half take, which is not the same as pressure =="
+check "a disk row missing only its image figures is judged on the percentage it does have" \
+  "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tpartial\t-\t0\t18'}")" "ok"
+check "and the same row at the threshold is still pressure" \
+  "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tpartial\t-\t0\t85'}")" "degraded"
+check "a partial row whose percentage is not a number is pressure" \
+  "$(verdict "${healthy/$'disk\tok\t-\t9345000000\t18'/$'disk\tpartial\t-\t0\t-'}")" "degraded"
 
 echo "== the file itself =="
 verdict "$healthy" >/dev/null

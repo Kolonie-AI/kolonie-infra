@@ -63,6 +63,48 @@
 # of the alternative — a check that stays quiet when it cannot see — is the
 # failure this file exists against.
 #
+# ## A degraded reading is not a degraded host
+#
+# The paragraph above is about what to do when the number is missing, and it is
+# right. `#157` is about the case it was over-applied to: a number that is
+# *there* and a row that merely says the reader did not get everything it asked
+# for.
+#
+# `health-report.sh` builds the disk row from two sources — `df` for the
+# percentage, `docker system df` for the reclaimable image bytes — and writes
+# three different states for the three different things that can happen:
+#
+#   | `ok`      | both answered |
+#   | `partial` | `df` answered, `docker system df` did not |
+#   | `unknown` | `df` itself did not answer, and the percentage column is `0` |
+#
+# Only `df` is a pressure fact. `docker system df` is *how much of the disk
+# could be reclaimed by deleting images*, which is what the Health Watch issue
+# is for and is not what wakes anybody up. Reading `partial` as pressure meant
+# the alarm fired on the second source going quiet while the first sat there
+# saying 40 %.
+#
+# **And it goes quiet for one predictable reason: a deploy.** Both of the two
+# `degraded` verdicts this timer has ever produced — 622 runs over 14 days —
+# fell inside a `docker compose pull`, where `docker system df` competes with a
+# pull writing layers and the whole run finishes in 9–13 seconds against a usual
+# 85–120. Neither host was under pressure; disk was 40 %, inodes 26 %. A monitor
+# whose only two alarms were both deploys is a monitor people stop reading, and
+# `#103` drew the line where it did precisely to stop that happening.
+#
+# **`unknown` is untouched and stays pressure**, which is the whole reason the
+# distinction is drawn here rather than *any state with a number in it is fine*.
+# When `df` does not answer there is no number: the column holds a `0` that
+# means *nothing was measured*, and a check that read it as an empty disk would
+# be the quiet failure this file exists against.
+#
+# **The timer is not made deploy-aware, deliberately.** Skipping a run while the
+# compose lock is held would suppress the symptom and cost the one property that
+# makes this alarm trustworthy — it runs unconditionally, so it cannot be
+# reasoned into silence. The two 13-second runs are worth naming as a signal,
+# but that signal belongs in the Health Watch issue where a short run can be
+# looked at, not in a bit that pages a person at midnight.
+#
 # ## Thresholds
 #
 # **Read from the same variables `health-triage.sh` uses**, and defaulted to the
@@ -88,7 +130,16 @@ else
     while IFS=$'\t' read -r name state _health _streak approx _rest; do
         case "$name" in
             disk)
-                [ "$state" = ok ] || verdict=degraded
+                # `partial` is judged on the percentage; every other non-`ok`
+                # state is pressure. See *A degraded reading is not a degraded
+                # host* above — and note that `unknown` may not fall through to
+                # the numeric test, because `health-report.sh` writes `0` in the
+                # percentage column when `df` did not answer, and 0 is below
+                # every threshold there will ever be.
+                case "$state" in
+                    ok | partial) ;;
+                    *) verdict=degraded; continue ;;
+                esac
                 [[ "$approx" =~ ^[0-9]+$ ]] || { verdict=degraded; continue; }
                 [ "$approx" -ge "$DISK_FULL_PERCENT" ] && verdict=degraded
                 ;;
