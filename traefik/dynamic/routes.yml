@@ -156,6 +156,88 @@ http:
       tls:
         certResolver: cloudflare
 
+    # A citizen's page — the apex host, two path prefixes, answered by the API
+    # (`#150`, built by `kolonie-platform#819` on `kolonie-docs#319`).
+    #
+    # The second router to split this hostname, and it is the Atlas construction
+    # above applied to a second surface rather than a new idea. A profile is
+    # rendered from the database and changes whenever a citizen edits its bio, so
+    # building it into the static image would mean a rebuild and a deploy per
+    # edit. D-062 already settled that trade.
+    #
+    # ## Both prefixes go to the API, and this proxy redirects neither
+    #
+    # `kolonie-docs#319` made `/@{handle}` canonical and `/citizens/{handle}` a
+    # permanent redirect to it, and left open **which layer owns the redirect**.
+    # It is the API's.
+    #
+    # The reason is not preference. `#319` made the redirect a property of the
+    # canonical URL rather than of the transport, `kolonie-platform#819` already
+    # renders the page and its own 404, and **a rule implemented in both layers
+    # is a redirect loop that no test catches and production finds.** So this
+    # file routes both prefixes and rewrites nothing. If you are here to add the
+    # `/citizens` → `/@` redirect, it already exists one layer up.
+    #
+    # ## `@` needs no second rule, and this is why rather than an assumption
+    #
+    # Traefik matches on the request's **decoded** path, so a client that
+    # percent-encodes — `/%40handle` — is matched by the same `PathPrefix` as a
+    # browser sending `/@handle`. `@` is a legal path character and needs no
+    # encoding either way. The failure this avoids is the asymmetric one: an
+    # encoded request falling through to the static site's 404 while an
+    # unencoded one gets the page, which looks like a broken client rather than a
+    # broken rule. `scripts/check-routes.sh` asserts both forms against the rule.
+    #
+    # ## Precedence, stated rather than inherited
+    #
+    # 500, the same explicit number the Atlas carries and for the identical
+    # reason spelled out above it: Traefik defaults priority to the rule's
+    # length, so `website` below wins or loses on how its rule happens to be
+    # spelled. `website` is `Host(`kolonie.ai`)` and nothing else, so it is the
+    # catch-all this must beat, and it must keep beating it after somebody
+    # rewords either. Below `health` at 1000, so `/health` keeps its answer.
+    #
+    # The two 500s never compete: `/atlas` and `/@`, `/citizens` do not overlap.
+    #
+    # ## An unknown handle
+    #
+    # Reaches the API and is answered by the API, which renders the site's 404.
+    # Nothing here intercepts it — no `errors` middleware — because a proxy error
+    # page for an unknown handle would replace a page that says *no citizen by
+    # that name* with one that says the site is broken.
+    #
+    # No rate-limit, matching `atlas` and `website`: public, anonymous, cacheable
+    # pages behind Cloudflare, with the API setting its own cache headers.
+    #
+    # ## Rolling it back
+    #
+    # **Delete this router block. Nothing else.** It is additive: no existing
+    # rule is touched, `atlas` and `website` are byte-identical to what they were,
+    # and the file is read by Traefik's file provider — reverting the block and
+    # letting the watcher reload it is the whole procedure, with no restart and
+    # no deploy.
+    #
+    # **What the site does in the meantime:** `kolonie.ai/@handle` falls through
+    # to `website` and returns the static site's own 404, which is where it went
+    # before this existed. No page that worked stops working, and the only thing
+    # lost is the profile surface itself.
+    #
+    # **What to check first if something is wrong**, in this order: `kolonie.ai`
+    # still serves the site, `kolonie.ai/atlas` still serves the catalogue, and a
+    # static asset path still reaches the site. If any of those three broke, the
+    # fault is precedence and not this router's rule — `scripts/check-routes.sh`
+    # asserts what precedence is supposed to be.
+    profile:
+      rule: "Host(`kolonie.ai`) && (PathPrefix(`/@`) || PathPrefix(`/citizens`))"
+      priority: 500
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+      service: api
+      tls:
+        certResolver: cloudflare
+
     # Website (static)
     website:
       rule: "Host(`kolonie.ai`)"
