@@ -91,8 +91,18 @@ cases = [
     # matched nothing until #97. 942 lines a day arrived unlabelled this way.
     ('website', '2026/08/09 04:12:07 [notice] 1#1: gracefully shutting down'),
     ('website', '2026/08/09 04:12:07 [warn] 31#31: conflicting server name'),
-    ('website', '2026/08/09 04:12:07 [error] 31#31: open() failed (2: No such file or directory)'),
     ('website', '2026/08/09 04:12:07 [emerg] 1#1: bind() to 0.0.0.0:80 failed (98: Address in use)'),
+    # A missing static file, which nginx writes to *both* streams: a 404 to the
+    # access log and this to the error log. 5b calls the first `info` and 5c
+    # called this `error`, so one person typing produced a 56-error spike
+    # (`#166`). The first is the real line from that window, apostrophe and all.
+    ('website', '2026/08/09 04:12:07 [error] 31#31: *268 open() "/usr/share/nginx/html/_astro/theme.Cm3PO5O0.css\'" failed (2: No such file or directory), client: 2001:db8::1, server: kolonie.ai, request: "GET /_astro/theme.Cm3PO5O0.css\' HTTP/2.0"'),
+    ('website', '2026/08/09 04:12:07 [error] 31#31: *269 stat() "/usr/share/nginx/html/missing" failed (2: No such file or directory), client: 2001:db8::1'),
+    # The rejection cases for that narrowing, asserted rather than assumed: a
+    # different errno is the *server* being wrong, and an upstream failure is
+    # not an `open()` at all. Both must survive at `error`.
+    ('website', '2026/08/09 04:12:07 [error] 31#31: *270 open() "/usr/share/nginx/html/locked.css" failed (13: Permission denied), client: 2001:db8::1'),
+    ('website', '2026/08/09 04:12:07 [error] 31#31: *271 connect() failed (111: Connection refused) while connecting to upstream'),
     ('pgadmin', '::ffff:127.0.0.1 - - [05/Aug/2026:15:21:47 +0000] "GET /misc/ping HTTP/1.1" 200 4 "-" "Wget"'),
     ('api', '{"level":"info","time":1785900000000,"msg":"a service that already says so"}'),
     # The observability stack (#81): the chatter goes, a warning stays, and a
@@ -193,8 +203,20 @@ echo
 echo "nginx's error log, which is not its access log (#97)"
 assert_level website info  'gracefully shutting down'
 assert_level website warn  'conflicting server name'
-assert_level website error 'open() failed'
 assert_level website error 'bind() to 0.0.0.0:80 failed'
+
+echo
+echo "a missing static file is the client being wrong, on either stream (#166)"
+# The event 5b already counts as `info` from the access log. It must not arrive
+# a second time as `error` from the error log — that double count is what made
+# `website` the loudest service in the Watch Agent's error table.
+assert_level website info  'theme.Cm3PO5O0.css'
+assert_level website info  'stat() "/usr/share/nginx/html/missing"'
+# **Rejection cases.** The narrowing is by errno, not by syscall: a permission
+# denial is the server being wrong, and an upstream refusal is not an `open()`.
+# Neither may be swept up with the missing files.
+assert_level website error 'Permission denied'
+assert_level website error 'Connection refused'
 
 echo
 echo "a service that already says so keeps what it said"

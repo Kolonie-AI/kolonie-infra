@@ -232,6 +232,43 @@ scrape_configs:
       # build to appear at all, so this is a completeness case rather than a live
       # one — and a line that says `[debug]` and arrives with no level would be
       # in exactly the residue this stage exists to remove.
+      #
+      # ## The one signature where nginx's own severity is overruled (`#166`)
+      #
+      # **A missing static file is one event that arrives on both streams, and
+      # 5b and 5c disagree about it. 5c loses, for exactly this signature.**
+      #
+      # nginx writes a request for a file that is not there twice: a `404` to the
+      # access log, which 5b correctly calls `info` because *a `4xx` is the client
+      # being wrong*, and an `[error] open() … failed (2: No such file or
+      # directory)` to the error log, which the mapping above correctly calls
+      # `error` because it reads nginx's own severity. Neither stage can see the
+      # other and each is doing what its own comment says — which is why this
+      # survived review.
+      #
+      # The cost was measured: `website` at **56 errors against a daily normal of
+      # 0.29** (`kolonie-docs#328`, 2026-08-09), and the two lines the window
+      # still held were one client in one second, one of them with a stray
+      # apostrophe on the end of the URL. That is a person typing, and it
+      # produced a two-order-of-magnitude error spike.
+      #
+      # **`#166` weighed three answers and took this one.** Dropping the
+      # error-log line when the access log already carried the event is cheaper
+      # to state and needs correlation a promtail pipeline cannot do without
+      # state. Leaving it and teaching the Watch Agent puts the knowledge in the
+      # reader, which is what this stage's own header argues against. So the
+      # promise above — *nginx's own severity is read, never guessed at* — is
+      # made narrowly false for one signature everybody already agrees is not an
+      # error, rather than broadly true and useless.
+      #
+      # **The errno carries the meaning and the syscall does not**, so `stat()`
+      # is matched beside `open()`: `try_files` reaches for `stat()` first and
+      # fails the identical way, and matching only `open()` would leave a second
+      # spelling of the same event at `error` — the defect this fixes, one line
+      # over. What is *not* matched is any other errno: `(13: Permission denied)`
+      # is a server that is wrong and stays `error`, as does every `connect()`
+      # failure to an upstream. `check-log-levels.sh` asserts both, with fixture
+      # lines rather than by inspection.
       - match:
           selector: '{service="website"}'
           stages:
@@ -241,11 +278,20 @@ scrape_configs:
             - regex:
                 source: line
                 expression: '^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} \[(?P<nginx_severity>[a-z]+)\]'
+            # The missing-file signature, in its own stage so that a line which
+            # is not one leaves `nginx_missing_file` unset rather than empty —
+            # a regex stage that does not match extracts nothing and clears
+            # nothing, which is what lets the template below test for it.
+            - regex:
+                source: line
+                expression: '(?P<nginx_missing_file>(open|stat)\(\).*failed \(2: No such file or directory\))'
             - template:
                 source: level
                 template: >-
                   {{- $severity := .nginx_severity | default "" -}}
-                  {{- if or (eq $severity "error") (eq $severity "crit") (eq $severity "alert") (eq $severity "emerg") -}}
+                  {{- if .nginx_missing_file -}}
+                  info
+                  {{- else if or (eq $severity "error") (eq $severity "crit") (eq $severity "alert") (eq $severity "emerg") -}}
                   error
                   {{- else if eq $severity "warn" -}}
                   warn
