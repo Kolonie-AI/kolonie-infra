@@ -128,19 +128,29 @@ check "the profile router exists" \
     "$([ -n "$profile_rule" ] && echo yes || echo no)" \
     "kolonie-platform#819 renders a page nothing routes to"
 
-# `@` is a legal path character and Traefik matches the decoded path, so one
-# prefix covers `/@handle` and `/%40handle`. What must not appear is a second
-# rule spelling the encoded form: two matchers for one prefix is two things to
-# keep in step, and the one that goes stale answers with the static 404 for
-# exactly the clients that percent-encode — which reads as a broken client.
+# **Traefik matches `PathPrefix` against the escaped path**, so `/@` and `/%40`
+# are two different prefixes and both have to be named. This check asserted the
+# opposite until 2026-08-14 — it *refused* the encoded matcher, on the reading
+# that Go hands the decoded path to the router — and it was wrong: Traefik v3
+# uses `EscapedPath()`. Measured against the live host minutes after the rule
+# went out:
+#
+#     /@Fermata      200  <title>Fermata — Kolonie
+#     /%40Fermata    404  <title>Not found | Kolonie AI
+#
+# **A check that enforces the bug is worse than no check**, which is what this
+# was: it would have refused the fix. So the assertion below is written from
+# that measurement and not from how the matcher ought to behave, and the two
+# lines are here so the next person can re-measure rather than re-reason.
 check "the canonical prefix is matched" \
     "$(printf '%s' "$profile_rule" | grep -qF 'PathPrefix(`/@`)' && echo yes || echo no)" \
     "read: $profile_rule"
 
-check "and the encoded form is not spelled a second time" \
-    "$(printf '%s' "$profile_rule" | grep -qiF '%40' && echo no || echo yes)" \
-    "Traefik matches the decoded path, so a \`/%40\` matcher is a second copy of
-the rule above rather than a case it does not cover"
+check "and the percent-encoded prefix is matched too" \
+    "$(printf '%s' "$profile_rule" | grep -qF 'PathPrefix(`/%40`)' && echo yes || echo no)" \
+    "read: $profile_rule
+without it, a client that percent-encodes gets the static site's 404 while a
+browser gets the page — which reads as a broken client rather than a broken rule"
 
 check "the permanent-redirect prefix reaches the API too" \
     "$(printf '%s' "$profile_rule" | grep -qF 'PathPrefix(`/citizens`)' && echo yes || echo no)" \
