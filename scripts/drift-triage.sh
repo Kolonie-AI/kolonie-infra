@@ -166,7 +166,17 @@ while IFS=$'\t' read -r svc revision image; do
         continue
     fi
 
-    newest="$(printf '%s\n' "$history" | head -1)"
+    # Parameter expansion rather than `printf | head -1`, and the reason is not
+    # tidiness (#163). `head` exits after the first line; if `history` is longer
+    # than the pipe buffer — a package with a few thousand tags is — `printf` is
+    # still writing when the reader goes away, and bash prints
+    # `printf: write error: Broken pipe` **to stderr**. Stderr is this script's
+    # verdict channel, the workflow appends it to `$GITHUB_OUTPUT`, and
+    # `$GITHUB_OUTPUT` refuses a file with a non-`KEY=value` line in it. One
+    # broken pipe therefore killed a step that had nothing to report but good
+    # news. `verdict-out.sh` now filters the channel as well; this removes the
+    # thing that needed filtering.
+    newest="${history%%$'\n'*}"
 
     if [ "$revision" = "-" ]; then
         # No label. Every image built before kolonie-platform#75 is here, and so
@@ -185,7 +195,11 @@ while IFS=$'\t' read -r svc revision image; do
 
     # Not the newest. Placing it in the build history turns that into a number,
     # and failing to place it is a different answer.
-    position="$(printf '%s\n' "$history" | grep -nxF "$revision" | head -1 | cut -d: -f1)"
+    # `-m1` rather than `| head -1`, for the reason above: `head` closing the
+    # pipe is what raises the broken pipe, and `grep` stopping itself after the
+    # first match is the same answer with no reader to go away. A here-string
+    # rather than `printf |` for the same reason on the other side.
+    position="$(grep -nxF -m1 "$revision" <<< "$history" | cut -d: -f1)"
     if [ -z "$position" ]; then
         summary="$summary
 | \`$svc\` | unknown | running \`${revision:0:7}\`, which GHCR does not list for \`$pkg\` |"

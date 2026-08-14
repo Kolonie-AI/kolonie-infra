@@ -173,9 +173,14 @@ jobs:
             exit 1
           fi
 
-          chmod +x scripts/health-triage.sh
+          chmod +x scripts/health-triage.sh scripts/verdict-out.sh
           ./scripts/health-triage.sh < report.tsv > summary.md 2> verdict.env || true
-          cat verdict.env >> "$GITHUB_OUTPUT"
+
+          # Not `cat verdict.env >> "$GITHUB_OUTPUT"` (#163). Stderr is the
+          # verdict channel and it is not the script's alone: one diagnostic
+          # from bash or `gh` in that file and `$GITHUB_OUTPUT` refuses all of
+          # it, killing a step that had a perfectly good verdict to report.
+          ./scripts/verdict-out.sh verdict.env
 
           {
             echo 'summary<<KOLONIE_EOF'
@@ -286,7 +291,7 @@ jobs:
         run: |
           set -uo pipefail
 
-          chmod +x scripts/drift-triage.sh
+          chmod +x scripts/drift-triage.sh scripts/verdict-out.sh
 
           # **`|| status=$?` and not a bare call.** The step runs under
           # `bash -e`, which GitHub sets on the interpreter — `set -uo pipefail`
@@ -315,7 +320,9 @@ jobs:
             exit 1
           fi
 
-          cat drift-verdict.env >> "$GITHUB_OUTPUT"
+          # Not `cat` — see the health step above and `#163`. This is the file
+          # that actually carried the broken-pipe line on 2026-08-14.
+          ./scripts/verdict-out.sh drift-verdict.env
           cat drift.md
 
       - name: File, update or close the drift report
@@ -404,7 +411,7 @@ jobs:
         run: |
           set -uo pipefail
 
-          chmod +x scripts/pin-triage.sh
+          chmod +x scripts/pin-triage.sh scripts/verdict-out.sh
 
           # `|| status=$?` for the reason the drift step above spells out. This
           # step carried the identical defect and had never shown it, because
@@ -422,7 +429,10 @@ jobs:
             exit 1
           fi
 
-          cat pins-verdict.env >> "$GITHUB_OUTPUT"
+          # Not `cat` — see the health step above and `#163`. This step had
+          # never shown the defect for the same reason it had never shown
+          # `#104`'s: the drift step dies first and this one is skipped.
+          ./scripts/verdict-out.sh pins-verdict.env
           cat pins.md
 
       - name: File, update or close the pin report

@@ -54,6 +54,7 @@ step "the service list against compose" bash scripts/check-services.sh
 step "deployed-revision.sh, against a stub docker" bash scripts/rehearse-deployed-revision.sh
 step "drift-triage.sh" bash scripts/rehearse-drift.sh
 step "the health watcher's own wiring" bash scripts/rehearse-watch-wiring.sh
+step "what reaches the step output as a verdict" bash scripts/rehearse-verdict-out.sh
 step "the promtail level derivation" bash scripts/check-log-levels.sh
 step "the host resource alarms" bash scripts/rehearse-host-resources.sh
 step "the deploy alarm's counting rules" bash scripts/rehearse-deploy-alarm.sh

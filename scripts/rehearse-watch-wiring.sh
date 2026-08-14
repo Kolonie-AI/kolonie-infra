@@ -114,6 +114,47 @@ check "no \`status=\$?\` follows an unguarded triage call" \
     "$([ "$bare" -eq 0 ] && echo yes || echo no)"
 
 echo
+echo "a triage script's stderr is filtered, never poured into \$GITHUB_OUTPUT"
+
+# `#163`, and it is `#104`'s shape a second time: the defect was not in the
+# script with the judgement in it, it was in the line of this file that read it.
+#
+#     ./scripts/drift-triage.sh ... 2> drift-verdict.env
+#     cat drift-verdict.env >> "$GITHUB_OUTPUT"
+#
+# That reads as though stderr were the script's private channel. It is shared
+# with every diagnostic bash or `gh` can emit, and `$GITHUB_OUTPUT` rejects the
+# whole file over one line that is not `KEY=value`. On 2026-08-14 a broken pipe
+# killed a step whose verdict was `ok`, and every step below it was skipped.
+#
+# Comment lines are stripped before the match, and that is not a loophole — it
+# is what lets the fix be documented next to itself. The line above quoting the
+# defect is in this workflow verbatim, and a check that failed on its own
+# explanation would be paid for by deleting the explanation.
+poured=$(grep -vE '^[[:space:]]*#' "$WORKFLOW" |
+    grep -nE 'cat[[:space:]]+[a-z-]*verdict[a-z-]*\.env[[:space:]]*>>' || true)
+check "no step appends a raw stderr file to \$GITHUB_OUTPUT" \
+    "$([ -z "$poured" ] && echo yes || echo no)" \
+    "$poured
+use ./scripts/verdict-out.sh — it takes the verdict lines and refuses the rest"
+
+# The other half: every file captured as a verdict channel is read by something.
+# A `2> x.env` nobody reads is a watcher that has quietly stopped reporting.
+captured=$(grep -oE '2>[[:space:]]*[a-z-]*verdict[a-z-]*\.env' "$WORKFLOW" |
+    sed 's/^2>[[:space:]]*//' | sort -u)
+while IFS= read -r envfile; do
+    [ -n "$envfile" ] || continue
+    check "$envfile is read by verdict-out.sh" \
+        "$(grep -qE "verdict-out\.sh[[:space:]]+$envfile" "$WORKFLOW" && echo yes || echo no)" \
+        "captured as a verdict channel and read by nothing"
+done <<< "$captured"
+
+check "verdict-out.sh is made executable before it is called" \
+    "$([ "$(grep -c 'chmod +x .*verdict-out\.sh' "$WORKFLOW")" \
+        -eq "$(grep -c '\./scripts/verdict-out\.sh' "$WORKFLOW")" ] && echo yes || echo no)" \
+    "a step that calls it without chmod dies on permission, which reads as a host fault"
+
+echo
 echo "the watcher reports its own failure"
 
 # `#104`'s other half: the steps above report what they find, and nothing
