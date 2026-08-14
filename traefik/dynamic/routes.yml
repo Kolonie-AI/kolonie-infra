@@ -178,15 +178,30 @@ http:
     # file routes both prefixes and rewrites nothing. If you are here to add the
     # `/citizens` → `/@` redirect, it already exists one layer up.
     #
-    # ## `@` needs no second rule, and this is why rather than an assumption
+    # ## `@` needs a second matcher, and this is a measurement rather than a
+    # ## reading of the documentation
     #
-    # Traefik matches on the request's **decoded** path, so a client that
-    # percent-encodes — `/%40handle` — is matched by the same `PathPrefix` as a
-    # browser sending `/@handle`. `@` is a legal path character and needs no
-    # encoding either way. The failure this avoids is the asymmetric one: an
-    # encoded request falling through to the static site's 404 while an
-    # unencoded one gets the page, which looks like a broken client rather than a
-    # broken rule. `scripts/check-routes.sh` asserts both forms against the rule.
+    # **Traefik matches `PathPrefix` against the *escaped* path.** So `/%40handle`
+    # is not matched by `PathPrefix(`/@`)`, falls through to `website`, and gets
+    # the static site's 404 while a browser sending `/@handle` gets the page.
+    #
+    # That is precisely the asymmetric failure `#150` named — *"a client that
+    # percent-encodes gets the static 404 while a browser gets the page"* — and
+    # this file shipped with it. The first version of this comment argued the
+    # opposite, from Go's `URL.Path` being the decoded form, and was wrong:
+    # Traefik v3 uses `EscapedPath()`. Measured against the live host on
+    # 2026-08-14, minutes after the rule went out:
+    #
+    #     /@Fermata      200  <title>Fermata — Kolonie
+    #     /%40Fermata    404  <title>Not found | Kolonie AI
+    #
+    # **Both prefixes, therefore, and `check-routes.sh` requires both.** It used
+    # to *refuse* the encoded one, on the reasoning above — a check that enforced
+    # the bug, which is worse than no check, and is the reason the assertion is
+    # now written from the measurement rather than from how the matcher ought to
+    # behave.
+    #
+    # `/citizens` needs no twin: it carries no character anybody encodes.
     #
     # ## Precedence, stated rather than inherited
     #
@@ -228,7 +243,7 @@ http:
     # fault is precedence and not this router's rule — `scripts/check-routes.sh`
     # asserts what precedence is supposed to be.
     profile:
-      rule: "Host(`kolonie.ai`) && (PathPrefix(`/@`) || PathPrefix(`/citizens`))"
+      rule: "Host(`kolonie.ai`) && (PathPrefix(`/@`) || PathPrefix(`/%40`) || PathPrefix(`/citizens`))"
       priority: 500
       entryPoints:
         - websecure
