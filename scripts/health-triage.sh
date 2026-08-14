@@ -91,6 +91,19 @@ SMS_LOW_MESSAGES="${SMS_LOW_MESSAGES:-200}"
 # that matters is minutes versus days, so the units are coarse deliberately.
 human() {
     local s="${1:-0}"
+    # **Non-numeric in, one word out, and nothing on stderr** (#158, #163).
+    #
+    # This is called once per row, before the row's name is dispatched on, so it
+    # is handed a percentage for a `disk` row and a `-` for any row whose probe
+    # could not measure. Without this, `[ - -lt 60 ]` writes four bash
+    # diagnostics — and stderr is this script's *verdict channel*: the workflow
+    # captures it with `2>` and appends it to `$GITHUB_OUTPUT`, which then
+    # rejects the whole file for containing a line that is not `KEY=value`.
+    #
+    # The duration is unused on every row that can carry a non-number, so this
+    # changes no report. What it removes is four lines of noise aimed at the one
+    # channel that must stay clean.
+    [[ "$s" =~ ^[0-9]+$ ]] || { echo "unknown"; return; }
     if [ "$s" -lt 60 ]; then
         echo "${s}s"
     elif [ "$s" -lt 3600 ]; then
@@ -168,21 +181,70 @@ while IFS=$'\t' read -r name state health streak approx image; do
     # running" and read as a broken service. APPROX_SECONDS carries a percentage
     # here, not a duration — see health-report.sh.
     if [ "$name" = "disk" ]; then
+        # **A `partial` row is judged on the percentage it carries** (#158).
+        #
+        # `partial` means `df` answered and `docker system df` did not, which is
+        # what a `docker compose pull` writing layers reliably causes — so it is
+        # every deploy. It used to return here before the threshold was ever
+        # compared, and a partition at 92 % during a deploy was therefore filed
+        # as *image storage unknown*: the percentage did appear in the sentence,
+        # but the classification, the `disk_problems` entry and the fingerprint
+        # all said the problem was the missing image figure. The fingerprint is
+        # what decides whether a fresh comment is filed, so a disk that crossed
+        # the threshold during a deploy and stayed there went on being filed as
+        # the lesser thing.
+        #
+        # `#157` fixed the same mistake in `pressure-report.sh`, which is the
+        # alarm side of the identical line. This is the issue side.
+        #
+        # **`unknown` is untouched and must not fall through to the numeric
+        # test**, because `health-report.sh` writes `0` in the percentage column
+        # when `df` did not answer, and 0 is below every threshold there will
+        # ever be — the quiet failure `#103` exists against.
         if [ "$state" = "unknown" ]; then
             problems+=("| _disk_ | unknown | - | - | the host could not report how full its partition is |")
             disk_problems+=("unknown")
             fingerprint_parts+=("disk:unknown")
-        elif [ "$state" = "partial" ]; then
-            problems+=("| _disk_ | partial | - | - | the partition is ${approx}% full, but Docker did not report reclaimable image storage |")
-            disk_problems+=("image-storage-unknown")
-            fingerprint_parts+=("disk:image-storage-unknown")
-        elif [ "${approx:-0}" -ge "$DISK_FULL_PERCENT" ]; then
-            problems+=("| _disk_ | filling | - | - | the Docker partition is ${approx}% full |")
+        elif ! [[ "${approx:-}" =~ ^[0-9]+$ ]]; then
+            # A percentage that is not a number, on a row that says `df`
+            # answered. Reachable only now that a `partial` row gets as far as
+            # the comparison, so guarding it is part of this change and not
+            # extra scope: `[ - -ge 90 ]` is a bash diagnostic on stderr, which
+            # is the verdict channel, which is `#163`.
+            #
+            # Same fingerprint as `unknown` deliberately. It is the same fact —
+            # how full the partition is, is not known — and a second fingerprint
+            # would file a second comment for one condition.
+            problems+=("| _disk_ | unknown | - | - | the host reported \`${approx:-}\` where a percentage was expected |")
+            disk_problems+=("unknown")
+            fingerprint_parts+=("disk:unknown")
+        elif [ "$approx" -ge "$DISK_FULL_PERCENT" ]; then
+            # The missing image figure is still said, because it is the reason
+            # the reclaimable number is absent from this row, and a reader who
+            # does not see it will think the images stopped growing. What it is
+            # no longer allowed to do is decide the classification.
+            if [ "$state" = "partial" ]; then
+                problems+=("| _disk_ | filling | - | - | the Docker partition is ${approx}% full; Docker did not report reclaimable image storage |")
+            else
+                problems+=("| _disk_ | filling | - | - | the Docker partition is ${approx}% full |")
+            fi
             disk_problems+=("full")
             # The percentage is deliberately out of the fingerprint. It moves a
             # point at a time, and including it would file a fresh comment on
             # every run while the condition simply persists.
+            #
+            # And it is the *same* `disk:full` an `ok` row at this percentage
+            # gets, with nothing appended for the missing image figure. That is
+            # the whole point: a disk crossing the threshold mid-deploy and
+            # staying there once the deploy ends must not file a second comment
+            # for having changed state from `partial` to `ok`.
             fingerprint_parts+=("disk:full")
+        elif [ "$state" = "partial" ]; then
+            # Below the threshold, unchanged: the partition is fine and the one
+            # thing worth saying is that the image figure is missing.
+            problems+=("| _disk_ | partial | - | - | the partition is ${approx}% full, but Docker did not report reclaimable image storage |")
+            disk_problems+=("image-storage-unknown")
+            fingerprint_parts+=("disk:image-storage-unknown")
         else
             healthy+=("disk (${approx}% used; $(human_bytes "$streak") of $(human_bytes "$image") in images reclaimable)")
         fi

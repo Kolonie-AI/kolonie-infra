@@ -222,6 +222,93 @@ else
     fail "every numeric threshold is overridable and OOM remains an event" "$overridden"
 fi
 
+# --- a partial disk row is judged on its percentage (#158) ----------------
+#
+# Rehearsed as a **pair**, above and below the threshold, for the reason
+# `rehearse-pressure.sh` states about the same line one script over: the
+# below-threshold case alone reads as *partial is fine*, and the above-threshold
+# case alone reads as *partial is always an alarm*. Neither is the rule.
+#
+# `partial` is `df` answering and `docker system df` not — every deploy. Before
+# this, it returned before the threshold was compared, so a partition at 92 %
+# during a deploy was filed as *image storage unknown*, with the fingerprint
+# that decides whether a fresh comment is filed saying the lesser thing.
+disk_row() { printf 'disk\t%s\t-\t0\t%s\t-\n' "$1" "$2"; }
+
+filling=$(triage "$(disk_row partial 92)")
+if printf '%s\n' "$filling" | grep -q '| _disk_ | filling |' &&
+    printf '%s\n' "$filling" | grep -q '92% full'; then
+    pass "a partial row at 92% is filed as filling, not as image-storage-unknown"
+else
+    fail "a partial row at 92% is filed as filling, not as image-storage-unknown" "$filling"
+fi
+
+if printf '%s\n' "$filling" | grep -q 'did not report reclaimable image storage'; then
+    pass "and still says the image figure is missing, on that same row"
+else
+    fail "and still says the image figure is missing, on that same row" "$filling"
+fi
+
+# The criterion the issue is actually about. The fingerprint is what decides
+# whether a fresh comment is filed, so a disk that crosses the threshold during
+# a deploy and stays there once the deploy ends — `partial` becoming `ok` at the
+# same percentage — must not be filed twice.
+#
+# The fingerprint is on stderr, which is where the triage scripts put the two
+# lines the workflow reads.
+fingerprint() {
+    printf '%s\n' "$1" | bash "$ROOT/scripts/health-triage.sh" 2>&1 >/dev/null |
+        grep '^FINGERPRINT=' || true
+}
+fp_partial=$(fingerprint "$(disk_row partial 92)")
+fp_ok=$(fingerprint "$(disk_row ok 92)")
+if [ "$fp_partial" = "$fp_ok" ] && [ "$fp_partial" = "FINGERPRINT=disk:full" ]; then
+    pass "a partial and an ok row at 92% share the one fingerprint disk:full"
+else
+    fail "a partial and an ok row at 92% share the one fingerprint disk:full" \
+        "$(printf 'partial: %s\nok:      %s' "$fp_partial" "$fp_ok")"
+fi
+
+below=$(triage "$(disk_row partial 40)")
+if printf '%s\n' "$below" | grep -q 'but Docker did not report reclaimable image storage' &&
+    ! printf '%s\n' "$below" | grep -q '| _disk_ | filling |'; then
+    pass "a partial row below the threshold reports exactly what it reported before"
+else
+    fail "a partial row below the threshold reports exactly what it reported before" "$below"
+fi
+
+# `unknown` is untouched and must not fall through to the numeric test:
+# `health-report.sh` writes `0` in the percentage column when `df` did not
+# answer, and 0 is below every threshold there will ever be (#103).
+unknown=$(triage "$(disk_row unknown 0)")
+if printf '%s\n' "$unknown" | grep -q 'could not report how full its partition is'; then
+    pass "unknown is untouched and does not read as an empty disk"
+else
+    fail "unknown is untouched and does not read as an empty disk" "$unknown"
+fi
+
+# Reachable only now that a partial row gets as far as the comparison, so this
+# guard is part of the same change: `[ - -ge 90 ]` is a bash diagnostic on
+# stderr, and stderr is the verdict channel (#163).
+notanumber=$(triage "$(disk_row partial -)")
+if printf '%s\n' "$notanumber" | grep -q '| _disk_ | unknown |' &&
+    ! printf '%s\n' "$notanumber" | grep -q '| _disk_ | filling |'; then
+    pass "a partial row whose percentage is not a number is unknown, not filling"
+else
+    fail "a partial row whose percentage is not a number is unknown, not filling" "$notanumber"
+fi
+
+# And it says so quietly — nothing on stderr, because stderr is where the
+# verdict lives and a bash diagnostic there kills the step that reads it.
+noise=$(printf '%s\n' "$(disk_row partial -)" |
+    bash "$ROOT/scripts/health-triage.sh" 2>&1 >/dev/null |
+    grep -v '^VERDICT=' | grep -v '^FINGERPRINT=' || true)
+if [ -z "$noise" ]; then
+    pass "and writes nothing but its verdict to the channel the workflow reads"
+else
+    fail "and writes nothing but its verdict to the channel the workflow reads" "$noise"
+fi
+
 out=$(STUB_JOURNAL_FAIL=1 report)
 oom_row=$(printf '%s\n' "$out" | awk -F'\t' '$1 == "oom"')
 if [ "$(printf '%s' "$oom_row" | cut -f2)" = "unknown" ]; then
