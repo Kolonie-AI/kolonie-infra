@@ -63,6 +63,7 @@ step "the unit-drift rows" bash scripts/rehearse-unit-drift.sh
 step "the timer rows, and the window a running service opens in them" bash scripts/rehearse-timer-window.sh
 step "every timer schedules from a calendar" bash scripts/check-timers.sh
 step "what the apex host's routers promise each other" bash scripts/check-routes.sh
+step "the deploy filter §8 quotes" bash scripts/check-deploy-paths.sh
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then

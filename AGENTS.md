@@ -200,6 +200,53 @@ Push to `main` triggers automatic deployment via GitHub Actions. The deploy
 workflow is reusable: `kolonie-platform` calls it after building an image, so a
 merge there ends with that exact build running on the host.
 
+### Merging to `main` deploys, and there is no step in between
+
+**A merge to `main` is a deploy of whatever it carried.** `deploy.yml` fires on
+`push`, and its `paths-ignore` is the whole of the exemption — a change that
+touches nothing outside these patterns does not deploy, and a change that
+touches anything else reaches the host:
+
+```yaml
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'state/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+```
+
+`scripts/check-deploy-paths.sh` asserts that quote against the workflow, so it
+is the workflow's list and not a copy of it that drifted. The filter is a
+`paths-ignore` rather than a `paths` for the reason the workflow's own header
+gives: a list of what *does* deploy silently stops deploying whatever is added
+later. So every configuration directory in this repository is inside the deploy
+— `traefik/`, `promtail/`, `loki/`, `systemd/`, `pgadmin/`, `cloudflare/` and
+`scripts/`, as of 2026-08-14 — and so is any directory added after this
+sentence, without anybody having to remember to add it.
+
+**So the maintainer merging your change is the go-ahead.** §10 reserves changes
+to the live VPS for them, and an issue whose Definition of done repeats that
+reservation is satisfied by the merge itself, not by some separate act
+afterwards. Nothing here licenses you to deploy — the merge is still theirs.
+What it says is that once they have merged, the change is live, and the issue
+must not go on saying it is waiting.
+
+**Verify against the live host once your change has merged.** `bash
+scripts/check.sh` passing means the file is well-formed and the rehearsals agree
+with it; it says nothing whatever about what the host now serves. Put the
+verification in the issue as commands with their expected output, and run it
+when the deploy run for your merge has succeeded.
+
+That last point is `#170`, and it is there because the gap was invisible from
+the inside. `#150`'s Traefik rule was written, reported as unapplied in three
+places, and moved back to Ready for somebody with the authority to apply it —
+while an unrelated merge had already carried `traefik/` to the host and the rule
+was serving traffic. Running the verification anyway is what found `#169`:
+`PathPrefix` in Traefik v3 matches the escaped path and the rule matched the
+decoded one, so the acceptance criterion the issue named was unmet on a host
+where every check in this repository was green.
+
 The deploy is serialised at two levels:
 
 - **GitHub Actions** concurrency group `deploy-vps` with
