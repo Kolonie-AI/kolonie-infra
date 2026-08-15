@@ -134,6 +134,11 @@ fingerprint_parts=()
 # in completely different places, and a report that offers both every time is
 # one the reader stops reading.
 container_problems=()
+# Containers compose renamed out of the way and did not remove (#183). Held
+# apart from container_problems because the closing advice for the two is
+# opposite: one asks you to look at a service, the other tells you no service is
+# implicated.
+leftover_problems=()
 backup_problems=()
 disk_problems=()
 prune_problems=()
@@ -431,6 +436,18 @@ while IFS=$'\t' read -r name state health streak approx image; do
         problems+=("| \`$name\` | gone | - | - | named in the project, not present on the host |")
         container_problems+=("$name")
         fingerprint_parts+=("$name:gone")
+    elif [[ "$name" =~ ^[0-9a-f]{12}_ ]]; then
+        # Every service pins container_name, so compose cannot recreate one
+        # without first renaming the predecessor to <12 hex>_<name>. That rename
+        # is the whole of this row: the service is not down, it is running beside
+        # this under the name it always had, and what is on screen is the half
+        # of a recreate that did not finish removing itself. Reported apart from
+        # a container that is genuinely not running because the remedy has
+        # nothing to do with the service — twice now (#96, #183) this shape was
+        # read as an outage of badge-runner, which was healthy both times.
+        problems+=("| \`$name\` | $state | - | - | left behind by a recreate; \`${name#*_}\` is the live one |")
+        leftover_problems+=("$name")
+        fingerprint_parts+=("$name:$state")
     elif [ "$state" != "running" ]; then
         problems+=("| \`$name\` | $state | - | - | not running |")
         container_problems+=("$name")
@@ -483,6 +500,23 @@ if [ "${#container_problems[@]}" -gt 0 ]; then
     echo
     echo '```'
     echo "docker inspect <container> --format '{{json .State.Health}}'"
+    echo '```'
+fi
+
+if [ "${#leftover_problems[@]}" -gt 0 ]; then
+    echo
+    echo "A name of the form \`<12 hex>_<service>\` is not a service. It is the"
+    echo "container compose renamed out of the way to recreate the one that pins"
+    echo "that name, and then did not remove — a deploy that failed part-way is the"
+    echo "way this happens. Read the service's own row before treating it as an"
+    echo "outage: if it is running and healthy, nothing is down and this row is"
+    echo "housekeeping. Nothing in this repository sweeps one up; the next"
+    echo "successful deploy of that service does. Removing it by hand is a write to"
+    echo "the host and needs the maintainer, so leave it and check the deploy that"
+    echo "failed:"
+    echo
+    echo '```'
+    echo "gh run list --repo Kolonie-AI/kolonie-platform --workflow build-and-deploy.yml --status failure"
     echo '```'
 fi
 
