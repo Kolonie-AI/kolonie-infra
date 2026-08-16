@@ -35,7 +35,7 @@ set -euo pipefail
 # for the same reason: it reads and writes badge rows through packages/db, so a
 # build started before the api has been started against a schema that has not
 # moved yet.
-readonly ORDER=(api verifier-runner moderation-runner support-triage-runner badge-runner website)
+readonly ORDER=(api verifier-runner moderation-runner support-triage-runner badge-runner doctor-runner website)
 
 usage() {
     echo "usage: $(basename "$0") all|<service>[,<service>...]" >&2

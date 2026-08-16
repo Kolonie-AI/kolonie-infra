@@ -3,6 +3,10 @@
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The same list the script under test reads, so this rehearsal counts rows
+# against the declaration rather than against a number written down twice.
+# shellcheck source=scripts/services.sh
+. "$ROOT/scripts/services.sh"
 WORK=$(mktemp -d)
 BIN="$WORK/.bin"
 trap 'rm -rf "$WORK"' EXIT
@@ -44,7 +48,9 @@ contains() { if grep -qF -- "$2" <<<"$1"; then echo "  ok   $3"; pass=$((pass+1)
 echo "== 1. a complete Docker read produces one row per service"
 out=$(probe 2>"$WORK/error"); status=$?
 check "exit 0" "$status" "0"
-check "six service rows" "$(wc -l <<<"$out")" "6"
+# One row per name in `scripts/services.sh`, which is the point of #107 — the
+# count moves when a service is added, and this is the assertion that notices.
+check "one row per declared service" "$(wc -l <<<"$out")" "${#KOLONIE_SERVICES[@]}"
 contains "$out" $'api\tabc123\tapi-image' "reported the revision and image together"
 contains "$out" $'verifier-runner\t-\tverifier-image' "normalised an absent label"
 contains "$out" $'website\t-\t-' "reported an absent container"

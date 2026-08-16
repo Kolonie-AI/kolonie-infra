@@ -39,6 +39,12 @@ TRIAGE_REPO="ghcr.io/kolonie-ai/kolonie-support-triage-runner"
 # and awards what has newly become true. The only runner that speaks to nothing
 # but Postgres: no OpenRouter key, no GitHub App, no Traefik route.
 BADGE_REPO="ghcr.io/kolonie-ai/kolonie-badge-runner"
+# The seventh (kolonie-platform#839, kolonie-infra#192). It reads the call-hour
+# rollup every hour, records a diagnosis per citizen and runs the two retention
+# sweeps. Like the badge runner it speaks to nothing but Postgres and the
+# gateway — no GitHub App key, and its own `no-credential.test.ts` asserts the
+# absence, which is the argument for it being a runner of its own at all.
+DOCTOR_REPO="ghcr.io/kolonie-ai/kolonie-doctor-runner"
 WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
 
 # Which build to fetch, per image, defaulting to the mutable tag (#14).
@@ -58,6 +64,7 @@ RUNNER_VERSION="${RUNNER_VERSION:-}"
 MODERATION_VERSION="${MODERATION_VERSION:-}"
 TRIAGE_VERSION="${TRIAGE_VERSION:-}"
 BADGE_VERSION="${BADGE_VERSION:-}"
+DOCTOR_VERSION="${DOCTOR_VERSION:-}"
 WEBSITE_VERSION="${WEBSITE_VERSION:-}"
 
 CUR_API=""
@@ -65,9 +72,10 @@ CUR_RUNNER=""
 CUR_MOD=""
 CUR_TRIAGE=""
 CUR_BADGE=""
+CUR_DOCTOR=""
 CUR_WEB=""
 if [ -f "${STATE_DIR}/deployed.env" ]; then
-    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${TRIAGE_IMAGE:-}|${BADGE_IMAGE:-}|${WEBSITE_IMAGE:-}")
+    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${TRIAGE_IMAGE:-}|${BADGE_IMAGE:-}|${DOCTOR_IMAGE:-}|${WEBSITE_IMAGE:-}")
     CUR_API="${PREV_STATE%%|*}"
     CUR_RUNNER="$(echo "$PREV_STATE" | cut -d"|" -f2)"
     CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
@@ -77,8 +85,9 @@ if [ -f "${STATE_DIR}/deployed.env" ]; then
     # time has always taken.
     CUR_TRIAGE="$(echo "$PREV_STATE" | cut -d"|" -f4)"
     CUR_BADGE="$(echo "$PREV_STATE" | cut -d"|" -f5)"
+    CUR_DOCTOR="$(echo "$PREV_STATE" | cut -d"|" -f6)"
     # Still the last field, and it must stay the last field: `##*|` is what makes
-    # a record written before a service existed readable at all. A sixth image
+    # a record written before a service existed readable at all. A seventh image
     # goes *before* the website here, never after it.
     CUR_WEB="${PREV_STATE##*|}"
 fi
@@ -182,6 +191,7 @@ RUNNER_IMAGE_TAG=$(resolve_image "$RUNNER_VERSION" "$CUR_RUNNER" "$RUNNER_REPO" 
 MODERATION_IMAGE_TAG=$(resolve_image "$MODERATION_VERSION" "$CUR_MOD" "$MODERATION_REPO" moderation-runner)
 TRIAGE_IMAGE_TAG=$(resolve_image "$TRIAGE_VERSION" "$CUR_TRIAGE" "$TRIAGE_REPO" support-triage-runner)
 BADGE_IMAGE_TAG=$(resolve_image "$BADGE_VERSION" "$CUR_BADGE" "$BADGE_REPO" badge-runner)
+DOCTOR_IMAGE_TAG=$(resolve_image "$DOCTOR_VERSION" "$CUR_DOCTOR" "$DOCTOR_REPO" doctor-runner)
 WEBSITE_IMAGE_TAG=$(resolve_image "$WEBSITE_VERSION" "$CUR_WEB" "$WEBSITE_REPO" website)
 
 # Exported *now*, before anything runs `docker compose`, because compose reads
@@ -195,6 +205,7 @@ export RUNNER_IMAGE="$RUNNER_IMAGE_TAG"
 export MODERATION_IMAGE="$MODERATION_IMAGE_TAG"
 export TRIAGE_IMAGE="$TRIAGE_IMAGE_TAG"
 export BADGE_IMAGE="$BADGE_IMAGE_TAG"
+export DOCTOR_IMAGE="$DOCTOR_IMAGE_TAG"
 export WEBSITE_IMAGE="$WEBSITE_IMAGE_TAG"
 
 # What the last *successful* deploy shipped, as immutable digests. Written only
@@ -394,14 +405,16 @@ pin() {
     MODERATION_IMAGE=$(digest_of "$MODERATION_IMAGE_TAG" "$MODERATION_REPO")
     TRIAGE_IMAGE=$(digest_of "$TRIAGE_IMAGE_TAG" "$TRIAGE_REPO")
     BADGE_IMAGE=$(digest_of "$BADGE_IMAGE_TAG" "$BADGE_REPO")
+    DOCTOR_IMAGE=$(digest_of "$DOCTOR_IMAGE_TAG" "$DOCTOR_REPO")
     WEBSITE_IMAGE=$(digest_of "$WEBSITE_IMAGE_TAG" "$WEBSITE_REPO")
-    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE BADGE_IMAGE WEBSITE_IMAGE
+    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE BADGE_IMAGE DOCTOR_IMAGE WEBSITE_IMAGE
 
     log "  api:                   $API_IMAGE"
     log "  verifier-runner:       $RUNNER_IMAGE"
     log "  moderation-runner:     $MODERATION_IMAGE"
     log "  support-triage-runner: $TRIAGE_IMAGE"
     log "  badge-runner:          $BADGE_IMAGE"
+    log "  doctor-runner:         $DOCTOR_IMAGE"
     log "  website:               $WEBSITE_IMAGE"
 }
 
@@ -454,18 +467,20 @@ record_deployment() {
     local recorded_api="${API_IMAGE}" recorded_runner="${RUNNER_IMAGE}"
     local recorded_moderation="${MODERATION_IMAGE}" recorded_triage="${TRIAGE_IMAGE}"
     local recorded_badge="${BADGE_IMAGE}"
+    local recorded_doctor="${DOCTOR_IMAGE}"
     local recorded_website="${WEBSITE_IMAGE}"
 
     if [ "$SERVICE" != all ] && [ -f "$DEPLOYED_STATE" ]; then
         # Read the previous record in a subshell, so sourcing it cannot clobber
         # the variables this deploy just resolved.
         local previous
-        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${TRIAGE_IMAGE}|${BADGE_IMAGE}|${WEBSITE_IMAGE}")
+        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${TRIAGE_IMAGE}|${BADGE_IMAGE}|${DOCTOR_IMAGE}|${WEBSITE_IMAGE}")
         [ "$SERVICE" != api ]                   && recorded_api="${previous%%|*}"
         [ "$SERVICE" != verifier-runner ]       && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
         [ "$SERVICE" != moderation-runner ]     && recorded_moderation="$(cut -d'|' -f3 <<<"$previous")"
         [ "$SERVICE" != support-triage-runner ] && recorded_triage="$(cut -d'|' -f4 <<<"$previous")"
         [ "$SERVICE" != badge-runner ]          && recorded_badge="$(cut -d'|' -f5 <<<"$previous")"
+        [ "$SERVICE" != doctor-runner ]         && recorded_doctor="$(cut -d'|' -f6 <<<"$previous")"
         [ "$SERVICE" != website ]               && recorded_website="${previous##*|}"
     fi
 
@@ -482,6 +497,7 @@ RUNNER_IMAGE=${recorded_runner}
 MODERATION_IMAGE=${recorded_moderation}
 TRIAGE_IMAGE=${recorded_triage}
 BADGE_IMAGE=${recorded_badge}
+DOCTOR_IMAGE=${recorded_doctor}
 WEBSITE_IMAGE=${recorded_website}
 EOF
     log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
@@ -503,6 +519,7 @@ EOF
     for recorded in "API_IMAGE=${recorded_api}" "RUNNER_IMAGE=${recorded_runner}" \
                     "MODERATION_IMAGE=${recorded_moderation}" "TRIAGE_IMAGE=${recorded_triage}" \
                     "BADGE_IMAGE=${recorded_badge}" \
+                    "DOCTOR_IMAGE=${recorded_doctor}" \
                     "WEBSITE_IMAGE=${recorded_website}"; do
         name="${recorded%%=*}"
         value="${recorded#*=}"
@@ -938,6 +955,7 @@ preflight_env() {
     for pair in "api:$API_IMAGE" "verifier-runner:$RUNNER_IMAGE" \
                 "moderation-runner:$MODERATION_IMAGE" "support-triage-runner:$TRIAGE_IMAGE" \
                 "badge-runner:$BADGE_IMAGE" \
+                "doctor-runner:$DOCTOR_IMAGE" \
                 "website:$WEBSITE_IMAGE"; do
         svc="${pair%%:*}"
         image="${pair#*:}"
@@ -1386,6 +1404,7 @@ rollback() {
     log "  moderation-runner:     ${MODERATION_IMAGE:-unset}"
     log "  support-triage-runner: ${TRIAGE_IMAGE:-unset}"
     log "  badge-runner:          ${BADGE_IMAGE:-unset}"
+    log "  doctor-runner:         ${DOCTOR_IMAGE:-unset}"
     log "  website:               ${WEBSITE_IMAGE:-unset}"
 
     # No --remove-orphans, ever. That flag deletes every container absent from
@@ -1423,6 +1442,7 @@ rollback() {
         moderation-runner) redeploy_tag="$MODERATION_IMAGE_TAG" ;;
         support-triage-runner) redeploy_tag="$TRIAGE_IMAGE_TAG" ;;
         badge-runner)      redeploy_tag="$BADGE_IMAGE_TAG" ;;
+        doctor-runner)     redeploy_tag="$DOCTOR_IMAGE_TAG" ;;
         website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
         *)                 redeploy_tag="" ;;
     esac
@@ -1562,7 +1582,7 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
             log "WARN: it has failed $CASCADE_ATTEMPTS time(s) on the same image, ${NEEDS_REDEPLOY_TAG:-unknown} — the next attempt would pull the same build and fail the same way."
             log "WARN: this run's own deploy of $SERVICE succeeded and is serving; the stuck cascade is a separate fact and does not fail it."
             if [ "$failed_images" -ge 2 ]; then
-                known_good=$(set -a; . "$DEPLOYED_STATE"; set +a; case "$NEEDS_REDEPLOY_SERVICE" in api) echo "${API_IMAGE:-unknown}" ;; verifier-runner) echo "${RUNNER_IMAGE:-unknown}" ;; moderation-runner) echo "${MODERATION_IMAGE:-unknown}" ;; support-triage-runner) echo "${TRIAGE_IMAGE:-unknown}" ;; badge-runner) echo "${BADGE_IMAGE:-unknown}" ;; website) echo "${WEBSITE_IMAGE:-unknown}" ;; esac)
+                known_good=$(set -a; . "$DEPLOYED_STATE"; set +a; case "$NEEDS_REDEPLOY_SERVICE" in api) echo "${API_IMAGE:-unknown}" ;; verifier-runner) echo "${RUNNER_IMAGE:-unknown}" ;; moderation-runner) echo "${MODERATION_IMAGE:-unknown}" ;; support-triage-runner) echo "${TRIAGE_IMAGE:-unknown}" ;; badge-runner) echo "${BADGE_IMAGE:-unknown}" ;; doctor-runner) echo "${DOCTOR_IMAGE:-unknown}" ;; website) echo "${WEBSITE_IMAGE:-unknown}" ;; esac)
                 log "WARN: $failed_images different images of $NEEDS_REDEPLOY_SERVICE have failed; the code is at fault, and another rebuild will not help."
                 log "WARN: deploy the known-good image recorded in deployed.env: $known_good"
                 log "WARN:   gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=$NEEDS_REDEPLOY_SERVICE"
@@ -1587,6 +1607,7 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
                 moderation-runner) export MODERATION_IMAGE="$NEEDS_REDEPLOY_TAG"; MODERATION_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
                 support-triage-runner) export TRIAGE_IMAGE="$NEEDS_REDEPLOY_TAG"; TRIAGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
                 badge-runner)      export BADGE_IMAGE="$NEEDS_REDEPLOY_TAG"; BADGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                doctor-runner)     export DOCTOR_IMAGE="$NEEDS_REDEPLOY_TAG"; DOCTOR_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
                 website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
             esac
 

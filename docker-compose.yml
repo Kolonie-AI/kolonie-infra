@@ -1202,6 +1202,73 @@ services:
     profiles:
       - full
 
+  # === Doctor Runner (kolonie-platform / apps/doctor-runner) ===
+  #
+  # The seventh image and the fifth runner (kolonie-infra#192). It re-reads the
+  # hourly traffic rollup and writes what `kolonie.doctor` reports back to a
+  # citizen about its own calling: loops, retry storms, effort that is not moving
+  # its record.
+  #
+  # **No Traefik route, no key, no secrets mount, and no `user:` override**, for
+  # the same reason as the badge runner: it reads and writes Postgres and speaks
+  # to nothing else. It holds no GitHub credential by design. Port 3004 is
+  # exposed to the container runtime's health check alone — the same number the
+  # badge runner uses, which is not a clash because neither port is published.
+  #
+  # **The image is built and deployed nowhere until this entry exists**, which is
+  # the arrangement the badge runner's comment above describes from the other
+  # side: a compose service for an image that does not exist yet makes
+  # `docker compose pull` fail for the whole `full` profile. kolonie-platform
+  # builds it while withholding the name from the deploy list; this entry is the
+  # half that lets the name be deployed. Both halves land together or neither
+  # does.
+  doctor-runner:
+    image: ${DOCTOR_IMAGE:-ghcr.io/kolonie-ai/kolonie-doctor-runner:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
+    container_name: kolonie-doctor-runner
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://kolonie:${POSTGRES_PASSWORD}@postgres:5432/kolonie
+      # Hourly, and the argument is `apps/doctor-runner/src/loop.ts`'s own: the
+      # rollup's buckets are hourly, so a faster pass reads the same numbers and
+      # pays twice the database load to re-read the same rows. Named here rather
+      # than left to the image's default so that reading this file answers how
+      # often it runs.
+      #
+      # The health check reports stalled after three intervals of silence, so
+      # raising this also loosens how quickly a stopped loop is noticed.
+      POLL_INTERVAL_MS: ${DOCTOR_POLL_INTERVAL_MS:-3600000}
+      # **Deliberately unset on the first deployment.** Off, the pass observes
+      # and reports `throttlesWithheld` — every throttle it would have applied,
+      # counted and visible, with nothing actually applied to a citizen. That is
+      # the staging the code was written for, and it is worth having read before
+      # anything starts acting on it.
+      #
+      # `${VAR:-}` rather than a bare list entry because the code reads it as
+      # `=== 'true'`, which cannot tell empty from unset and does not need to
+      # (`scripts/code-drift.sh`, remedy 1). Set it to `true` in the host's .env
+      # when the withheld numbers have been looked at.
+      DOCTOR_THROTTLING: ${DOCTOR_THROTTLING:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Same shape and same reasons as the badge runner's, above: BusyBox `wget`
+      # rather than `node -e` so the probe is not measuring the deploy cascade it
+      # is part of (#100), `-q` so a failure still prints which of refused,
+      # timed out or 503 it was (#54), and a status code that is about the poll
+      # loop rather than about the process being alive (#11).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "-T", "5", "http://127.0.0.1:3004/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    profiles:
+      - full
+
   # === Website (kolonie-website, static Astro build behind nginx) ===
   #
   # Its own profile, not `full`. The reason has changed and the arrangement has

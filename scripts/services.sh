@@ -49,6 +49,7 @@ KOLONIE_SERVICES=(
     moderation-runner
     support-triage-runner
     badge-runner
+    doctor-runner
     website
 )
 
@@ -60,5 +61,6 @@ KOLONIE_SERVICE_IMAGES=(
     "moderation-runner:MODERATION_IMAGE"
     "support-triage-runner:TRIAGE_IMAGE"
     "badge-runner:BADGE_IMAGE"
+    "doctor-runner:DOCTOR_IMAGE"
     "website:WEBSITE_IMAGE"
 )
