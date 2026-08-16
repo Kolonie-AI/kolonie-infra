@@ -18,6 +18,10 @@
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The same list the scripts under test read, so the counts below move with the
+# declaration instead of being written down a second time (#107).
+# shellcheck source=scripts/services.sh
+. "$ROOT/scripts/services.sh"
 WORK=$(mktemp -d)
 BIN="$WORK/.bin"
 DEPLOY="$WORK/deploy"
@@ -73,6 +77,19 @@ WEBSITE_IMAGE=${W_REF}
 EOF
 }
 
+# Every declared service but the two these cases resolve by hand, as container
+# names. Derived rather than listed, so a service added to `services.sh` is
+# absent here without an edit and the counts below follow it.
+OTHERS=""
+for svc in "${KOLONIE_SERVICES[@]}"; do
+    case "$svc" in
+        api|website) ;;
+        *) OTHERS="${OTHERS:+$OTHERS }kolonie-$svc" ;;
+    esac
+done
+N_SERVICES=${#KOLONIE_SERVICES[@]}
+N_OTHERS=$(wc -w <<<"$OTHERS")
+
 report() {
     PATH="$BIN:$PATH" KOLONIE_DEPLOY_DIR="$DEPLOY" \
         env "$@" bash "$ROOT/scripts/pin-report.sh"
@@ -88,8 +105,8 @@ absent()   { if grep -qF -- "$2" <<<"$1"; then echo "  FAIL $3"; fail=$((fail+1)
 echo "== 1. a matching host: the record and the container agree"
 write_state
 out=$(report IDS="${A_REF}=${GOOD} kolonie-api=${GOOD} ${W_REF}=${GOOD} kolonie-website=${GOOD}" \
-             MISSING="kolonie-verifier-runner kolonie-moderation-runner kolonie-support-triage-runner kolonie-badge-runner")
-check "one row per service, upstream images excluded" "$(wc -l <<<"$out")" "6"
+             MISSING="$OTHERS")
+check "one row per service, upstream images excluded" "$(wc -l <<<"$out")" "$N_SERVICES"
 contains "$out" "api	${A_REF}	${GOOD}	${GOOD}" "api resolved on both sides"
 
 verdict=$(triage <<<"$out" 2>&1 >/dev/null)
@@ -97,25 +114,25 @@ sum=$(triage <<<"$out" 2>/dev/null); status=$?
 check "exit 0" "$status" "0"
 contains "$verdict" "VERDICT=ok" "verdict ok"
 contains "$sum" '| `api` | pinned |' "api reported as pinned"
-contains "$sum" "4 service(s) are not running" "the four absent ones are counted apart"
+contains "$sum" "$N_OTHERS service(s) are not running" "the absent ones are counted apart"
 
 echo "== 2. the 2026-08-06 failure: a container the record does not name"
 out=$(report IDS="${A_REF}=${GOOD} kolonie-api=${OTHER} ${W_REF}=${GOOD} kolonie-website=${GOOD}" \
-             MISSING="kolonie-verifier-runner kolonie-moderation-runner kolonie-support-triage-runner kolonie-badge-runner")
+             MISSING="$OTHERS")
 verdict=$(triage <<<"$out" 2>&1 >/dev/null)
 sum=$(triage <<<"$out" 2>/dev/null); status=$?
 check "exit 1 — the host, not the script" "$status" "1"
 contains "$verdict" "VERDICT=drifted" "verdict drifted"
 contains "$sum" '| `api` | drifted |' "api named as the one that disagrees"
 contains "$sum" '| `website` | pinned |' "and website is still reported as pinned"
-contains "$sum" "1 of 6 services" "counted rather than merely listed"
+contains "$sum" "1 of $N_SERVICES services" "counted rather than merely listed"
 
 echo "== 3. a container that is not running is not drift"
 # Health Watch already owns that fault and files its own issue for it. Two
 # reports for one outage is how both get skimmed.
 write_state
 out=$(report IDS="${A_REF}=${GOOD} ${W_REF}=${GOOD} kolonie-website=${GOOD}" \
-             MISSING="kolonie-api kolonie-verifier-runner kolonie-moderation-runner kolonie-support-triage-runner kolonie-badge-runner")
+             MISSING="kolonie-api $OTHERS")
 verdict=$(triage <<<"$out" 2>&1 >/dev/null)
 sum=$(triage <<<"$out" 2>/dev/null); status=$?
 check "exit 0 — an absent container is somebody else's verdict" "$status" "0"
@@ -126,7 +143,7 @@ absent "$sum" '| `api` | drifted |' "and not reported as drifted"
 echo "== 4. no deployed.env at all: unknown, and never ok"
 rm -f "$DEPLOY/state/deployed.env"
 out=$(report IDS="kolonie-api=${GOOD}" \
-             MISSING="kolonie-verifier-runner kolonie-moderation-runner kolonie-support-triage-runner kolonie-badge-runner kolonie-website")
+             MISSING="$OTHERS kolonie-website")
 contains "$out" "api	-	-	${GOOD}" "the record answers nothing and the row says so"
 verdict=$(triage <<<"$out" 2>&1 >/dev/null)
 sum=$(triage <<<"$out" 2>/dev/null); status=$?
@@ -137,7 +154,7 @@ contains "$sum" "names no image for this service" "and it says which half was mi
 echo "== 5. a recorded image this host does not hold is blindness, not agreement"
 write_state
 out=$(report IDS="kolonie-api=${GOOD} ${W_REF}=${GOOD} kolonie-website=${GOOD}" \
-             MISSING="${A_REF} kolonie-verifier-runner kolonie-moderation-runner kolonie-support-triage-runner kolonie-badge-runner")
+             MISSING="${A_REF} $OTHERS")
 verdict=$(triage <<<"$out" 2>&1 >/dev/null)
 sum=$(triage <<<"$out" 2>/dev/null)
 contains "$verdict" "VERDICT=unknown" "verdict unknown"
@@ -187,7 +204,8 @@ echo "== 11. the compose fallbacks cannot start an unpinned application containe
 # The other half of #89, and the half no stub can reach: it is a property of
 # docker-compose.yml rather than of a script. Asserted by reading the file.
 compose="$ROOT/docker-compose.yml"
-for var in API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE BADGE_IMAGE WEBSITE_IMAGE; do
+for pair in "${KOLONIE_SERVICE_IMAGES[@]}"; do
+  var=${pair#*:}
   line=$(grep -F "\${${var}:-" "$compose")
   case "$line" in
     *":latest}"*) echo "  FAIL ${var} still falls back to :latest"; fail=$((fail+1)) ;;

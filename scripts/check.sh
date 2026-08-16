@@ -34,6 +34,23 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 FAILED=()
 
+# Every `rehearse-*.sh` is named above. Written as a check rather than as a loop
+# so that a rehearsal can still be left out on purpose — but only in writing.
+#
+# It is the gap that let `rehearse-pin.sh` go red on `main`: `.github/workflows/
+# rehearse.yml` ran it, this file did not, and the check command a contributor is
+# told to run before pushing was green on a change that broke it.
+every_rehearsal_is_run() {
+  local missing=() f name
+  for f in scripts/rehearse-*.sh; do
+    name=$(basename "$f")
+    grep -qF "scripts/$name" "$0" || missing+=("$name")
+  done
+  [ ${#missing[@]} -eq 0 ] && return 0
+  echo "   not run by this file: ${missing[*]}"
+  return 1
+}
+
 step() {
   local what=$1
   shift
@@ -62,9 +79,13 @@ step "what the host publishes as resource pressure" bash scripts/rehearse-pressu
 step "the unit-drift rows" bash scripts/rehearse-unit-drift.sh
 step "a container left behind by a recreate" bash scripts/rehearse-recreate-leftover.sh
 step "the timer rows, and the window a running service opens in them" bash scripts/rehearse-timer-window.sh
+step "the pin check, against a stub docker" bash scripts/rehearse-pin.sh
+step "code-drift.sh" bash scripts/rehearse-code-drift.sh
+step "the Twilio balance alarm" bash scripts/rehearse-twilio-balance.sh
 step "every timer schedules from a calendar" bash scripts/check-timers.sh
 step "what the apex host's routers promise each other" bash scripts/check-routes.sh
 step "the deploy filter §8 quotes" bash scripts/check-deploy-paths.sh
+step "every rehearsal is run by this file" every_rehearsal_is_run
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
