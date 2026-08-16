@@ -20,9 +20,15 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$BIN"
 
 # --- the stub -------------------------------------------------------------
-# HISTORY holds the tag list GHCR would return, newest build first, one per
-# line. GH_FAILS makes the call fail outright, which is what an outage at GitHub
-# looks like and must not be reported as "no drift".
+# HISTORY holds what the jq in `sha_history` produces from GHCR's version list:
+# one `<sha>\t<created_at>` row per tagged build, newest first. The timestamp is
+# there because the grace window is measured against it (`#193`), and it is in the
+# fixture rather than defaulted in the script because GHCR always sends it — a
+# script that coped with its absence would be coping with a case only this file
+# could produce.
+#
+# GH_FAILS makes the call fail outright, which is what an outage at GitHub looks
+# like and must not be reported as "no drift".
 cat > "$BIN/gh" <<'STUB'
 #!/bin/bash
 if [ "${GH_FAILS:-}" = 1 ]; then
@@ -45,9 +51,21 @@ NEW=$(printf 'a%039d' 1)
 OLD=$(printf 'b%039d' 2)
 OLDER=$(printf 'c%039d' 3)
 STRANGER=$(printf 'd%039d' 4)
-HIST="$NEW
-$OLD
-$OLDER"
+
+# An ISO timestamp this many minutes in the past, in GHCR's own format.
+ago() { date -u -d "@$(( $(date -u +%s) - $1 * 60 ))" +%Y-%m-%dT%H:%M:%SZ; }
+
+# A build history whose newest image is $1 minutes old. Every case below except
+# the two window cases wants an image old enough that the window has passed, so
+# the default puts it two hours back and the older builds behind it.
+hist() {
+  local age="${1:-120}"
+  printf '%s\t%s\n%s\t%s\n%s\t%s\n' \
+    "$NEW" "$(ago "$age")" \
+    "$OLD" "$(ago $((age + 60)))" \
+    "$OLDER" "$(ago $((age + 120)))"
+}
+HIST="$(hist)"
 
 triage() {
   PATH="$BIN:$PATH" HISTORY="$HIST" "$@" bash "$ROOT/scripts/drift-triage.sh"
@@ -156,6 +174,54 @@ for svc in "${KOLONIE_SERVICES[@]}"; do
   out=$(printf '%s\t%s\timg\n' "$svc" "$NEW" | triage 2>/dev/null)
   absent "$out" "no GHCR package is mapped" "$svc can be placed"
 done
+
+echo "== 12. a service behind an image younger than the window is a rollout, not drift (#193)"
+# The nineteen self-closing reports in six days were all this shape, and #191 was
+# filed six seconds before the deploy it described finished. The image reaches
+# GHCR before it reaches the host; the gap between those is not a fault.
+out=$(printf 'api\t%s\timg\n' "$OLD" | PATH="$BIN:$PATH" HISTORY="$(hist 2)" \
+        bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v"); status=$?
+check "exit 0 — nothing to correct" "$status" "0"
+contains "$(cat "$WORK/v")" "VERDICT=ok" "verdict ok, so nothing is filed"
+contains "$out" "deploy in flight" "named the state"
+contains "$out" "built 2 min ago" "and said how young the image is"
+absent "$out" "behind by" "did not call a rollout drift"
+absent "$out" "The host is not serving" "and did not use the drift heading"
+contains "$out" "A deploy is in flight" "used a heading that is not 'everything is current'"
+
+echo "== 12b. the same service behind an image past the window still drifts"
+# The window delays; it does not hide. A deploy that failed leaves the image
+# ageing, and the run past the window reports exactly as it does today.
+out=$(printf 'api\t%s\timg\n' "$OLD" | PATH="$BIN:$PATH" HISTORY="$(hist 120)" \
+        bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v"); status=$?
+check "exit 1" "$status" "1"
+contains "$(cat "$WORK/v")" "VERDICT=drifted" "verdict drifted"
+contains "$out" "behind by 1" "counted the gap as before"
+absent "$out" "deploy in flight" "and did not excuse it"
+
+echo "== 12c. the window is one number, and a rehearsal can pin it"
+# Same two-minute-old image, window narrowed below it: the point is that the
+# behaviour above follows from the window rather than from the age being small.
+out=$(printf 'api\t%s\timg\n' "$OLD" | PATH="$BIN:$PATH" HISTORY="$(hist 10)" \
+        KOLONIE_DRIFT_GRACE_MINUTES=5 bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v"); status=$?
+check "exit 1 — ten minutes is outside a five-minute window" "$status" "1"
+contains "$(cat "$WORK/v")" "VERDICT=drifted" "verdict drifted"
+
+echo "== 12d. the window is measured against the oldest build a service is missing"
+# The whole risk of a grace window is the report it swallows. Here the newest
+# image is two minutes old, so a rule that asked "is the newest image young?"
+# would excuse both rows. `website` is two builds back and the first one it
+# missed landed over two hours ago: that host missed a deploy, and no rollout in
+# progress makes it current. `api` is behind by exactly that fresh image, which
+# is what the middle of a rollout looks like.
+out=$(printf 'api\t%s\timg\nwebsite\t%s\timg\n' "$OLD" "$OLDER" | PATH="$BIN:$PATH" \
+        HISTORY="$(printf '%s\t%s\n%s\t%s\n%s\t%s\n' \
+          "$NEW" "$(ago 2)" "$OLD" "$(ago 130)" "$OLDER" "$(ago 190)")" \
+        bash "$ROOT/scripts/drift-triage.sh" 2>"$WORK/v"); status=$?
+check "exit 1" "$status" "1"
+contains "$(cat "$WORK/v")" "VERDICT=drifted" "verdict drifted"
+contains "$out" "| \`api\` | deploy in flight |" "the rollout is excused"
+contains "$out" "| \`website\` | **behind by 2** |" "the missed deploy is not"
 
 echo
 echo "passed $pass, failed $fail"

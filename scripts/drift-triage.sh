@@ -36,6 +36,37 @@
 # noise: the reader learns that half the report means nothing, and then treats
 # all of it that way.
 #
+# ## Why a service behind by one is not reported for the first three quarters of an hour
+#
+# Between a push to `kolonie-platform` and the host running the image built from
+# it there is a build, a push to GHCR and a deploy — and the image reaches GHCR
+# **first**. So for the whole remainder of that chain the newest image exists and
+# the host is not running it, which is precisely the condition above. A watch on a
+# fifteen-minute cron cannot miss it, and did not: nineteen self-closing drift
+# reports in six days, mean lifetime about an hour, not one of them a state
+# anybody acted on (`#193`). The last of them was filed six seconds before the
+# deploy it was describing finished (`#191`).
+#
+# So a service is behind if it is not running the newest image **and that image
+# has had time to be deployed** — `KOLONIE_DRIFT_GRACE_MINUTES`, 45 by default.
+# An image younger than that is reported as a deploy in flight: it appears in the
+# table, it does not open an issue, and the run still exits 0.
+#
+# The failure mode of a noisy alarm is not the noise. It is the twentieth report,
+# which is real, arriving in the shape the previous nineteen taught the reader to
+# skim.
+#
+# **The window delays; it does not hide.** A deploy that failed leaves the host
+# behind an image that keeps ageing, so the next run past the window files exactly
+# as it does today. What is lost is at most 45 minutes of notice on a fault whose
+# own correction needs the maintainer anyway.
+#
+# The verdict stays `ok` while something is in flight rather than gaining a fourth
+# word, because `health-watch.yml` branches on `drifted` against everything else
+# and a deploy in progress belongs on the same side of that line as a current
+# host. Only the heading changes, so a person reading the run is not told
+# everything is current when something is mid-rollout.
+#
 # **It never deploys anything.** Detecting drift and correcting it are different
 # decisions, and the second one needs the maintainer (AGENTS.md §8).
 #
@@ -45,6 +76,19 @@
 set -uo pipefail
 
 ORG="${KOLONIE_ORG:-Kolonie-AI}"
+
+# How long an image is allowed to exist before the host is expected to be running
+# it (`#193`). Overridable so a rehearsal can pin it, and so a deploy that gets
+# slower has one number to change rather than a script to edit.
+#
+# 45 minutes is chosen against the measurement rather than picked: of the nineteen
+# reports that closed themselves, the longest-lived ordinary one was 77 minutes
+# and the median was under an hour, but every one of those lifetimes is a *cron
+# lag* — the drift ended when the next quarter-hour run noticed. The build and
+# deploy itself takes single-digit minutes. 45 covers a rollout that goes slowly,
+# a queued runner and a missed cron tick, and still files inside the hour on a
+# host that is genuinely stuck.
+GRACE_MINUTES="${KOLONIE_DRIFT_GRACE_MINUTES:-45}"
 
 # The one list of what this organisation builds images for (`#107`).
 #
@@ -81,7 +125,16 @@ package_for() {
     echo ""
 }
 
-# Every commit sha this package has been tagged with, newest build first.
+# Every commit sha this package has been tagged with, newest build first, each
+# with the time GHCR recorded for that version: `<sha>\t<created_at>`.
+#
+# The timestamp is what the grace window is measured against (`#193`), and it
+# comes from the call that was already being made — `versions` carries
+# `created_at` per version, so knowing how old the newest image is costs nothing
+# and needs no second endpoint. A cross-repository question to `kolonie-platform`
+# about whether a deploy is running would be the more precise one and was
+# rejected for that: this script's value is that it answers from GHCR and the host
+# alone.
 #
 # `latest` and the digest-only versions are dropped: the first is a mutable
 # pointer and the second is an untagged layer. What is left is the build history
@@ -119,8 +172,25 @@ sha_history() {
     # for its own loop. The file outlives it; `2>` truncates it per call, so a
     # stale reason cannot be attributed to the next package.
     raw=$(gh api --paginate "/orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
-            --jq '.[] | .metadata.container.tags[]?' 2>"$ERR_FILE" </dev/null) || return 1
-    printf '%s\n' "$raw" | grep -E '^[0-9a-f]{40}$' || return 2
+            --jq '.[] | .created_at as $at | .metadata.container.tags[]? | "\(.)\t\($at)"' \
+            2>"$ERR_FILE" </dev/null) || return 1
+    printf '%s\n' "$raw" | grep -E '^[0-9a-f]{40}	' || return 2
+}
+
+# How many minutes ago GHCR says this version was created, or the empty string if
+# that cannot be worked out.
+#
+# Empty is deliberately **not** treated as young. A timestamp this script cannot
+# read is a thing it does not know, and the safe direction for an unknown here is
+# the one that still reports: staying quiet on an age nobody established is how
+# the window would turn from a delay into a silence.
+minutes_since() {
+    local at="$1" then now
+    [ -n "$at" ] || return 0
+    then=$(date -u -d "$at" +%s 2>/dev/null) || return 0
+    now=$(date -u +%s)
+    [ "$then" -le "$now" ] || { echo 0; return 0; }
+    echo $(((now - then) / 60))
 }
 
 summary=""
@@ -137,6 +207,7 @@ trap 'rm -f "$ERR_FILE"' EXIT
 verdict="ok"
 exit_code=0
 rows=0
+in_flight=0
 
 while IFS=$'\t' read -r svc revision image; do
     [ -z "${svc:-}" ] && continue
@@ -176,7 +247,10 @@ while IFS=$'\t' read -r svc revision image; do
     # broken pipe therefore killed a step that had nothing to report but good
     # news. `verdict-out.sh` now filters the channel as well; this removes the
     # thing that needed filtering.
-    newest="${history%%$'\n'*}"
+    newest_row="${history%%$'\n'*}"
+    newest="${newest_row%%$'\t'*}"
+    # The shas alone, for placing the running revision in the history below.
+    shas="$(cut -f1 <<< "$history")"
 
     if [ "$revision" = "-" ]; then
         # No label. Every image built before kolonie-platform#75 is here, and so
@@ -199,7 +273,7 @@ while IFS=$'\t' read -r svc revision image; do
     # pipe is what raises the broken pipe, and `grep` stopping itself after the
     # first match is the same answer with no reader to go away. A here-string
     # rather than `printf |` for the same reason on the other side.
-    position="$(grep -nxF -m1 "$revision" <<< "$history" | cut -d: -f1)"
+    position="$(grep -nxF -m1 "$revision" <<< "$shas" | cut -d: -f1)"
     if [ -z "$position" ]; then
         summary="$summary
 | \`$svc\` | unknown | running \`${revision:0:7}\`, which GHCR does not list for \`$pkg\` |"
@@ -208,6 +282,27 @@ while IFS=$'\t' read -r svc revision image; do
     fi
 
     behind=$((position - 1))
+
+    # Inside the grace window this is a rollout, not a fault (`#193`). It stays in
+    # the table — a reader looking at the run should see what is moving — and it
+    # is kept out of the fingerprint and out of the exit status, which are the two
+    # things that open an issue.
+    #
+    # Measured against the **oldest build this service is missing**, not against
+    # the newest one. They are the same image for a service behind by one, which
+    # is what a rollout looks like. They are not the same for a service behind by
+    # three: there the newest image may be minutes old and the host still missed
+    # two deploys hours ago, and excusing that on the age of the newest would be
+    # the window hiding a fault rather than delaying a report of one.
+    missing_row="$(sed -n "$((position - 1))p" <<< "$history")"
+    age="$(minutes_since "${missing_row#*$'\t'}")"
+    if [ -n "$age" ] && [ "$age" -lt "$GRACE_MINUTES" ]; then
+        summary="$summary
+| \`$svc\` | deploy in flight | running \`${revision:0:7}\`, newest is \`${newest:0:7}\`, built $age min ago |"
+        in_flight=$((in_flight + 1))
+        continue
+    fi
+
     summary="$summary
 | \`$svc\` | **behind by $behind** | running \`${revision:0:7}\`, newest is \`${newest:0:7}\` |"
     fingerprint_input="$fingerprint_input$svc:$revision:$newest
@@ -229,12 +324,26 @@ fi
 # the check asserting the one thing it just said it could not determine — and a
 # reader who acts on that finds nothing wrong and stops believing the next one.
 case "$verdict" in
-    ok)      printf 'Every service is running the newest image built for it.\n\n' ;;
+    ok)
+        if [ "$in_flight" -gt 0 ]; then
+            printf 'A deploy is in flight. Nothing is behind for longer than a rollout takes.\n\n'
+        else
+            printf 'Every service is running the newest image built for it.\n\n'
+        fi
+        ;;
     drifted) printf 'The host is not serving what was last built for it.\n\n' ;;
     *)       printf 'Some services could not be placed against what was last built.\n\n' ;;
 esac
 
 printf '| Service | State | Detail |\n|---|---|---|%s\n' "$summary"
+
+if [ "$in_flight" -gt 0 ]; then
+    printf '\n`deploy in flight` is a service where the oldest build it has not got is less\n'
+    printf 'than %s minutes old — the image reaches GHCR before it reaches the host, so\n' "$GRACE_MINUTES"
+    printf 'this is what the middle of an ordinary rollout looks like (`#193`). It is not\n'
+    printf 'reported as drift and opens nothing. A deploy that failed leaves that image\n'
+    printf 'ageing, and the run past the window reports it as behind.\n'
+fi
 
 if [ "$verdict" = "drifted" ]; then
     printf '\nThis reports; it does not deploy. Correcting drift is a separate decision\n'
