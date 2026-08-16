@@ -11,8 +11,14 @@
 #
 # Writes a markdown summary to stdout, and two machine-readable lines to stderr:
 #
-#   VERDICT=ok|degraded
+#   VERDICT=ok|housekeeping|degraded
 #   FINGERPRINT=<stable digest of what is wrong>
+#
+# `housekeeping` is `degraded` with the severity taken out of it (#198): every
+# row on the table is a container a recreate left behind, so nothing is down and
+# nobody has to act tonight. It is still a finding — a leftover that is still
+# there tomorrow means a deploy failed part-way — which is why it is reported at
+# all rather than swallowed.
 #
 # The fingerprint is what keeps a watcher quiet. A stack that has been broken in
 # the same way for six hours produces the same fingerprint every run, so the
@@ -20,8 +26,10 @@
 # second. An alert channel that repeats itself every fifteen minutes is one
 # people mute, and a muted alert is worse than none — it looks like coverage.
 #
-# Exit status: 0 if everything is healthy, 1 if anything is not. Nothing here
-# fails on its own account; a non-zero exit means the stack, not the script.
+# Exit status: 0 if everything is healthy, 1 if anything is not — `housekeeping`
+# included, because the run has a finding to report either way and a caller that
+# branches on the exit code must not read it as silence. Nothing here fails on
+# its own account; a non-zero exit means the stack, not the script.
 
 set -uo pipefail
 
@@ -652,10 +660,32 @@ if [ "${#inode_problems[@]}" -gt 0 ]; then
     echo '```'
 fi
 
+# The severity follows the worst row, never the last one (#198). Every append to
+# `problems` is paired with an append to exactly one bucket, so the two counts
+# being equal is the whole of *every row on this table came from a recreate
+# leftover* — and one row from any other bucket puts it back to `degraded`,
+# whether or not a leftover is on the same host. A change that let a real outage
+# be relabelled housekeeping because a rename happened to be lying around beside
+# it would be worse than the defect this fixes.
+#
+# `kolonie-infra#197` is what this is for: one leftover row, forty healthy
+# entries under it, filed as a `p1` titled *Containers on the deploy host are
+# unhealthy* — and swept up by the same recreate that produced it, seventeen
+# minutes before anybody could read the issue. `#96` and `#183` are the same
+# shape, and the comment at the leftover row above was written to stop it
+# happening a third time. It stopped it in the body; the title, the label and
+# the alert were still the ones a real outage gets, and those are what a person
+# sees first. A `p1` that means nothing is how the next real `p1` gets muted.
+if [ "${#leftover_problems[@]}" -eq "${#problems[@]}" ]; then
+    verdict=housekeeping
+else
+    verdict=degraded
+fi
+
 # Sorted so the same set of problems in a different order is the same
 # fingerprint. Without that, two unhealthy containers would look like a new
 # situation whenever the daemon happened to list them the other way round.
-echo "VERDICT=degraded" >&2
+echo "VERDICT=$verdict" >&2
 printf 'FINGERPRINT=%s\n' "$(printf '%s\n' "${fingerprint_parts[@]}" | sort | tr '\n' ',' | sed 's/,$//')" >&2
 
 exit 1

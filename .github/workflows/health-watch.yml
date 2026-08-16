@@ -48,6 +48,13 @@ env:
   # its own record does not name*, which is the failure that hid on 2026-08-06
   # precisely because the two read alike (#89).
   PIN_ISSUE_TITLE: 'The deploy host is not running the images its own record names'
+  # The fourth thread, and the one that is deliberately not an outage (#198).
+  # `<12 hex>_<service>` is the container compose renamed out of the way and did
+  # not remove; the service it belongs to is running healthy beside it. Filed
+  # under its own title at `p2` because the title and the label are what a person
+  # sees first, and `#96`, `#183` and `#197` were all read as an outage of a
+  # service that was healthy every time.
+  LEFTOVER_ISSUE_TITLE: 'A container left behind by a recreate has not been swept up'
   # The one report that is about this workflow rather than about the host (#104).
   # It is deliberately not phrased as a host fault: what it says is that the
   # other three reports stopped being evidence, which is a claim about the
@@ -199,28 +206,63 @@ jobs:
         run: |
           set -euo pipefail
 
-          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "in:title \"$ISSUE_TITLE\"" --json number,body --limit 1)"
-          number="$(echo "$existing" | jq -r '.[0].number // empty')"
+          # Two threads and one verdict (#198). `degraded` means something is
+          # down, late or filling; `housekeeping` means every row on the table is
+          # a container a recreate left behind, so nothing is down and nobody has
+          # to act tonight. They are separate issues because they need separate
+          # titles and separate labels — the title and the `p1` are what a person
+          # sees first, and `#197` spent them on a row the body itself described
+          # as housekeeping.
+          close_if_open() {
+            local title=$1 sentence=$2 open
+            open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+            if [ -z "$open" ]; then
+              echo "nothing open under \"$title\" — saying nothing"
+              return 0
+            fi
+            printf '%s\n\n%s\n' "$sentence" "$RUN_URL" > recovered.md
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body-file recovered.md
+            gh issue close "$open" --repo "$GITHUB_REPOSITORY" \
+              --reason completed --comment "Closed automatically by Health Watch."
+            echo "closed #$open (\"$title\")"
+          }
 
           if [ "$VERDICT" = "ok" ]; then
             # Nothing wrong. The only thing that may happen is closing a report
             # that is no longer true — and if there is none, this job says
             # nothing at all. A healthy stack producing a comment every fifteen
             # minutes is how an alert channel gets muted.
-            if [ -n "$number" ]; then
-              printf '%s\n\n%s\n' \
-                'Recovered. Every container is running and none reports itself unhealthy.' \
-                "$RUN_URL" > recovered.md
-              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file recovered.md
-              gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
-                --reason completed --comment "Closed automatically by Health Watch."
-              echo "closed #$number"
-            else
-              echo "healthy, nothing open — saying nothing"
-            fi
+            close_if_open "$ISSUE_TITLE" \
+              'Recovered. Every container is running and none reports itself unhealthy.'
+            close_if_open "$LEFTOVER_ISSUE_TITLE" \
+              'The leftover is gone. The host reports no container left behind by a recreate — the next successful deploy of that service swept it up, which is what was expected to happen.'
             exit 0
           fi
+
+          if [ "$VERDICT" = "housekeeping" ]; then
+            active_title="$LEFTOVER_ISSUE_TITLE"
+            labels=(--label bug --label p2 --label area:infra)
+            # The `p1` thread closes here rather than waiting for `ok`: the real
+            # problem is over even though a row remains, and a `p1` that outlives
+            # its cause is exactly the alert people learn to skip.
+            close_if_open "$ISSUE_TITLE" \
+              'The outage is over. What is left on the host is a container a recreate did not remove — reported separately, and not an outage.'
+          else
+            active_title="$ISSUE_TITLE"
+            labels=(--label bug --label p1 --label area:infra)
+            # The leftover thread is *not* closed here, and that is the choice
+            # rather than an omission. A leftover row travels into this report
+            # too, so nothing is hidden by leaving it open — and closing it as
+            # recovered when it has merely been absorbed by a worse fault would
+            # put a false recovery on the one channel this workflow exists to
+            # keep believable. It closes on the next `ok`, when it is true.
+            :
+          fi
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$active_title\"" --json number,body --limit 1)"
+          number="$(echo "$existing" | jq -r '.[0].number // empty')"
 
           # Written to a file rather than built as a shell string. A multi-line
           # literal inside a `run: |` block has to stay indented or it ends the
@@ -234,18 +276,29 @@ jobs:
             # is concatenated rather than announced.
             cat why.out
             printf '\n<!-- health-watch-fingerprint: %s -->\n\n' "$FINGERPRINT"
-            printf 'Filed automatically by [Health Watch](%s). It closes itself when the host\n' "$RUN_URL"
-            printf 'reports every container healthy again — do not close it by hand while the\n'
-            printf 'condition holds, or the next run will simply file it again.\n\n'
-            printf 'Read this as a task with the cause open: a health check is as likely to be\n'
-            printf 'wrong as the service is to be down. In #11 the service was entirely fine and\n'
-            printf 'the check was looking at the wrong address family.\n'
+            printf 'Filed automatically by [Health Watch](%s). It closes itself when the run\n' "$RUN_URL"
+            printf 'that files it reports nothing wrong again — do not close it by hand while\n'
+            printf 'the condition holds, or the next run will simply file it again.\n\n'
+            if [ "$VERDICT" = "housekeeping" ]; then
+              # Not the sentence below it, which is about a health check that
+              # may be wrong. Nothing here is claiming a service is down, so the
+              # question this report leaves open is the other one: which deploy
+              # stopped half-way, and does it need running again.
+              printf 'Nothing is down. Every row above is a container compose renamed out of the\n'
+              printf 'way and did not remove, and the service each belongs to is running healthy\n'
+              printf 'under its own name — read its row before treating this as an outage. What is\n'
+              printf 'open is the deploy that failed part-way, not the service.\n'
+            else
+              printf 'Read this as a task with the cause open: a health check is as likely to be\n'
+              printf 'wrong as the service is to be down. In #11 the service was entirely fine and\n'
+              printf 'the check was looking at the wrong address family.\n'
+            fi
           } > body.md
 
           if [ -z "$number" ]; then
             gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title "$ISSUE_TITLE" \
-              --label bug --label p1 --label area:infra \
+              --title "$active_title" \
+              "${labels[@]}" \
               --body-file body.md
             echo "filed a new report"
             exit 0

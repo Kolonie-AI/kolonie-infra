@@ -523,6 +523,19 @@ pushed, so the host matches the newest one that exists and the check answers
 `current` while serving week-old code. That is what happened. This one compares
 against the **record**, which moves only when a deploy succeeds.
 
+**A fourth thread, and it is deliberately not a `p1` (#198).** Every service pins
+`container_name`, so compose renames the predecessor to `<12 hex>_<name>` before
+recreating it, and a deploy that fails part-way leaves that rename behind. A
+report whose problem rows are *all* of that shape is filed as *A container left
+behind by a recreate has not been swept up*, at `p2`, under its own verdict
+`housekeeping` — nothing is down, and the service is running healthy beside the
+leftover under its own name. It is still filed, because a leftover still there
+tomorrow means a deploy stopped half-way. One row of any other kind on the same
+table puts the whole report back under *Containers on the deploy host are
+unhealthy* at `p1`: the severity follows the worst row. `#96`, `#183` and `#197`
+were each read as an outage of `badge-runner`, healthy all three times, which is
+how a `p1` stops being read at all.
+
 **`--remove-orphans` is conditional.** It is passed only on a full deploy where
 every application image was reachable. That flag deletes every container absent
 from the compose view it is given, and two things make that view incomplete: a
