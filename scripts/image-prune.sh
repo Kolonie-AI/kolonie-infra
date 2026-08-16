@@ -59,6 +59,14 @@
 # that is going well. Set 1 and set 2 are therefore protected outright, and the
 # margin is for the case nobody wrote down.
 #
+# ## The one thing here that is not an image (#188)
+#
+# A deploy that fails part-way leaves a renamed container behind, and nothing
+# else in this repository removes it. It is swept here, last, and only ever
+# here — never from `deploy.sh`, because a failed deploy's leftover is the only
+# artefact of the failure that outlives the run log. The section at the foot of
+# this script carries the whole argument.
+#
 # Usage, on the deploy host:
 #   ./scripts/image-prune.sh                 remove what is not protected
 #   ./scripts/image-prune.sh --dry-run       say what it would remove, change nothing
@@ -67,6 +75,8 @@
 #   KEEP_BUILDS   builds kept per application repository (default 5)
 #   DEPLOY_DIR    where state/deployed.env lives (default /opt/kolonie)
 #   IMAGE_PRUNE_STATE_DIR  status directory (default /var/lib/kolonie)
+#   COMPOSE_PROJECT  compose project a leftover must belong to (default: the
+#                 basename of DEPLOY_DIR, which is where compose gets its own)
 #
 # Exit status:
 #   0  the prune ran, whether or not it had anything to remove
@@ -276,6 +286,71 @@ dangling=$("${DOCKER[@]}" images -f dangling=true -q | sort -u | wc -l)
 echo "Dangling images:               $dangling"
 if [[ "$DRY_RUN" == no && "$dangling" -gt 0 ]]; then
     "${DOCKER[@]}" image prune -f >/dev/null 2>&1 || true
+fi
+
+# ---------------------------------------------------------------------------
+# Containers a failed recreate left behind (#188).
+#
+# Every service pins `container_name`, so compose cannot recreate one without
+# first renaming its predecessor to `<12 hex>_<name>`. A deploy that fails
+# part-way leaves that rename on the host, and nothing in this repository has
+# ever removed it: `rollback()` deliberately never passes `--remove-orphans`,
+# and the three sets above reason about stopped containers in order to
+# *protect* their images. Filed twice as an outage of a service that was
+# healthy both times (#96, #183); what cleared it on both occasions was the
+# next successful deploy, which is not something a host with no further deploy
+# of that service ever gets.
+#
+# **Here rather than in deploy.sh, which is the question #188 asked.** A sweep
+# after a successful `up -d` removes only what that deploy has already
+# replaced, so it closes nothing; the gap is the host that does not deploy
+# that service again, and a weekly sweeper is the only thing that visits it.
+# A *failed* deploy sweeps nothing at all — the leftover is the one artefact
+# of what went wrong that outlives the run log, and #183 was looked at two
+# days after the log had expired.
+#
+# **Last, after the images, and that ordering is load-bearing.** The protected
+# sets were computed at the top of this run, so a container removed here
+# cannot cost its own image the protection it was granted minutes ago. That
+# image becomes a candidate no earlier than next week's run, with a full cycle
+# of grace and a rollback margin still in front of it.
+#
+# All three conditions must hold, because any two of them describe something
+# somebody may be keeping: the recreate-shaped name, a state that is not
+# `running`, and this project's own compose label. No `--force` and no `-v`,
+# on the same grounds as the image removals above — a removal Docker refuses
+# is a removal this script was wrong about.
+# ---------------------------------------------------------------------------
+# Compose names a project after the directory its file sits in, which on the
+# deploy host is `/opt/kolonie`. Deriving it rather than hardcoding it means a
+# host that names the project something else sweeps nothing instead of
+# sweeping somebody else's container, and the count below says so out loud.
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-$(basename "$DEPLOY_DIR")}"
+
+leftovers=()
+while IFS=$'\t' read -r name state project; do
+    [[ -n "$name" ]] || continue
+    [[ "$name" =~ ^[0-9a-f]{12}_kolonie- ]] || continue
+    [[ "$state" == created || "$state" == exited ]] || continue
+    [[ -n "$project" && "$project" == "$COMPOSE_PROJECT" ]] || continue
+    leftovers+=("$name")
+done < <("${DOCKER[@]}" ps -a \
+         --format '{{.Names}}\t{{.State}}\t{{.Label "com.docker.compose.project"}}' \
+         2>/dev/null || true)
+
+leftover_count=${#leftovers[@]}
+echo "Leftover containers:           $leftover_count"
+if [[ "$leftover_count" -gt 0 ]]; then
+    for name in "${leftovers[@]}"; do
+        live=${name#*_}
+        if [[ "$DRY_RUN" == yes ]]; then
+            echo "  would remove $name — left behind by a recreate of $live"
+        elif "${DOCKER[@]}" rm "$name" >/dev/null 2>&1; then
+            echo "  removed $name — left behind by a recreate of $live"
+        else
+            echo "  refused by Docker, left alone: $name"
+        fi
+    done
 fi
 
 echo

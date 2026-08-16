@@ -69,12 +69,30 @@ row() { # repo tag id createdAt digest
   # new one held by nothing. The old one is in no other protected set.
   row "$GH/kolonie-moderation-runner" f0000011 "$(id e 1)" "2026-07-02 12:00:00 +0000 UTC" "$(dg e 1)"
   row "$GH/kolonie-moderation-runner" f0000012 "$(id e 2)" "2026-08-07 09:00:00 +0000 UTC" "$(dg e 2)"
+  # kolonie-badge-runner: the build both halves of a half-finished recreate hold
+  # — the live container and the leftover beside it (#188).
+  row "$GH/kolonie-badge-runner" f0000013 "$(id g 1)" "2026-08-07 09:00:00 +0000 UTC" "$(dg g 1)"
 } > "$WORK/images"
 
+# One line per container: id, the image it holds, its name, its state, and the
+# compose project it belongs to. The last three exist for #188: the sweep reads
+# all three and a container that fails any one of them is somebody's to keep.
 {
-  printf 'c1\tsha256:%s\n' "$(id a 1)"
-  printf 'c2\tsha256:%s\n' "$(id b 1)"
-  printf 'c3\tsha256:%s\n' "$(id e 1)"
+  printf 'c1\tsha256:%s\tkolonie-api\trunning\tkolonie\n'                "$(id a 1)"
+  printf 'c2\tsha256:%s\tkolonie-website\trunning\tkolonie\n'            "$(id b 1)"
+  # An ordinary stopped container. Nothing about it is recreate-shaped, and a
+  # sweep that reached it would be removing something somebody may start.
+  printf 'c3\tsha256:%s\tkolonie-moderation-runner\texited\tkolonie\n'   "$(id e 1)"
+  # The leftover, in the shape #96 and #183 arrived in, beside the live one it
+  # was renamed out of the way for.
+  printf 'c4\tsha256:%s\tf16be25a578c_kolonie-badge-runner\texited\tkolonie\n' "$(id g 1)"
+  printf 'c5\tsha256:%s\tkolonie-badge-runner\trunning\tkolonie\n'       "$(id g 1)"
+  # Recreate-shaped, this project's name in it — and another project's label.
+  # A name is not ownership, which is why the label is one of the three.
+  printf 'c6\tsha256:%s\t0123456789ab_kolonie-verifier-runner\texited\tsomebody-else\n' "$(id a 2)"
+  # Recreate-shaped and *running*. Compose renames before it recreates, so this
+  # is what the leftover looks like for the seconds before the deploy finishes.
+  printf 'c7\tsha256:%s\tabcdef012345_kolonie-api\trunning\tkolonie\n'   "$(id a 1)"
 } > "$WORK/containers"
 
 printf '%s\n%s\n' "$(id f 1)" "$(id f 2)" > "$WORK/dangling"
@@ -90,8 +108,27 @@ full() { printf 'sha256:%s\n' "$1"; }
 case "$1" in
   info) exit "${STUB_INFO_FAILS:-0}" ;;
 
-  ps)   # only `ps -aq` is ever asked for
-        cut -f1 "$CONTAINERS" ;;
+  ps)   # `ps -aq` for the protected set, and `ps -a --format` for #188's sweep.
+        shift
+        fmt=""
+        while [ $# -gt 0 ]; do
+          case "$1" in --format) fmt="$2"; shift ;; esac
+          shift
+        done
+        if [ -z "$fmt" ]; then cut -f1 "$CONTAINERS"; exit 0; fi
+        while IFS=$'\t' read -r cid img nm st proj; do
+          out="$fmt"
+          out=${out//'{{.Names}}'/$nm}
+          out=${out//'{{.State}}'/$st}
+          out=${out//'{{.Label "com.docker.compose.project"}}'/$proj}
+          printf '%b\n' "$out"
+        done < "$CONTAINERS" ;;
+
+  rm)   # A container removal, which is a different verb from `image rm` and is
+        # recorded under its own prefix so the two cannot be confused.
+        printf 'RM %s\n' "$2" >> "$REMOVED"
+        [ "$2" = "${STUB_RM_CONTAINER_REFUSES:-}" ] && exit 1
+        exit 0 ;;
 
   inspect)
         # inspect --format <fmt> <ref>
@@ -297,12 +334,52 @@ contains "$(removed)" "PRUNED-DANGLING" "dangling prune ran"
 PRUNE_ARGS=--dry-run KEEP_BUILDS=3 prune >/dev/null 2>&1
 absent "$(removed)" "PRUNED-DANGLING" "and not under --dry-run"
 
-echo "== 13. an unknown argument is refused rather than ignored"
+echo "== 13. a leftover from a failed recreate is swept, and nothing beside it (#188)"
+# Three conditions, and each of c3, c6 and c7 fails exactly one of them. A sweep
+# that tested two would take one of the three, which is why they are here.
+out=$(COMPOSE_PROJECT=kolonie KEEP_BUILDS=3 prune 2>&1); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "Leftover containers:           1" "counted one"
+contains "$(removed)" "RM f16be25a578c_kolonie-badge-runner" "the leftover was removed"
+check "and it was the only container removed" "$(grep -c '^RM ' "$WORK/removed")" "1"
+absent "$(removed)" "RM kolonie-moderation-runner" "an ordinary stopped container was not touched"
+absent "$(removed)" "RM 0123456789ab_kolonie-verifier-runner" "nor one carrying another project's label"
+absent "$(removed)" "RM abcdef012345_kolonie-api" "nor a recreate-shaped one that is still running"
+
+echo "== 14. the sweep runs after the images, so this run cannot strip its own protection"
+# The protected sets are computed at the top of the run. Removing the leftover
+# last means the image it held keeps the protection it was granted minutes ago,
+# and becomes a candidate no earlier than next week — with the margin still in
+# front of it. A sweep placed before the scan would delete both in one pass.
+absent "$(removed)" "$GH/kolonie-badge-runner:f0000013" "the leftover's image survived the run that removed the leftover"
+
+echo "== 15. --dry-run names the leftover and removes nothing"
+out=$(PRUNE_ARGS=--dry-run COMPOSE_PROJECT=kolonie KEEP_BUILDS=3 prune 2>&1); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "would remove f16be25a578c_kolonie-badge-runner" "said which"
+contains "$out" "left behind by a recreate of kolonie-badge-runner" "and named the live one it belongs to"
+check "nothing removed" "$(grep -c '^RM ' "$WORK/removed" || true)" "0"
+
+echo "== 16. a compose project that is not this one sweeps nothing"
+# Fail-safe by design: a host whose project is named something else removes no
+# container at all rather than reaching for one it does not own, and the count
+# says so rather than the run going quiet.
+out=$(COMPOSE_PROJECT=kolonie-staging KEEP_BUILDS=3 prune 2>&1); status=$?
+contains "$out" "Leftover containers:           0" "found none to sweep"
+check "nothing removed" "$(grep -c '^RM ' "$WORK/removed" || true)" "0"
+
+echo "== 17. a container removal the daemon refuses is reported, not fatal"
+out=$(STUB_RM_CONTAINER_REFUSES=f16be25a578c_kolonie-badge-runner \
+      COMPOSE_PROJECT=kolonie KEEP_BUILDS=3 prune 2>&1); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "refused by Docker, left alone: f16be25a578c_kolonie-badge-runner" "named it and carried on"
+
+echo "== 18. an unknown argument is refused rather than ignored"
 out=$(PRUNE_ARGS=--force KEEP_BUILDS=3 prune 2>&1); status=$?
 check "exit 1" "$status" "1"
 contains "$out" "unknown argument" "named it"
 
-echo "== 14. no writable status directory means no deletion"
+echo "== 19. no writable status directory means no deletion"
 out=$(IMAGE_PRUNE_STATE_DIR="$WORK/missing" KEEP_BUILDS=3 prune 2>&1); status=$?
 check "exit 1" "$status" "1"
 check "nothing removed" "$(wc -l < "$WORK/removed" | tr -d ' ')" "0"
