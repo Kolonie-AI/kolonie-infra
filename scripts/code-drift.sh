@@ -70,6 +70,18 @@
 # and fails it. That is `env-drift.sh`'s own rule — severity matches consequence
 # — applied to the third leg.
 #
+# ## An app compose does not run is not production
+#
+# `apps/doctor-runner` is built and tested and has no service in
+# `docker-compose.yml` (`kolonie-infra#192`, still an open decision). Every name
+# it reads is absent from compose because *it* is, so calling one of them
+# "permanently empty in production" is false twice over — nothing of it runs in
+# production, and adding the variable to compose is not what would fix that.
+#
+# Those names are listed under their own heading and do not fail the run
+# (`#194`). One deployed reader is enough to keep a name a finding, and a name
+# this check cannot attribute to any app stays a finding too.
+#
 # ## Why it runs here and not in kolonie-platform
 #
 # The comparison spans two repositories: the code is `kolonie-platform`, the
@@ -335,7 +347,13 @@ DYNAMIC="$(mktemp)"
 HELPER_DEFAULTED="$(mktemp)"
 HELPER_PARAMS="$(mktemp)"
 HELPERS_SEEN="$(mktemp)"
-trap 'rm -f "$READ_NAMES" "$UNRESOLVED" "$DYNAMIC" "$HELPER_DEFAULTED" "$HELPER_PARAMS" "$HELPERS_SEEN" 2>/dev/null || true' EXIT
+# The helper list is wanted twice — here, and again when a name has to be
+# attributed to an app (`#194`). `env_helpers` walks every definition file with
+# awk, so it is run once and read from a file rather than called twice.
+HELPERS_LIST="$(mktemp)"
+trap 'rm -f "$READ_NAMES" "$UNRESOLVED" "$DYNAMIC" "$HELPER_DEFAULTED" "$HELPER_PARAMS" "$HELPERS_SEEN" "$HELPERS_LIST" 2>/dev/null || true' EXIT
+
+env_helpers > "$HELPERS_LIST"
 
 # One hop, before the identifiers are classified: a name reached this way is a
 # name the code reads, and its helper's parameter is then not an unknown.
@@ -352,7 +370,7 @@ while IFS=$'\t' read -r fn param file; do
         printf '%s\n' "$param" >> "$HELPER_PARAMS"
         printf '%s reads whatever %s it is handed, in %s\n' "$fn" "$param" "${file#$PLATFORM/}" >> "$HELPERS_SEEN"
     fi
-done < <(env_helpers)
+done < "$HELPERS_LIST"
 
 sort -u -o "$HELPER_DEFAULTED" "$HELPER_DEFAULTED"
 sort -u -o "$HELPER_PARAMS" "$HELPER_PARAMS"
@@ -429,6 +447,84 @@ passed_by_compose() {
 PASSED="$(passed_by_compose)"
 
 # ---------------------------------------------------------------------------
+# Which apps compose actually runs, and which app a name is read by.
+#
+# **The headline sentence is "read by the deployed code", and for one app it was
+# not true** (`#194`). `apps/doctor-runner` is built and tested and has no
+# service in `docker-compose.yml` at all — that is `#192`, an open decision, not
+# a wiring mistake. Every name it reads is therefore absent from compose by
+# construction, and reporting one of them as *permanently empty in production*
+# says something false in both halves: nothing of it runs in production, and
+# adding the variable to compose would not be the fix.
+#
+# The cost of getting this wrong is not the wrong word. It is that `code-drift`
+# then fails on every run for a reason nobody can act on, and a check that is
+# permanently red is a check whose next finding — a real one — arrives in a
+# colour the reader has stopped looking at. `SMS_COLONY_NUMBER` is the finding
+# this instrument exists to catch, and it has to be able to go from green.
+#
+# **Compose is the authority, not `services.sh`.** That file is the one list of
+# what this organisation *builds* (`#149`), and building is not the question
+# here: an image that exists and is never run is exactly the case this
+# distinguishes. `scripts/check-services.sh` already fails when the two
+# disagree, so reading compose costs nothing in accuracy and answers the
+# question actually being asked.
+# ---------------------------------------------------------------------------
+
+# The service names under `services:`, and nothing from `volumes:` or
+# `networks:` — which are indented identically and would otherwise arrive as
+# services called `postgres_data` and `kolonie`.
+compose_services() {
+    awk '
+      /^[a-z]/ { in_services = ($0 ~ /^services:[[:space:]]*$/); next }
+      in_services && match($0, /^  [a-z][a-z0-9_-]*:[[:space:]]*$/) {
+        sub(/:[[:space:]]*$/, ""); sub(/^  /, ""); print
+      }
+    ' "$COMPOSE" | sort -u
+}
+
+COMPOSE_SERVICES="$(compose_services)"
+
+# Whether `apps/<name>` is run by one of them. The image an app is built into
+# carries the app's own directory name, so the two are compared directly rather
+# than through a second mapping kept in this file.
+deployed_app() {
+    printf '%s\n' "$COMPOSE_SERVICES" | grep -qxF "$1"
+}
+
+# Which apps read one name, by every shape the check knows how to read it in.
+#
+# `grep -l` rather than the `-h` the scanners use: this is the one question in
+# the script where the filename *is* the answer, and it is asked only of names
+# compose does not pass — a handful per run, not the whole surface.
+apps_reading() {
+    local name="$1"
+    {
+        # `process.env['NAME']`, `env["NAME"]`, `process.env.NAME`
+        printf '%s\n' "$SOURCE_FILES" |
+            { xargs grep -lE "env(\[[\"']${name}[\"']\]|\.${name}\b)" 2>/dev/null || true; }
+
+        # `env[SOME_CONST]`, where the constant holds this name.
+        while IFS= read -r identifier; do
+            [ -n "$identifier" ] || continue
+            [ "$(resolve_constant "$identifier")" = "$name" ] || continue
+            printf '%s\n' "$SOURCE_FILES" |
+                { xargs grep -lE "env\[${identifier}\]" 2>/dev/null || true; }
+        done < <(constant_reads)
+
+        # The call site of a helper that reads whatever it is handed (`#93`).
+        # `helper_reads` is asked rather than re-implemented, so a name reached
+        # one hop away is attributed by the same rules that found it.
+        while IFS=$'\t' read -r fn _ file; do
+            [ -n "$fn" ] || continue
+            if cut -f1 < <(helper_reads "$fn" "$file") | grep -qxF "$name"; then
+                printf '%s\n' "$file"
+            fi
+        done < "$HELPERS_LIST"
+    } | sed -n -E "s#^${PLATFORM}/apps/([^/]+)/.*#\1#p" | sort -u
+}
+
+# ---------------------------------------------------------------------------
 # Whether a read carries its own fallback.
 #
 # `??` or `||` on the same line as the read. Line-scoped rather than
@@ -480,6 +576,7 @@ echo
 
 INERT=""
 DEFAULTED=""
+UNDEPLOYED=""
 
 while IFS= read -r name; do
     [ -n "$name" ] || continue
@@ -488,6 +585,36 @@ while IFS= read -r name; do
     if allowed "$name" || has_default "$name" || has_default_via_constant "$name" ||
         grep -qxF "$name" "$HELPER_DEFAULTED"; then
         DEFAULTED="${DEFAULTED}${name}"$'\n'
+        continue
+    fi
+
+    # Not passed, and no default this check can see. Whether that is a fault
+    # depends on whether anything runs the code that reads it (`#194`).
+    #
+    # **One deployed reader is enough to keep it a fault**, which is the
+    # direction that matters: a name read by both `apps/api` and an undeployed
+    # app is inert in production exactly as if the second app did not exist, and
+    # a rule that excused it would be this window hiding a finding rather than
+    # classifying one.
+    #
+    # **An unattributable name stays a fault too.** If `apps_reading` comes back
+    # empty the check has failed to place a read it nevertheless found, and the
+    # safe direction for something it does not know is the one that still
+    # reports — the same call `minutes_since` makes in `drift-triage.sh`.
+    # `|| true` because an empty answer is a real one and `grep` inside says so
+    # with an exit code — and under `set -e` a failing command substitution ends
+    # the script mid-report, which is how this arrived as five lines of header
+    # and nothing else the first time it ran.
+    readers="$(apps_reading "$name" || true)"
+    undeployed_only=1
+    [ -n "$readers" ] || undeployed_only=0
+    while IFS= read -r app; do
+        [ -n "$app" ] || continue
+        deployed_app "$app" && undeployed_only=0
+    done <<< "$readers"
+
+    if [ "$undeployed_only" = 1 ]; then
+        UNDEPLOYED="${UNDEPLOYED}${name} — read by $(tr '\n' ' ' <<< "$readers" | sed 's/ *$//')"$'\n'
     else
         INERT="${INERT}${name}"$'\n'
     fi
@@ -510,6 +637,15 @@ report "read by the deployed code, never passed by compose, and carrying NO in-c
 [ -n "${INERT//[$'\n' ]/}" ] && FAILED=1
 
 report "absent from compose but carrying an in-code default — deliberate, and listed so a reader can tell the two apart:" "$DEFAULTED"
+
+if [ -n "${UNDEPLOYED//[$'\n' ]/}" ]; then
+    report "read only by an app no service in docker-compose.yml runs — built, not deployed, so compose has nothing to pass it to and this is not drift:" "$UNDEPLOYED"
+    echo "  A name here becomes a finding the moment its app gets a compose service,"
+    echo "  which is the right order: the variable is part of deploying the app, not a"
+    echo "  wiring gap in something already running. \`kolonie-infra#192\` is the open"
+    echo "  decision for \`doctor-runner\`."
+    echo
+fi
 
 if [ -s "$DYNAMIC" ]; then
     report "read through a runtime value rather than a name — this check cannot say what those are, and there is nothing to compare:" "$(cat "$DYNAMIC")"

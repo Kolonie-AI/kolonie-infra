@@ -291,6 +291,76 @@ check "exit 0" "$status" "0"
 absent "$out" "Canary" "a name that is not a variable did not become one"
 absent "$out" "nobody" "nor the other"
 
+echo "== 11f. a name read only by an app compose does not run is not drift (#194)"
+# `apps/doctor-runner` is built and tested and has no compose service at all
+# (`#192`). "Read by the deployed code and permanently empty in production" is
+# false in both halves for every name it reads, and a check that is permanently
+# red for a reason nobody can act on is one whose next real finding arrives in a
+# colour the reader has stopped looking at.
+platform
+mkdir -p "$WORK/platform/apps/doctor-runner/src"
+cat > "$WORK/platform/apps/doctor-runner/src/main.ts" <<'TS'
+const throttling = process.env['DOCTOR_THROTTLING'] === 'true'
+TS
+compose_with DATABASE_URL
+out=$(drift); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "no service in docker-compose.yml runs" "used the heading that says why"
+contains "$out" "DOCTOR_THROTTLING — read by doctor-runner" "named the name and the app that reads it"
+contains "$out" "OK" "and did not fail the run"
+
+echo "== 11g. the same name read by a deployed service still fails"
+# The other direction, and it is the one that matters: this must not become a
+# way for a real finding to be excused.
+cat > "$WORK/platform/apps/api/src/server.ts" <<'TS'
+const throttling = process.env['DOCTOR_THROTTLING'] === 'true'
+TS
+out=$(drift); status=$?
+check "exit 1" "$status" "1"
+contains "$out" "DRIFT" "reported as drift"
+absent "$out" "read by doctor-runner api" "not excused because one of its two readers is undeployed"
+
+echo "== 11h. and it fails again the moment the app gets a compose service"
+# Adding the service is `#192`. When it lands, the variable stops being out of
+# scope and starts being part of deploying the app — with no edit here.
+rm -f "$WORK/platform/apps/api/src/server.ts"
+{
+    echo 'services:'
+    echo '  api:'
+    echo '    environment:'
+    echo '      DATABASE_URL: ${HOST_DATABASE_URL:-}'
+    echo '  doctor-runner:'
+    echo '    environment:'
+    echo '      DATABASE_URL: ${HOST_DATABASE_URL:-}'
+} > "$WORK/compose.yml"
+out=$(drift); status=$?
+check "exit 1" "$status" "1"
+contains "$out" "DOCTOR_THROTTLING" "named it"
+absent "$out" "no service in docker-compose.yml runs" "and no longer under the undeployed heading"
+
+echo "== 11i. volumes and networks are not services"
+# They are indented identically to a service. Reading them as one would make
+# `apps/postgres_data` deployed, which is nothing, and the failure would be
+# silent in the direction that excuses findings.
+platform
+mkdir -p "$WORK/platform/apps/kolonie/src"
+cat > "$WORK/platform/apps/kolonie/src/main.ts" <<'TS'
+const x = process.env['ONLY_HERE']
+TS
+{
+    echo 'networks:'
+    echo '  kolonie:'
+    echo 'volumes:'
+    echo '  postgres_data:'
+    echo 'services:'
+    echo '  api:'
+    echo '    environment:'
+    echo '      DATABASE_URL: ${HOST_DATABASE_URL:-}'
+} > "$WORK/compose.yml"
+out=$(drift); status=$?
+check "exit 0" "$status" "0"
+contains "$out" "read by kolonie" "a network name did not make an app deployed"
+
 echo "== 12. it refuses a path that is not a platform checkout"
 out=$(COMPOSE_FILE="$WORK/compose.yml" bash "$ROOT/scripts/code-drift.sh" "$WORK/nowhere" 2>&1); status=$?
 check "exit 1" "$status" "1"
