@@ -1305,6 +1305,38 @@ for v in TELEGRAM_OPERATOR_BOT_TOKEN TELEGRAM_OPERATOR_BOT_USERNAME TELEGRAM_WEB
     "$(grep -qE "^#?$v=" "$ROOT/.env.example" && echo yes || echo no)" "yes"
 done
 
+echo "== 29. no deploy removes a container, and a failed one least of all (#188)"
+# A recreate renames the container it is replacing to `<12 hex>_<name>`, and a
+# deploy that fails part-way leaves that rename on the host. #188 asked where
+# the sweep belongs; the answer is `image-prune.sh`, and this case is the half
+# of it that has to be asserted *here*, because it is a statement about what
+# `deploy.sh` does not do.
+#
+# **A failed deploy sweeps nothing on purpose.** The leftover is the only
+# artefact of the failure that outlives the run log — #183 was looked at two
+# days after the log had expired — so the script that owns the rollback is the
+# last place that may remove it. The weekly sweeper does, a full cycle later,
+# with the rollback margin still in front of it.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+run_deploy env > /dev/null 2>&1
+absent "$(cat "$WORK/docker.log")" "docker rm " "a successful deploy removed no container"
+
+mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
+BADGE_IMAGE=ghcr.io/kolonie-ai/kolonie-badge-runner@sha256:$(printf %064d 6)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env FAIL_UP=1)
+contains "$out" "Rollback completed" "the deploy failed and rolled back, as this case needs it to"
+absent "$(cat "$WORK/docker.log")" "docker rm " "and the rollback removed no container either"
+absent "$(grep 'up -d' "$WORK/docker.log" | tail -n1)" "--remove-orphans" "nor did its own up -d pass --remove-orphans, which would have taken the leftover as an orphan"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
