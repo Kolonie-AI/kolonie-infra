@@ -7,8 +7,8 @@
 #
 # `kolonie.ai` is split between two services. `website` serves the static Astro
 # site and answers `Host(`kolonie.ai`)` with nothing else, so it is the
-# **catch-all**; `atlas` and `profile` take a path prefix each and hand it to the
-# API. That arrangement is correct only while the prefixed routers outrank the
+# **catch-all**; `atlas`, `profile` and `playbooks` take a path prefix each and
+# hand it to the API. That arrangement is correct only while the prefixed routers outrank the
 # catch-all, and Traefik defaults a router's priority to **the length of its
 # rule**.
 #
@@ -163,7 +163,7 @@ echo "the API answers for its own paths, including when the answer is 404"
 # An `errors` middleware on these routers would replace *no citizen by that name*
 # with a proxy error page, which is a different claim: the first says the handle
 # is free, the second says the site is broken.
-for router in atlas profile; do
+for router in atlas profile playbooks; do
     block=$(grep -vE '^[[:space:]]*#' "$ROUTES" |
         awk -v want="$router" '
             $0 ~ "^[[:space:]]*" want ":[[:space:]]*$" { inside = 1; next }
