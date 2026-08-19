@@ -23,6 +23,25 @@ NoNewPrivileges=true
 # it did not rewrite is the *previous* verdict, and the next elapse is five
 # minutes away. What must not happen is a unit retrying in a tight loop against a
 # daemon that is already struggling.
+# **A pass that hangs must fail, not stall the timer** (`#222`).
+#
+# systemd will not schedule the next elapse of a timer whose service is still
+# active — the same mechanism `kolonie-image-prune.service` writes down for
+# `#65`. Without a bound here, one hung pass stops this host's disk, inode and
+# backup watchers for as long as it hangs, and `#221` showed the shape: the timer
+# reports active, enabled and last-run-successful the whole time.
+#
+# 240 seconds. Under the 300-second interval, so the next elapse is always
+# schedulable. Four times the worst pass measured on the deploy host on
+# 2026-08-19 — 58.2s, 55.1s, 52.6s, 50.2s, 49.9s over six hours — so an
+# ordinarily slow pass is not killed.
+#
+# A killed pass is the right outcome and the reason the number is not simply
+# raised until nothing fails: `pressure-report.sh` publishes a keyword and
+# UptimeRobot alarms on its absence, so a timeout leaves the file unrefreshed and
+# the alarm fires. Loud failure is the design; a stalled timer is the silent one.
+TimeoutStartSec=240
+
 Restart=no
 
 [Install]
