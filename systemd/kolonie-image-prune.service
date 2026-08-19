@@ -16,10 +16,23 @@ Type=oneshot
 ExecStart=/opt/kolonie/scripts/image-prune.sh
 StateDirectory=kolonie
 
-# The margin is deliberately larger than the number of builds a busy day
-# produces between two runs, so a weekly prune never has to reason about how
-# many deploys happened since the last one.
-Environment=KEEP_BUILDS=5
+# The margin is one day of builds, so a daily prune never removes an image built
+# on the day it runs.
+#
+# It was 5 until `#218`, and the intent written here then — *larger than the
+# number of builds a busy day produces between two runs* — no longer matched the
+# number. Measured on the deploy host on 2026-08-19: about 50 builds per
+# repository per day, so five builds is roughly two hours.
+#
+# Weekly pruning hid that. Between two Sunday passes several hundred images
+# accumulated and the deep history was there whether or not this margin was
+# generous; a daily pass makes it the binding constraint for the first time.
+#
+# Fifty costs about 26 GB of steady state at roughly 75 MB of unshared layers per
+# image — 350 images across seven repositories — on a 96 GB partition that grows
+# 23 GB a day. Peak stays near half, well under the 85 % the pressure report
+# alarms on.
+Environment=KEEP_BUILDS=50
 
 # It reads the deploy records and writes image-prune.env under /var/lib/kolonie
 # after success. StateDirectory keeps root-owned runtime state out of the Git
@@ -28,7 +41,7 @@ ProtectHome=true
 NoNewPrivileges=true
 
 # A prune that could not run is not an incident on the day it happens — the
-# partition fills over weeks, not hours, and the next pass will try again. What
+# partition fills over days rather than hours, and the next pass will try again. What
 # must not happen is a unit retrying in a tight loop against a daemon that is
 # already struggling for space.
 Restart=no

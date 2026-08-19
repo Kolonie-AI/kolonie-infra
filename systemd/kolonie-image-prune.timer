@@ -1,20 +1,31 @@
 [Unit]
-Description=Weekly prune of superseded application images (kolonie-infra#91)
-# Weekly, and the interval is an argument rather than a default.
+Description=Daily prune of superseded application images (kolonie-infra#91, #218)
+# Daily, and the interval is an argument rather than a default.
 #
-# Measured on 2026-08-07: roughly 45 commits a day across the two application
-# repositories, each leaving one tagged image of ~373 MB whose layers are mostly
-# shared. The partition took months to reach 85 % of 96 GB, so the unit of this
-# problem is the week and not the hour. A daily prune would remove the same
-# images a week later at seven times the churn, and an hourly one would fight
-# the deploy it is running beside.
+# It was weekly until `#218`, on a measurement taken on 2026-08-07: roughly 45
+# commits a day across *two* application repositories, and a partition that took
+# months to reach 85 % of 96 GB. Both halves of that have been overtaken by the
+# Colony's own throughput.
 #
-# The other direction bounds it: at the observed rate a fortnight is enough to
-# make the reclaim large and the run long, and a prune long enough to overlap a
-# deploy is a prune arguing with `docker pull` over the same image store.
+# Measured on the deploy host on 2026-08-19, three days after the previous run:
+# 950 images and 71.48 GB, of which 65.03 GB reclaimable, on a disk at 75 %.
+# Seven repositories now, not two — 182 images for kolonie-api and about 150 for
+# each of five runners. Roughly 300 images and 23 GB a day.
+#
+# At that rate the weekly cadence needs about 160 GB of headroom on a 96 GB
+# partition, so it reaches the pressure threshold before its own next pass. The
+# mechanism was never the problem: the run on 2026-08-16 took the disk from 79 %
+# to 12 % in 42 minutes. A daily pass removes about 300 images instead of 985,
+# which is also the shorter run.
+#
+# The other direction still bounds it: an hourly prune would fight the deploy it
+# runs beside over the same image store.
 
 [Timer]
-OnCalendar=Sun 04:00
+OnCalendar=*-*-* 03:30
+# 03:30 because the backup finishes at 03:00:42 — measured 2026-08-19, 39
+# seconds of wall clock — so this has the host to itself.
+#
 # A pass skipped because the host was down still matters — the disk did not stop
 # filling while it was off, and the next whole week is a long time to wait on a
 # partition that was already the reason for the reboot.
@@ -22,7 +33,7 @@ Persistent=true
 # Nothing else on this box runs at 04:00 on a Sunday, but the reason for the
 # jitter is the deploy rather than the other timers: a merge landing at exactly
 # this minute would have `docker pull` and `docker image rm` in the same image
-# store, and half an hour is cheap on a weekly cadence.
+# store, and half an hour is cheap at 03:30, when nothing else on this box is running.
 RandomizedDelaySec=30m
 
 [Install]
