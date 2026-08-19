@@ -119,7 +119,19 @@ DISK_FULL_PERCENT="${DISK_FULL_PERCENT:-85}"
 INODE_FULL_PERCENT="${INODE_FULL_PERCENT:-85}"
 BACKUP_STALE_SECONDS="${BACKUP_STALE_SECONDS:-129600}"
 
-rows=$("$REPORT" 2>/dev/null)
+# **Only the three rows this file judges** (`#223`).
+#
+# It used to run the whole report — twelve `docker inspect` calls, the unit
+# comparison, journal scans and an HTTPS call to Twilio for the SMS balance — to
+# read a disk percentage, an inode percentage and the age of a file. Measured on
+# the deploy host on 2026-08-19: 49.9 s to 58.2 s per pass, on a five-minute
+# timer. `#221` caught the timer with no next elapse when one pass ran past the
+# interval.
+#
+# The rows are named here rather than defaulted in `health-report.sh`, because
+# the three this file reads and the three it thresholds below have to be the same
+# three, and a default in the other file could drift from this one silently.
+rows=$("$REPORT" --rows disk,inodes,backup 2>/dev/null)
 
 # **An unreadable report is pressure, not health.** The same direction as the
 # missing file: a probe that cannot see must not answer "fine".

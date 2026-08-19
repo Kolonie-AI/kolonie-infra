@@ -80,6 +80,28 @@
 # Usage:
 #   ./scripts/health-report.sh                  every container in the compose project
 #   ./scripts/health-report.sh name1 name2      those containers by name
+#   ./scripts/health-report.sh --rows a,b,c     only those rows, and nothing else
+#
+# ## Why `--rows` is a flag and not a positional argument (`#223`)
+#
+# The positions are already taken: they name containers. A row name arriving
+# there would be indistinguishable from a container nobody has started, which is
+# a row this report emits as `gone` rather than an error — so the mistake would
+# be silent and would look like a finding.
+#
+# **What it is for.** `pressure-report.sh` publishes one bit from three rows and
+# ran this whole report to get them: twelve `docker inspect` calls, a unit-by-unit
+# comparison against the repository, journal scans, and an HTTPS call to Twilio
+# for the SMS balance. Measured on the deploy host on 2026-08-19 that was 49.9 s
+# to 58.2 s per pass, on a five-minute timer.
+#
+# **One implementation, two depths.** `pressure-report.sh` reads the same
+# variables and thresholds this file does, deliberately, so the two cannot
+# disagree about what a full disk is. Selecting rows keeps that; a second cheap
+# implementation of the same checks would not.
+#
+# A section that is not asked for does not run at all — the point is the work
+# skipped, not the output filtered.
 #
 # Needs a Docker daemon it can talk to and nothing else. No secrets, no host
 # names: it prints what the local daemon reports about local containers.
@@ -89,6 +111,31 @@ set -uo pipefail
 # The deploy directory when it exists, otherwise wherever it was called from —
 # so this runs against a checkout on a workstation as readily as on the host.
 DEPLOY_DIR="${KOLONIE_DEPLOY_DIR:-/opt/kolonie}"
+
+# The rows this report knows how to emit. A name outside this set is an error
+# rather than an empty result: a typo that silently produced no rows would let
+# `pressure-report.sh` publish `ok` from a report containing nothing, and its own
+# guard against that reads the `disk` row it would then never see.
+KNOWN_ROWS="containers backup disk image-prune memory inodes load oom sms timers units"
+
+WANTED_ROWS=""
+if [ "${1:-}" = "--rows" ]; then
+    [ -n "${2:-}" ] || { echo "ERROR: --rows needs a comma-separated list" >&2; exit 2; }
+    WANTED_ROWS=$(printf '%s' "$2" | tr ',' ' ')
+    for requested in $WANTED_ROWS; do
+        case " $KNOWN_ROWS " in
+            *" $requested "*) ;;
+            *) echo "ERROR: unknown row '$requested' (known: $KNOWN_ROWS)" >&2; exit 2 ;;
+        esac
+    done
+    shift 2
+fi
+
+# No `--rows` means every row, so an existing caller is unchanged.
+want() {
+    [ -z "$WANTED_ROWS" ] && return 0
+    case " $WANTED_ROWS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 docker_cmd() {
     # The host's ubuntu user is in the docker group; a workstation user may not
@@ -154,6 +201,7 @@ inspect_row() {
 {{- .Name}}	{{.State.Status}}	{{if $h}}{{$h.Status}}{{else}}none{{end}}	{{if $h}}{{$h.FailingStreak}}{{else}}0{{end}}	{{if .Config.Healthcheck}}{{.Config.Healthcheck.Interval.Nanoseconds}}{{else}}0{{end}}	{{.Config.Image}}' 2>/dev/null
 }
 
+if want containers; then
 # Collected before the loop rather than piped into it. Two reasons, and the
 # second one bit: a list read up front cannot be truncated by a command inside
 # the loop, and `emitted` stays in this shell rather than a subshell's.
@@ -192,6 +240,7 @@ if [ "$emitted" -eq 0 ]; then
     # and the watcher has to be able to tell an empty host from a quiet one.
     echo "NO_CONTAINERS	-	-	0	0	-"
 fi
+fi
 
 # Emitted after the container rows and deliberately outside the `emitted`
 # accounting above: a host with no containers must still report NO_CONTAINERS,
@@ -204,6 +253,7 @@ fi
 # specific containers were named, because then the caller asked a narrower
 # question than "how is this host".
 if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
+    if want backup; then
     # Same default as backup.sh, and deliberately not $DEPLOY_DIR/backups —
     # that one holds deploy.sh's container-state snapshots. See the comment on
     # WORK_DIR in backup.sh.
@@ -222,7 +272,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'backup\tnever\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want disk; then
     # A third row that is not a container: how full the partition the containers
     # write to is (#37).
     #
@@ -238,7 +290,25 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     # the reader sees capacity and removable image growth as one disk fact.
     disk_pct=$(df --output=pcent /var/lib/docker 2>/dev/null | tail -1 | tr -dc '0-9')
     [ -z "$disk_pct" ] && disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
-    if [ -n "$disk_pct" ]; then
+    if [ -n "$disk_pct" ] && [ -n "$WANTED_ROWS" ]; then
+        # **`docker system df` is enrichment, and it is the expensive half of this
+        # report** (`#223`). It walks every image and every layer: measured on the
+        # deploy host on 2026-08-19 with 475 images, the `disk` row alone took
+        # 39.7 s of a 48 s run, against 73 ms for `backup` and 57 ms for `inodes`.
+        #
+        # A caller that named its rows is a machine thresholding the percentage,
+        # and the percentage is `df`. So the figures are not gathered, and the row
+        # says `partial` — the state that already means *the percentage is real
+        # and the image figures are not here*, judged on the percentage by
+        # `pressure-report.sh` and by nothing else.
+        #
+        # `pressure-report.sh` already documents why that state exists: both
+        # `degraded` verdicts this timer ever produced, in 622 runs over 14 days,
+        # were `docker system df` competing with a `docker compose pull` for the
+        # same layers. Not asking for the figures removes that contention rather
+        # than tolerating it.
+        printf 'disk\tpartial\t-\t0\t%s\t-\n' "$disk_pct"
+    elif [ -n "$disk_pct" ]; then
         image_df=$(docker_cmd system df --format '{{.Type}}\t{{.Size}}\t{{.Reclaimable}}' 2>/dev/null |
             awk -F'\t' '$1 == "Images" { print; exit }')
         IFS=$'\t' read -r _image_type image_size image_reclaimable <<<"$image_df"
@@ -261,7 +331,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # empty disk is the direction that hides the problem.
         printf 'disk\tunknown\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want image-prune; then
     # The timer's next elapse says whether it will be invoked again; its service
     # result and success marker say whether invocation actually works. All three
     # are needed: a timer can remain scheduled while its service fails forever.
@@ -287,7 +359,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'image-prune\tnever\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want memory; then
     # Memory available, not memory used (#101). Linux deliberately fills spare
     # memory with reclaimable cache, so `used` rises on a healthy host and is the
     # wrong number to put in front of a threshold. MemAvailable already accounts
@@ -302,7 +376,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'memory\tunknown\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want inodes; then
     # Inodes are a second, independent way for a writable partition to become
     # full (#101). Use the Docker partition when it exists and the root
     # partition otherwise, exactly as the byte check above does.
@@ -319,7 +395,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'inodes\tunknown\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want load; then
     # sysstat already samples the host every ten minutes. Read its last hour
     # rather than adding a collector or treating one instantaneous spike as an
     # incident (#101). `sar -q`'s Average row is the mean of the recorded
@@ -359,7 +437,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
     else
         printf 'load\tunknown\t%s\t%s\t0\t-\n' "${cores:-0}" "$load_window_seconds"
     fi
+    fi
 
+    if want oom; then
     # An OOM kill is an event, not a low-memory state: by the next sample the
     # killed process is gone and MemAvailable may look healthy again (#101).
     # Twenty minutes overlaps the fifteen-minute watcher cadence so a delayed
@@ -380,7 +460,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
             printf 'oom\tclear\t-\t0\t0\t-\n'
         fi
     fi
+    fi
 
+    if want sms; then
     # The Twilio balance, when there is a Twilio account (#83).
     #
     # **Running out fails silently, and that is the whole reason this exists.**
@@ -464,7 +546,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
             printf 'sms\tok\t-\t0\t%s\t-\n' "$remaining"
         fi
     fi
+    fi
 
+    if want timers; then
     # One row per timer (#66). Both of the Colony's timers maintain something
     # whose absence is invisible for a while and expensive later — a backup
     # nobody took, an allowlist nobody refreshed — which is the same instinct as
@@ -568,7 +652,9 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # row exists to stop being an answer.
         [ "$timers" -eq 0 ] && printf 'timer\tnone\t-\t0\t0\t-\n'
     fi
+    fi
 
+    if want units; then
     # One row per unit whose file on the host differs from this repository's
     # (#126). **Nothing installs `systemd/`**: `deploy.sh` resets /opt/kolonie
     # from the checkout and `/etc/systemd/system` is not in it, so a unit change
@@ -622,6 +708,7 @@ if [ -d "$DEPLOY_DIR" ] && [ "$#" -eq 0 ]; then
         # checkout carrying no units at all must not read as every unit being
         # fine.
         [ "$units" -eq 0 ] && printf 'unit\tnone\t-\t0\t0\t-\n'
+    fi
     fi
 fi
 
