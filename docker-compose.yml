@@ -136,10 +136,47 @@ services:
     #
     # Logging settings only. Nothing here changes what the server accepts, what
     # it stores, or how it performs.
+    #
+    # Which query costs the most, answerable at all (#1630).
+    #
+    # `pg_stat_statements` was not installed, so that question had no answer.
+    # Finding the Atlas figures query on 2026-08-22 took sampling
+    # `pg_stat_activity` in a loop and getting lucky enough to catch a burst —
+    # Postgres was at 207 % CPU when it was looked at and 0.00 % four minutes
+    # later. A slower hand would have found nothing and concluded the database
+    # was fine. With this it is one query, retrospectively: total time, calls,
+    # mean and rows per statement since the last reset.
+    #
+    # **It has to be preloaded, which is why it is here and not only a
+    # migration.** `CREATE EXTENSION` succeeds without it and then every read of
+    # the view raises `pg_stat_statements must be loaded via
+    # shared_preload_libraries`. The extension itself is created by
+    # `kolonie-platform`'s migration `0342`, so a rebuilt container keeps the
+    # setting and a rebuilt database keeps the extension.
+    #
+    # **The cost, stated rather than assumed.** A fixed shared-memory allocation
+    # — `pg_stat_statements.max`, default 5000 statements — and a small
+    # per-statement overhead on execution. Both defaults are left alone: 5000 is
+    # far more statements than this application has, and a number set here
+    # without a measurement behind it is one nobody can argue with later.
+    #
+    # **This restarts Postgres once**, on the deploy that carries it, because a
+    # `command` change makes compose recreate the container. That is the whole
+    # window and it is what `#1630` says it is buying.
+    #
+    # **Deliberately not changed in the same breath: `shared_buffers`.** It sits
+    # at the stock 128 MB, which looks like an obvious win and is not — the cache
+    # hit ratio was measured at 100.00 % and Postgres holds 300 MiB of a 7.75 GiB
+    # host. Nothing is read from disk; the load is CPU spent computing, and a
+    # bigger buffer pool computes nothing faster. That conclusion is exactly what
+    # this extension exists to make available before somebody acts on the
+    # plausible one.
     command:
       - "postgres"
       - "-c"
       - "log_line_prefix=%m [%p] %q%u@%d/%a "
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kolonie}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
