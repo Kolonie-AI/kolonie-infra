@@ -1,0 +1,23 @@
+{
+  "name": "default",
+  "description": "The Atlas is cacheable HTML and the origin already says so; Cloudflare does not cache HTML without being told.",
+  "kind": "zone",
+  "phase": "http_request_cache_settings",
+  "rules": [
+    {
+      "description": "Atlas pages: cache, and respect the origin's own max-age and stale-while-revalidate",
+      "expression": "(http.host eq \"kolonie.ai\" and starts_with(http.request.uri.path, \"/atlas\"))",
+      "action": "set_cache_settings",
+      "enabled": true,
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "respect_origin"
+        },
+        "browser_ttl": {
+          "mode": "respect_origin"
+        }
+      }
+    }
+  ]
+}
