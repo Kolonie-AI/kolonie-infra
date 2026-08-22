@@ -238,6 +238,36 @@ Reads only, safe against production, and that is where it is useful. It is a SQL
 query and not a dashboard on purpose: if it gets run often enough to be annoying,
 that is the signal to build one.
 
+### Which query is expensive?
+
+`pg_stat_statements` is loaded (`kolonie-platform#1630`), so this is one query
+rather than a stakeout:
+
+```bash
+docker compose exec -T postgres psql -U kolonie -d kolonie -c "
+  select calls,
+         round(total_exec_time)::text || ' ms'  as total,
+         round(mean_exec_time)::text  || ' ms'  as mean,
+         rows,
+         left(query, 90) as query
+    from pg_stat_statements
+   order by total_exec_time desc
+   limit 10"
+```
+
+It answers **retrospectively**, which is the whole of what it buys. Before it,
+finding the Atlas figures query on 2026-08-22 meant sampling `pg_stat_activity`
+in a loop and getting lucky enough to catch a burst — Postgres was at 207 % CPU
+when it was looked at and 0.00 % four minutes later, and a slower hand would have
+concluded the database was fine.
+
+Reset the counters with `select pg_stat_statements_reset();` before measuring a
+specific window. Reads only otherwise, and safe against production.
+
+**If it answers `pg_stat_statements must be loaded via shared_preload_libraries`**,
+the container is running without the `command` in `docker-compose.yml` — a
+restart on the current compose file is the fix, not a `CREATE EXTENSION`.
+
 ### Step 8: The Colony wallet — payments in
 
 This is the whole way money reaches the Colony (D-106, `kolonie-platform#503`):
