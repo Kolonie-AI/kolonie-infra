@@ -176,6 +176,45 @@ for router in atlas profile playbooks; do
 done
 
 echo
+echo "each host-only router answers for its own host and nothing else"
+
+# #241 required \"a request without Host: workplace.kolonie.ai does not reach
+# this router — verified, not assumed\". This cannot run Traefik, so it asserts
+# the property that makes the claim true: the rule is a bare `Host(...)` on one
+# name, with no path matcher and no second hostname ORed in. A rule shaped that
+# way cannot match another host, and that is the part a diff can get wrong.
+#
+# The measurement that motivated this is on the live host, recorded on the
+# issue: before the router existed the name answered 525, and afterwards a
+# request to a *different* host was still served by that host's own router.
+for router in console workplace; do
+    r=$(rule_of "$router")
+    host="${router}.kolonie.ai"
+    [ "$router" = console ] && host="console.kolonie.ai"
+
+    check "$router matches exactly one host and no path" \
+        "$([ "$r" = "\"Host(\`$host\`)\"" ] && echo yes || echo no)" \
+        "read: $r
+a path matcher or a second host here means this router can answer for a name
+its comment does not describe"
+done
+
+# The workplace is the one router in this file that must not be pointed at the
+# api service. Routing it there would collapse the console and the workplace
+# into one product, which is the thing #241 exists to prevent, and it would do
+# so silently — the host would answer 200 and serve the wrong application.
+workplace_service=$(grep -vE '^[[:space:]]*#' "$ROUTES" |
+    awk '
+        /^[[:space:]]*workplace:[[:space:]]*$/ { inside = 1; next }
+        inside && /^[[:space:]]*service:/ { print $2; exit }
+        inside && /^[[:space:]]*[a-z][a-z0-9-]*:[[:space:]]*$/ && !/middlewares|tls/ { inside = 0 }
+    ')
+check "the workplace router does not answer from the api service" \
+    "$([ "$workplace_service" = workplace ] && echo yes || echo no)" \
+    "read service: ${workplace_service:-<none>}
+#241: this host is a separate Vue application, not a surface of apps/api"
+
+echo
 if [ "$FAILURES" -ne 0 ]; then
     echo "$FAILURES failed"
     exit 1
