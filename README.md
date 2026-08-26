@@ -71,6 +71,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── mcp.kolonie.ai → api (MCP server — own router, same container)
     ├── challenge.kolonie.ai → api (Browser Capability Gate page — D-022)
     ├── console.kolonie.ai → api (quest console — own host so its session cookie is not on the API's origin, #60)
+    ├── workplace.kolonie.ai → workplace (human board app — own host and own container, #241; 502 until the image exists)
     ├── db.kolonie.ai → pgadmin (maintainers only, basicAuth + pgAdmin login)
     │
     ▼ Docker Network
@@ -652,6 +653,7 @@ one account still has a password"*.
 | api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai, challenge.kolonie.ai, console.kolonie.ai | Running |
 | verifier-runner | kolonie-verifier-runner | none (outbound only) | Running |
 | website | kolonie-website | kolonie.ai | Running |
+| workplace | kolonie-workplace | workplace.kolonie.ai | Routed and certificated; 502 until `Kolonie-AI/kolonie-workplace` publishes an image (#241) |
 | pgadmin | dpage/pgadmin4 | db.kolonie.ai | Off unless `PGADMIN_PASSWORD` is set on the host |
 
 ## Repository Structure

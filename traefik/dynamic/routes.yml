@@ -122,6 +122,70 @@ http:
       tls:
         certResolver: cloudflare
 
+    # The human workplace — a sixth host, and the first router here that does
+    # **not** answer from the `api` container (#241).
+    #
+    # ## Why a host and not a path
+    #
+    # The same argument the `console` router above makes, and it is the reason
+    # this issue refused a path prefix. A cookie is scoped to a host: a board
+    # surface under `api.kolonie.ai` would put a browser session on the same
+    # origin as the machine API, which is ambient authority on endpoints
+    # designed to be reached with an API key and nothing else. `console` bought
+    # a fifth name for that reason; this is the sixth, for the same one.
+    #
+    # ## Why not the `api` service, when every other router here uses it
+    #
+    # The console is a no-JavaScript HTML surface *of* `apps/api`, so pointing
+    # its host at that container is not a shortcut — it is what the console is.
+    # The workplace is a separate Vue application in `Kolonie-AI/kolonie-workplace`.
+    # Routing this host at `api` would collapse two products into one address
+    # and make the split above cosmetic.
+    #
+    # ## It answers before the application exists, deliberately
+    #
+    # There is no `kolonie-workplace` image yet, so the service below points at
+    # a container that is not running and this host returns **502** until one
+    # is. That is the intended state and the issue says so: a workplace error is
+    # acceptable, a Traefik default page is not.
+    #
+    # **The 502 is the point rather than a defect to route around.** The
+    # alternative — omitting the router until the image exists — is what leaves
+    # `sniStrict: true` with no certificate for this name, and that is a **525**
+    # at the edge: measured on this host on 2026-08-26 before this block, with
+    # DNS live and proxied. A 525 reads as a broken origin, is indistinguishable
+    # from a TLS misconfiguration on the hosts that *do* work, and cannot be
+    # told apart from an outage by anybody who did not know the application was
+    # missing. A 502 says exactly what is true: the name and its certificate are
+    # correct, and nothing is serving behind them yet.
+    #
+    # So this block is what issues the certificate. Adding the container later
+    # is a compose change and a service URL, not a change to this reasoning.
+    #
+    # rate-limit from the first request, matching `console` and for the reason
+    # its comment gives: this is the surface a sign-in form lands on, and the
+    # per-IP throttle is only honest because #56 made X-Forwarded-For carry the
+    # client rather than a Cloudflare edge. Attaching it now means the login
+    # issue in `kolonie-workplace` does not have to remember to.
+    #
+    # ## Rolling it back
+    #
+    # Delete this router and its service. Nothing else — it is additive, no
+    # existing rule is touched, and the file provider reloads without a restart
+    # or a deploy. The host then returns to answering 525, which is where it was
+    # before this existed and is worse rather than neutral; prefer fixing the
+    # service URL over removing the router.
+    workplace:
+      rule: "Host(`workplace.kolonie.ai`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - rate-limit
+      service: workplace
+      tls:
+        certResolver: cloudflare
+
     # The Atlas — the apex host, one path prefix, answered by the API
     # (kolonie-platform#546).
     #
@@ -462,6 +526,24 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-website:80"
+
+    # The workplace application container, which does not exist yet (#241).
+    #
+    # **A name Docker cannot resolve is a 502, and that is the honest answer
+    # here.** Traefik resolves this at request time rather than at load, so the
+    # router above is valid, its certificate is issued, and the failure is
+    # confined to the one host — no other router is affected by this name being
+    # unresolvable.
+    #
+    # Port 80 because the workplace is a static Vue build served by a web
+    # server in its own image, the arrangement `website` above already uses.
+    # When `Kolonie-AI/kolonie-workplace` produces an image, adding the compose
+    # service under this container name is the whole change; this URL stays as
+    # it is.
+    workplace:
+      loadBalancer:
+        servers:
+          - url: "http://kolonie-workplace:80"
 
     pgadmin:
       loadBalancer:
