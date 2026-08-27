@@ -50,11 +50,12 @@ echo "Returning to the build deployed at ${DEPLOYED_AT:-unknown}:"
 echo "  api:             ${API_IMAGE:-unset}"
 echo "  verifier-runner: ${RUNNER_IMAGE:-unset}"
 echo "  website:         ${WEBSITE_IMAGE:-unset}"
+echo "  workplace:       ${WORKPLACE_IMAGE:-unset}"
 
-# Both profiles: a human runs this on a host where the application containers
+# Every application profile: a human runs this on a host where the containers
 # exist, and omitting them would roll back infrastructure alone — the shape of
 # the 2026-07-28 failure, one level up.
-PROFILE_ARGS=(--profile full --profile website)
+PROFILE_ARGS=(--profile full --profile website --profile workplace)
 
 if [ "$SERVICE" = "all" ]; then
     docker compose "${PROFILE_ARGS[@]}" up -d

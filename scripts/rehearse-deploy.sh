@@ -73,7 +73,20 @@ case "$1 ${2:-}" in
       # decoy from another repo to prove the prefix match is doing work.
       for tag in "$@"; do :; done
       repo="${tag%%:*}"
+      # A digest reference is `repo@sha256:<hex>`, so cutting at the first colon
+      # leaves `repo@sha256` — and the RepoDigests line built from it would carry
+      # `@sha256` twice, which real Docker never answers and `digest_of`'s
+      # `^${repo}@` match would never find. Strip it, so an image resolved from a
+      # recorded digest is answered the way the daemon answers it.
+      repo="${repo%@sha256}"
       if [ "${FAIL_DIGEST:-}" = "$repo" ]; then exit 1; fi
+      # The workplace answers the digest #243 pinned, so a case can assert that
+      # the reviewed build is what the deploy resolved rather than only that some
+      # digest came back.
+      if [ "$repo" = ghcr.io/kolonie-ai/kolonie-workplace ]; then
+        echo "${repo}@sha256:4a8a98f485bfbeab84bdb3c5192780661331935131c23881698b853ef80bc794"
+        exit 0
+      fi
       echo "ghcr.io/someone-else/other@sha256:$(printf %064d 0)"
       echo "${repo}@sha256:$(echo -n "$repo" | sha256sum | cut -c1-64)"
       exit 0 ;;
@@ -109,6 +122,7 @@ case "$1 ${2:-}" in
             # pgadmin only when its profile is on, because that is the whole
             # property #30's placement turns on: a service inside the active
             # profiles is one healthcheck() will roll the stack back for.
+            case "$RAW_ARGS" in *"--profile workplace"*) echo "workplace" ;; esac
             case "$RAW_ARGS" in *"--profile admin"*) echo "pgadmin" ;; esac
           else
             echo "services: {}"
@@ -255,9 +269,9 @@ STUB
 chmod +x "$BIN/docker"
 
 run_deploy() {
-  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" bv="${BADGE_VERSION:-some-sha}" dv="${DOCTOR_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
-  if [ "${NO_VERSIONS:-}" = "1" ]; then av=""; rv=""; mv=""; tv=""; bv=""; dv=""; wv=""; fi
-  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" BADGE_VERSION="$bv" DOCTOR_VERSION="$dv" WEBSITE_VERSION="$wv" \
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" bv="${BADGE_VERSION:-some-sha}" dv="${DOCTOR_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}" wpv="${WORKPLACE_VERSION:-some-sha}"
+  if [ "${NO_VERSIONS:-}" = "1" ]; then av=""; rv=""; mv=""; tv=""; bv=""; dv=""; wv=""; wpv=""; fi
+  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" BADGE_VERSION="$bv" DOCTOR_VERSION="$dv" WEBSITE_VERSION="$wv" WORKPLACE_VERSION="$wpv" \
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" all 2>&1
@@ -266,9 +280,9 @@ run_deploy() {
 # Same, for a deploy of one named service — which is what a build in
 # kolonie-platform triggers.
 run_deploy_service() {
-  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" bv="${BADGE_VERSION:-some-sha}" dv="${DOCTOR_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}"
+  local av="${API_VERSION:-some-sha}" rv="${RUNNER_VERSION:-some-sha}" mv="${MODERATION_VERSION:-some-sha}" tv="${TRIAGE_VERSION:-some-sha}" bv="${BADGE_VERSION:-some-sha}" dv="${DOCTOR_VERSION:-some-sha}" wv="${WEBSITE_VERSION:-some-sha}" wpv="${WORKPLACE_VERSION:-some-sha}"
   local service="$1"; shift
-  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" BADGE_VERSION="$bv" DOCTOR_VERSION="$dv" WEBSITE_VERSION="$wv" \
+  API_VERSION="$av" RUNNER_VERSION="$rv" MODERATION_VERSION="$mv" TRIAGE_VERSION="$tv" BADGE_VERSION="$bv" DOCTOR_VERSION="$dv" WEBSITE_VERSION="$wv" WORKPLACE_VERSION="$wpv" \
   DOCKER_LOG="$WORK/docker.log" \
   PATH="$BIN:$PATH" DEPLOY_DIR="$WORK" GHCR_TOKEN=x HEALTH_TIMEOUT=5 \
   "$@" bash "$WORK/scripts/deploy.sh" "$service" 2>&1
@@ -288,7 +302,7 @@ contains "$out" "Recorded the deployed build" "deployment recorded"
 check "state file written" "$([ -f "$WORK/state/deployed.env" ] && echo yes || echo no)" "yes"
 contains "$(cat "$WORK/state/deployed.env")" "API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:" "state file holds the digest"
 # the containers must have been started with the digest exported
-contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website up -d --remove-orphans" "up -d ran"
+contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website --profile workplace up -d --remove-orphans" "up -d ran"
 
 echo "== 2. the migrate and seed containers run the pinned build, not :latest"
 grep -q 'compose .*run --rm -T api npm run migrate' "$WORK/docker.log" && echo "  ok   migrate ran" && pass=$((pass+1))
@@ -522,7 +536,7 @@ contains "$out" "Cascade re-deploy: verifier-runner was rolled back" "cascade tr
 contains "$out" "Cascade re-deploy of verifier-runner completed" "cascade succeeded"
 check "marker cleaned up" "$([ -f "$WORK/state/needs-redeploy.env" ] && echo yes || echo no)" "no"
 # The runner must have been pulled and started during the cascade.
-contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website pull verifier-runner" "cascade pulled the runner"
+contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website --profile workplace pull verifier-runner" "cascade pulled the runner"
 
 echo "== 15. a single-service deploy asserts the health of all profiled services"
 # This prevents silent divergence in the reverse direction: if a migration
@@ -922,7 +936,7 @@ rm -rf "$WORK/state"; : > "$WORK/docker.log"; rm -f "$WORK/.env"
 out=$(run_deploy env)
 contains "$out" "PGADMIN_PASSWORD is not set on this host — skipping --profile admin" "said why it skipped it"
 absent "$(cat "$WORK/docker.log")" "--profile admin" "no admin profile in any compose call"
-contains "$(grep 'up -d' "$WORK/docker.log")" "compose --profile full --profile website up -d" "the other profiles are untouched"
+contains "$(grep 'up -d' "$WORK/docker.log")" "compose --profile full --profile website --profile workplace up -d" "the other profiles are untouched"
 contains "$out" "=== Deployment completed ===" "and the deploy ran as before"
 
 echo "== 22b. a host that defines it gets pgAdmin pulled, started and health-checked"
@@ -1211,6 +1225,142 @@ check "the website still goes last" \
   "$("$WORK/scripts/deploy-set.sh" "website,doctor-runner,api" | tr '\n' ' ')" "api doctor-runner website "
 check "and it sits behind the other four runners" \
   "$("$WORK/scripts/deploy-set.sh" "doctor-runner,badge-runner,support-triage-runner,moderation-runner" | tr '\n' ' ')" "moderation-runner support-triage-runner badge-runner doctor-runner "
+
+echo "== 23v. the workplace is threaded through the same places (kolonie-infra#243)"
+# An eighth image, and it gets its own cases for the reason the fifth, sixth and
+# seventh did: deploy.sh resolves images by name in half a dozen places, and a
+# name threaded through some of them and not all is worse than none — the deploy
+# succeeds and records a build that is not running. Each assertion below fails on
+# main before this change.
+#
+# It is also the first image since the website that is a public face rather than
+# a runner: a second nginx container behind its own router (#241), so the thing
+# it can break that a runner cannot is a host answering 502 while every check
+# here is green. That is the state workplace.kolonie.ai is in on the day this
+# ships.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env)
+contains "$out" "workplace:             ghcr.io/kolonie-ai/kolonie-workplace@sha256:" "pinned to a digest like the rest"
+contains "$(cat "$WORK/state/deployed.env")" "WORKPLACE_IMAGE=ghcr.io/kolonie-ai/kolonie-workplace@sha256:" "and recorded, so a rollback has somewhere to go"
+# Its own profile, probed on its own — the website's blast-radius argument, and
+# the issue's acceptance criteria name it.
+contains "$(grep 'up -d' "$WORK/docker.log")" "--profile workplace" "and it came up under its own profile"
+
+echo "== 23w. a host whose last record predates the workplace still deploys"
+# The state every host is in on the day this ships: seven recorded images and an
+# eighth that has never run. It must resolve from the named version rather than
+# refusing the whole deploy.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
+BADGE_IMAGE=ghcr.io/kolonie-ai/kolonie-badge-runner@sha256:$(printf %064d 6)
+DOCTOR_IMAGE=ghcr.io/kolonie-ai/kolonie-doctor-runner@sha256:$(printf %064d 7)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(run_deploy env WORKPLACE_VERSION="$SHA")
+contains "$out" "=== Deployment completed ===" "an absent eighth line is not a refusal"
+contains "$(cat "$WORK/docker.log")" "ghcr.io/kolonie-ai/kolonie-workplace:$SHA" "it resolved to the version it was told, not to a default"
+absent "$(cat "$WORK/state/deployed.env")" "kolonie-workplace:latest" "and never recorded the mutable tag"
+# The property 23i and 23p both assert, and the reason the workplace's field goes
+# *after* the website's rather than replacing it as the last field read by
+# `${PREV_STATE##*|}`: an eighth field could not be inserted before the website
+# without every pre-existing record misreading it, so the workplace becomes the
+# new last field and the website moves to cut -f7. A record written before today
+# has no eighth field, and cut answers empty for it — which is exactly the
+# absent-line case 23w and 23x are about.
+contains "$(cat "$WORK/state/deployed.env")" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:" "the website digest is still read as the website's"
+
+echo "== 23x. a host with no workplace record takes the one reviewed bootstrap digest"
+# Re-seeded, because 23w has just recorded another workplace digest. The first
+# infra deploy after this merge receives no version from an application build,
+# so deploy.sh has to carry #243's exact digest once; otherwise the compose
+# service lands and the deploy refuses before it can record the image.
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+cat > "$WORK/state/deployed.env" <<EOF
+DEPLOYED_AT=19990101_000000
+API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)
+RUNNER_IMAGE=ghcr.io/kolonie-ai/kolonie-verifier-runner@sha256:$(printf %064d 2)
+MODERATION_IMAGE=ghcr.io/kolonie-ai/kolonie-moderation-runner@sha256:$(printf %064d 3)
+TRIAGE_IMAGE=ghcr.io/kolonie-ai/kolonie-support-triage-runner@sha256:$(printf %064d 8)
+BADGE_IMAGE=ghcr.io/kolonie-ai/kolonie-badge-runner@sha256:$(printf %064d 6)
+DOCTOR_IMAGE=ghcr.io/kolonie-ai/kolonie-doctor-runner@sha256:$(printf %064d 7)
+WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)
+EOF
+: > "$WORK/docker.log"
+out=$(NO_VERSIONS=1 run_deploy env)
+contains "$out" "workplace:             ghcr.io/kolonie-ai/kolonie-workplace@sha256:4a8a98f485bfbeab84bdb3c5192780661331935131c23881698b853ef80bc794" "used the exact digest #243 approved"
+contains "$(cat "$WORK/state/deployed.env")" "WORKPLACE_IMAGE=ghcr.io/kolonie-ai/kolonie-workplace@sha256:4a8a98f485bfbeab84bdb3c5192780661331935131c23881698b853ef80bc794" "recorded that digest as the rollback target"
+absent "$(cat "$WORK/docker.log")" "kolonie-workplace:latest" "and did not quietly reach for the mutable tag"
+
+echo "== 23y. an unreachable workplace image does not take the other profiles down"
+# The failure #1 is about, arriving from the eighth image. docker compose pull
+# fails the whole command for a single missing image, so a workplace build that
+# has not been pushed must degrade to its own host answering 502 — not to api
+# and website going down with it.
+rm -rf "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env UNREACHABLE=ghcr.io/kolonie-ai/kolonie-workplace)
+contains "$out" "is not reachable. workplace.kolonie.ai will answer 502." "said which host is affected, and only that host"
+contains "$out" "=== Deployment completed ===" "and the deploy still completed"
+contains "$(cat "$WORK/docker.log")" "--profile full" "the api profile is untouched"
+contains "$(cat "$WORK/docker.log")" "--profile website" "and so is the website's"
+absent "$(grep 'up -d' "$WORK/docker.log")" "--remove-orphans" "and an incomplete view does not assert orphans"
+
+echo "== 23z. it is deployed last, behind even the website"
+# The website's own argument, extended: if anything in the sequence is going to
+# fail it should fail before a public face of the Colony changes, and the
+# workplace is the second such face and the one with the least behind it.
+check "the api still leads" \
+  "$("$WORK/scripts/deploy-set.sh" "workplace,api" | tr '\n' ' ')" "api workplace "
+check "and it goes after the website" \
+  "$("$WORK/scripts/deploy-set.sh" "workplace,website,api" | tr '\n' ' ')" "api website workplace "
+
+echo "== 23aa. a single-service workplace deploy leaves the other seven digests alone"
+seed_known_good_five; : > "$WORK/docker.log"
+out=$(run_deploy_service workplace env WORKPLACE_VERSION="$SHA")
+recorded=$(cat "$WORK/state/deployed.env")
+contains "$recorded" "API_IMAGE=ghcr.io/kolonie-ai/kolonie-api@sha256:$(printf %064d 1)" "api digest carried over untouched"
+contains "$recorded" "WEBSITE_IMAGE=ghcr.io/kolonie-ai/kolonie-website@sha256:$(printf %064d 4)" "website digest carried over untouched"
+absent "$recorded" "WORKPLACE_IMAGE=ghcr.io/kolonie-ai/kolonie-workplace@sha256:$(printf %064d 9)" "workplace digest was replaced"
+contains "$out" "Deploying service: workplace" "and it deployed that service alone"
+
+echo "== 23ab. an unhealthy workplace rolls back and records itself for the cascade"
+seed_known_good_five; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy_service workplace env WORKPLACE_VERSION="$SHA" FAIL_UP=1)
+contains "$out" "Rollback completed" "rolled back"
+contains "$out" "no previous workplace build is recorded" "said why the failed new container is not a rollback target"
+absent "$(grep 'up -d' "$WORK/docker.log" | tail -n1)" "--profile workplace" "and restored the established profiles without retrying it"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_SERVICE=workplace" "marker names it"
+contains "$(cat "$WORK/state/needs-redeploy.env")" "NEEDS_REDEPLOY_TAG=ghcr.io/kolonie-ai/kolonie-workplace:$SHA" "marker carries the tag it meant to ship"
+
+echo "== 23ac. and the next successful deploy cascades it back"
+: > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
+out=$(run_deploy env)
+contains "$out" "Cascade re-deploy: workplace was rolled back" "cascade triggered for the eighth image"
+contains "$out" "Cascade re-deploy of workplace completed" "and completed"
+
+echo "== 23ad. the service itself: healthcheck shape and profile, read off the compose file (kolonie-infra#243)"
+# The properties no stub can reach, asserted the way rehearse-pin case 11 asserts
+# the PIN-NOT-SET fallbacks: by reading docker-compose.yml. The healthcheck must
+# hit 127.0.0.1 — kolonie-infra#11, days of an unhealthy website that was serving
+# — and /health rather than /, so a broken bundle cannot look healthy; and the
+# service must not sit in the full profile, or healthcheck() could roll the API
+# back over a failed prototype.
+compose="$ROOT/docker-compose.yml"
+health=$(awk '/^  workplace:$/ { inside = 1 } inside && /^[[:space:]]*test:/ { print; exit }' "$compose")
+check "the healthcheck probes 127.0.0.1, never localhost" \
+  "$(printf '%s' "$health" | grep -qF 'http://127.0.0.1:80/health' && echo yes || echo no)" "yes"
+check "and not the mutable root path" \
+  "$(printf '%s' "$health" | grep -qF 'http://127.0.0.1:80/"' && grep -qF 'http://127.0.0.1:80/health' <<<"$health" && echo no || echo yes)" "yes"
+profiles=$(awk '/^  workplace:$/ { inside = 1 } inside && /^    profiles:/ { getline; print; exit }' "$compose" | tr -d ' -')
+check "it is not in the full profile" \
+  "$([ "$profiles" = workplace ] && echo yes || echo no)" "yes"
+check "the router's service URL is untouched" \
+  "$(grep -c 'url: "http://kolonie-workplace:80"' "$ROOT/traefik/dynamic/routes.yml")" "1"
 
 echo "== 24. an image this deploy does not touch, and has never recorded, is not fatal"
 # The deadlock introducing kolonie-platform#105 walked into. `deploy.sh api`

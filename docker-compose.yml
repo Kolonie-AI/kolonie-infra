@@ -1359,6 +1359,42 @@ services:
     profiles:
       - website
 
+  # === Workplace (kolonie-workplace, static Vue build behind nginx) ===
+  #
+  # Its own profile, not `full`, for the website's reason above: blast radius.
+  # healthcheck() in scripts/deploy.sh rolls the whole stack back when any
+  # service in the active profiles is unhealthy, so a prototype workplace that
+  # failed to start must not be able to take the API down with it. A service that
+  # can be deployed on its own can also be left alone on its own.
+  #
+  # The separate profile matters on the pull path too. `docker compose pull`
+  # fails the whole command when one image is unavailable; detect_profile()
+  # therefore probes this one independently, so a missing workplace build costs
+  # this host alone rather than the API and the website beside it (#1, #243).
+  workplace:
+    image: ${WORKPLACE_IMAGE:-ghcr.io/kolonie-ai/kolonie-workplace:PIN-NOT-SET-SEE-STATE-DEPLOYED-ENV}
+    container_name: kolonie-workplace
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    healthcheck:
+      # /health rather than /: the image's nginx answers this without reading the
+      # bundle, so a missing or broken application shell cannot make the service
+      # look healthy.
+      #
+      # 127.0.0.1, never localhost. The website's check above records why: the
+      # image may map localhost to both address families, BusyBox wget tries ::1
+      # first, and an IPv4-only nginx then looks unhealthy while serving every
+      # request. A deploy reads that state and rolls back (#11).
+      test: ["CMD", "wget", "-O", "/dev/null", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    profiles:
+      - workplace
+
   # === pgAdmin 4 — the maintainer's browser client for the database (#30) ===
   #
   # Reachable at db.kolonie.ai behind two locks: Traefik basicAuth in front, and

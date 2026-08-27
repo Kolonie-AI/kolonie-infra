@@ -22,7 +22,7 @@ Cross-project status is in [`kolonie-docs/state/STATUS.md`](https://github.com/K
 
 ## Current State
 
-**All five services are running and healthy on the VPS.** The deploy chain is
+**All application services are running and healthy on the VPS.** The deploy chain is
 connected end to end: a merge in `kolonie-platform` or `kolonie-website` builds
 the image and calls the reusable deploy workflow in this repository.
 
@@ -32,6 +32,7 @@ kolonie-postgres             healthy   (PostgreSQL 16-alpine)
 kolonie-api                  healthy   (api + academy + mcp + challenge)
 kolonie-verifier-runner      healthy   (no ingress — outbound only)
 kolonie-website              healthy   (Astro + Starlight)
+kolonie-workplace            healthy   (Vue workplace)
 ```
 
 Traefik Dashboard is disabled (`api.dashboard: false`).
@@ -71,7 +72,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── mcp.kolonie.ai → api (MCP server — own router, same container)
     ├── challenge.kolonie.ai → api (Browser Capability Gate page — D-022)
     ├── console.kolonie.ai → api (quest console — own host so its session cookie is not on the API's origin, #60)
-    ├── workplace.kolonie.ai → workplace (human board app — own host and own container, #241; 502 until the image exists)
+    ├── workplace.kolonie.ai → workplace (human board app — own host and own container, #241, #243)
     ├── db.kolonie.ai → pgadmin (maintainers only, basicAuth + pgAdmin login)
     │
     ▼ Docker Network
@@ -476,7 +477,7 @@ third arrival replaces the one already waiting. Three consecutive pushes on
 in the queue, and the only one carrying `migrate()` and the Academy seed.
 
 The order within a list is fixed by `scripts/deploy-set.sh` and not by the
-caller: api, verifier-runner, moderation-runner, website. The api runs the
+caller: api, verifier-runner, moderation-runner, website, workplace. The api runs the
 migrations out of its own image, so a runner started ahead of it is a runner
 reading a schema that has not moved. If a deploy in the sequence fails and rolls
 back, the ones after it do not run — that is the ordering doing its job, not a
@@ -509,7 +510,7 @@ docker compose up -d
 
 ### Service Images
 
-The infra repo manages infrastructure (Traefik, PostgreSQL). Application services (`api`, `verifier-runner`, `website`) are built by `kolonie-platform` and `kolonie-website` and pushed to `ghcr.io`.
+The infra repo manages infrastructure (Traefik, PostgreSQL). Application services are built by their application repositories and pushed to `ghcr.io`.
 
 **How deployment works:**
 1. Push to `main` triggers GitHub Actions
@@ -683,7 +684,7 @@ one account still has a password"*.
 | api | kolonie-api | api.kolonie.ai, academy.kolonie.ai, mcp.kolonie.ai, challenge.kolonie.ai, console.kolonie.ai | Running |
 | verifier-runner | kolonie-verifier-runner | none (outbound only) | Running |
 | website | kolonie-website | kolonie.ai | Running |
-| workplace | kolonie-workplace | workplace.kolonie.ai | Routed and certificated; 502 until `Kolonie-AI/kolonie-workplace` publishes an image (#241) |
+| workplace | kolonie-workplace | workplace.kolonie.ai | Running |
 | pgadmin | dpage/pgadmin4 | db.kolonie.ai | Off unless `PGADMIN_PASSWORD` is set on the host |
 
 ## Repository Structure
