@@ -527,6 +527,25 @@ services:
       AUTH0_DOMAIN: ${AUTH0_DOMAIN:-}
       AUTH0_CONSOLE_CLIENT_ID: ${AUTH0_CONSOLE_CLIENT_ID:-}
       AUTH0_CONSOLE_CLIENT_SECRET: ${AUTH0_CONSOLE_CLIENT_SECRET:-}
+      # The bearer door the workplace SPA knocks on (#247,
+      # kolonie-platform#1731, D-145). The issuer and the audience are the Auth0
+      # tenant's, and the origin is the host the workplace is served on — which
+      # the platform is told rather than deriving from `CONSOLE_URL`, because
+      # the two are deliberately different origins and a default reaching for
+      # the console's would be exactly the reflex D-145 refuses.
+      #
+      # **Not `:?`, for the reason the Auth0 block above gives.** A Colony with
+      # no workplace tenant configured must still deploy: the API then logs that
+      # the workplace door is disabled and registers no workplace route at all,
+      # so a caller gets a `404` rather than a `401` about a door nobody built.
+      #
+      # **All three or none**, as the platform's own read requires — each is
+      # `?? ''`, which is the unconfigured branch and not a default, so a
+      # half-configured deployment validates nothing against a half-meant
+      # issuer.
+      WORKPLACE_JWT_ISSUER: ${WORKPLACE_JWT_ISSUER:-}
+      WORKPLACE_JWT_AUDIENCE: ${WORKPLACE_JWT_AUDIENCE:-}
+      WORKPLACE_ORIGIN: ${WORKPLACE_ORIGIN:-}
       # Twilio, for the SMS rungs (#82, kolonie-platform#409).
       #
       # **Sending belongs here** — a citizen asks for a code and one goes out on
