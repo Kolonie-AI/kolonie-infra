@@ -48,6 +48,34 @@ volumes:
   postgres_data:
   traefik_certs:
   pgadmin_data:
+  # The Vikunja reference is disposable as a product but persistent as a
+  # measuring instrument (#245): the maintainer account, its sample project and
+  # any attachments must survive a container recreation.
+  #
+  # **One volume, and the mount point is `/tmp` because of what the image is.**
+  # `vikunja/vikunja:2.5.0` is built `FROM scratch` and runs as uid 1000, and the
+  # only directory in it owned by 1000 is `/tmp` (`drwxrwxrwx 1000/1000`, read
+  # out of `docker export` on 2026-08-27). Docker creates a *new* named volume's
+  # mount point owned by **root**, so mounting one at `/db` or `/files` — the
+  # paths the upstream defaults name — gives a container that starts and then
+  # dies:
+  #
+  #     Could not init file handler: storage validation failed: failed to create
+  #     test file: open /files/.vikunja-check-…: permission denied
+  #     [process uid=1000 gid=0, dir owner uid=0 gid=0]
+  #
+  # Measured, not reasoned: with `user: "0:0"` it starts, and this file does not
+  # run a third party's web application as root to save a directory. A `chown` on
+  # the host is the other repair and it is host state nothing here can see, which
+  # is #42's whole complaint. Mounting the one path the image already owns needs
+  # neither, and Docker seeds a new volume from the image's own directory —
+  # ownership included — so the volume arrives owned by 1000 and Vikunja creates
+  # `files/` inside it on first start.
+  #
+  # It is **not** mounted by any Colony service, and no Colony service mounts it:
+  # removing this volume removes the reference's entire state and touches
+  # `postgres_data`, `loki_data` and the rest not at all.
+  vikunja_reference_data:
   # Loki's chunks, its TSDB index and the compactor's working directory (#68).
   # Named, so it survives a container being recreated — which is the whole point
   # of the store: Docker's own json-file logs are lost the moment a deploy
@@ -1394,6 +1422,132 @@ services:
       start_period: 20s
     profiles:
       - workplace
+
+  # === Vikunja reference — an upstream instrument, not a Colony service (#245) ===
+  #
+  # A pinned upstream release run so that `kolonie-workplace` can be compared
+  # against a real board application by people, on a real host. **It is not a
+  # work backend**: nothing synchronises Colony state into it, nothing reads it
+  # back, and it holds no data the Colony would miss.
+  #
+  # ## What keeps it separate, and it is three things rather than a promise
+  #
+  # **Its own store.** SQLite in its own named volume, which no Colony service
+  # mounts. It is given no `POSTGRES_*` variable and no `DATABASE_URL`, so it has
+  # no credential for the Colony database and no name to reach it by that it
+  # could use — `postgres` is resolvable on this network, and what makes this
+  # safe is that Vikunja is configured for sqlite and handed nothing else.
+  #
+  # **Its own host and router**, in traefik/dynamic/routes.yml, so it cannot be
+  # reached through a Colony hostname and a Colony hostname cannot fall through
+  # to it.
+  #
+  # **Its own profile**, so it is absent from the compose view of every deploy
+  # that has not opted in. Teardown is therefore `docker compose --profile
+  # vikunja-reference down` plus `docker volume rm kolonie_vikunja_reference_data`,
+  # and nothing else on this host changes; README.md states it as a procedure.
+  #
+  # ## Why the profile is gated on a host variable, like pgAdmin's
+  #
+  # The image is a third party's and always pullable, so a registry probe — what
+  # detect_profile() does for images this organisation builds — would answer yes
+  # on a host nobody has configured, start the container, and then healthcheck()
+  # would roll **the whole stack** back over an instrument no production path
+  # depends on. That is #7 and #93's shape. So deploy.sh includes this profile
+  # only where the host carries `secrets/vikunja-reference.env`.
+  vikunja-reference:
+    # A released version, never `:latest`. deploy.sh pins the images this
+    # organisation builds to a digest after the pull and does not know about this
+    # one, so the pin has to be the tag — pgAdmin's comment argues it at length,
+    # and it is #12 arriving from outside instead of inside.
+    image: ${VIKUNJA_REFERENCE_IMAGE:-vikunja/vikunja:2.5.0}
+    container_name: kolonie-vikunja-reference
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - kolonie
+    environment:
+      # **`VIKUNJA_SERVICE_SECRET` is deliberately absent from this block.** It
+      # signs session tokens, and it arrives from the `env_file` below and from
+      # nowhere else.
+      #
+      # Interpolating it here from a name in `.env` is the obvious shape and it
+      # is wrong — and the interpolation is described rather than written out,
+      # because env-drift.sh reads this file for interpolations and would report
+      # even a commented one as a variable the operator must add to `.env`, which
+      # is the exact opposite of the arrangement.
+      # `environment:` **wins over `env_file:`**, so on a host where
+      # the name is not also in `.env` compose renders `VIKUNJA_SERVICE_SECRET:
+      # ""` and the file is silently overridden by an empty string. Measured
+      # 2026-08-27. Vikunja then generates a random secret per start, which
+      # invalidates every session on every recreate — a reference instance that
+      # logs the maintainer out whenever a deploy touches it, with nothing in any
+      # log to say why.
+      #
+      # So the file is the only source, and the two guards against it being
+      # missing are `required: true` below and the profile gate in
+      # detect_profile().
+      #
+      # **Required for a different reason: with `cors.enable` at its default of
+      # true, Vikunja refuses to start without it.** Measured 2026-08-27:
+      # `service.publicurl is required when cors.enable is true`, and the process
+      # exits 1. A hostname is not a secret and not an origin address, so it is
+      # written here rather than passed in.
+      VIKUNJA_SERVICE_PUBLICURL: https://vikunja-reference.kolonie.ai/
+      # **Registration is off, and turning it on is a deliberate, temporary act.**
+      # The acceptance criterion is that it is enabled only long enough to create
+      # the maintainer account and disabled afterwards, so the default here is the
+      # end state rather than the bootstrap state: a host that does nothing is a
+      # host with registration closed. README.md holds the two-step procedure, and
+      # the `user create` subcommand in the image is the route that needs no
+      # window at all.
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: ${VIKUNJA_REFERENCE_ENABLE_REGISTRATION:-false}
+      VIKUNJA_DATABASE_TYPE: sqlite
+      # Both inside the one volume mounted at /tmp. The volumes block above
+      # records why that path and not `/db` and `/files`: it is the only
+      # directory the image owns as uid 1000, and a fresh named volume elsewhere
+      # arrives owned by root and kills the container on its first write.
+      #
+      # `files` is created by Vikunja on first start; the database file is
+      # created beside it. A *sub*directory for the database was tried and
+      # refused — Vikunja does not create the parent, and answers
+      # `could not open database file … no such file or directory`.
+      VIKUNJA_DATABASE_PATH: /tmp/vikunja.db
+      VIKUNJA_FILES_BASEPATH: /tmp/files
+      # No mailer, deliberately. Nothing here should be able to send mail as the
+      # Colony, and password reset for a single maintainer account is the CLI.
+      VIKUNJA_MAILER_ENABLED: "false"
+    # **The rejection case the issue asks for, and it is compose's own.**
+    # `required: true` makes `docker compose --profile vikunja-reference config`
+    # and `up` fail when the file is missing — measured 2026-08-27, exit 1 with
+    # `env file … not found`. Without the profile the same command succeeds, so
+    # a host that never opted in is unaffected. The file holds one line,
+    # `VIKUNJA_SERVICE_SECRET=…`, is `.gitignore`d, and is created next to the
+    # htpasswd files pgAdmin and Loki already use.
+    env_file:
+      - path: ./secrets/vikunja-reference.env
+        required: true
+    volumes:
+      - vikunja_reference_data:/tmp
+    healthcheck:
+      # **The image's own subcommand, because there is nothing else in it.**
+      # `FROM scratch`: no shell, no wget, no curl — the arrangement Loki's
+      # comment describes, except that this binary can check itself. `healthcheck`
+      # opens the configured database and returns non-zero when it cannot, and it
+      # is a `CMD` vector rather than `CMD-SHELL` because there is no shell to
+      # interpret one. Verified against 2.5.0 on 2026-08-27: `API server is
+      # healthy`, exit 0.
+      test: ["CMD", "/app/vikunja/vikunja", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Longer than the application services'. First start runs every upstream
+      # migration against an empty SQLite file; judged too early it looks like a
+      # failing container and healthcheck() rolls the stack back over a service
+      # that was merely slow — pgAdmin's `start_period` carries the same note.
+      start_period: 60s
+    profiles:
+      - vikunja-reference
 
   # === pgAdmin 4 — the maintainer's browser client for the database (#30) ===
   #

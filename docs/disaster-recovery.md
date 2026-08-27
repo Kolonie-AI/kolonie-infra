@@ -316,6 +316,16 @@ it is one of those two, and not by accident.
 
 - **Docker volumes other than the database.** Traefik's `acme.json` is the only
   one holding state that is not reproducible, and it re-issues on demand.
+- **`vikunja_reference_data` (#245), and it is worth saying out loud.** It holds
+  the reference instance's entire state: its SQLite database, its maintainer
+  account and whatever sample projects were made in it. It is out of scope
+  **because of what the service is** — a pinned upstream release run for
+  comparison, holding nothing the Colony is the source of truth for. Losing it
+  costs the time to recreate one account and some sample data, and the recovery
+  is to start the profile again. Restoring this host does not restore it, and
+  nothing in `restore-test` will notice it missing. If it ever holds something
+  somebody would miss, that is the signal it has stopped being an instrument, and
+  the answer is to stop treating it as one rather than to add it here.
 - **`/opt/kolonie/backup.env`.** The repository URL, its password and the
   object-store credentials. Backing it up inside the repository it unlocks is a
   circle: you would need it to reach the copy of it. It lives in the maintainer's

@@ -74,6 +74,7 @@ Traefik (Reverse Proxy, Auto-SSL)
     ├── console.kolonie.ai → api (quest console — own host so its session cookie is not on the API's origin, #60)
     ├── workplace.kolonie.ai → workplace (human board app — own host and own container, #241, #243)
     ├── db.kolonie.ai → pgadmin (maintainers only, basicAuth + pgAdmin login)
+    ├── vikunja-reference.kolonie.ai → vikunja-reference (upstream instrument, off unless the host opts in, #245)
     │
     ▼ Docker Network
     ├── verifier-runner (no ingress — outbound only)
@@ -686,6 +687,76 @@ one account still has a password"*.
 | website | kolonie-website | kolonie.ai | Running |
 | workplace | kolonie-workplace | workplace.kolonie.ai | Running |
 | pgadmin | dpage/pgadmin4 | db.kolonie.ai | Off unless `PGADMIN_PASSWORD` is set on the host |
+| vikunja-reference | vikunja/vikunja:2.5.0 | vikunja-reference.kolonie.ai | Off unless `secrets/vikunja-reference.env` carries `VIKUNJA_SERVICE_SECRET` |
+
+### The Vikunja reference (#245)
+
+**An instrument, not a service.** A pinned upstream Vikunja release, run so that
+`kolonie-workplace` can be compared against a real board application by people on
+a real host. Nothing synchronises Colony state into it, nothing reads it back,
+and it holds no data the Colony would miss. It is not a work backend and it is
+not a source of truth.
+
+**What keeps it separate is three arrangements rather than a promise:**
+
+| | |
+|---|---|
+| **Its own store** | SQLite in `vikunja_reference_data`, which no Colony service mounts. It is handed no `DATABASE_URL` and no `POSTGRES_*` variable, so `postgres` being resolvable on this network buys it nothing |
+| **Its own host** | Its own Traefik router and service, so no Colony hostname falls through to it and it cannot be reached through one |
+| **Its own profile** | `vikunja-reference`, absent from the compose view of every deploy that has not opted in |
+
+`scripts/rehearse-deploy.sh` asserts all three against `docker-compose.yml`
+rather than leaving them as prose; cases 22v–22aa are the ones.
+
+**Turning it on**, on the host, once:
+
+```bash
+umask 077
+printf 'VIKUNJA_SERVICE_SECRET=%s\n' "$(openssl rand -hex 32)" \
+  > /opt/kolonie/secrets/vikunja-reference.env
+./scripts/deploy.sh
+```
+
+The file carrying a non-empty `VIKUNJA_SERVICE_SECRET` line is the whole gate —
+`deploy.sh` includes the profile only then, and says which way it decided. It is deliberately *not* a
+`.env` variable: compose's `environment:` wins over `env_file:`, so a name in
+both would silently render the `.env` value over the file, and a blank secret
+means Vikunja mints a random one per start and logs the maintainer out on every
+recreate. The secret therefore has exactly one source.
+
+Without the file, the profile is left out and nothing starts. **With the profile
+active and the file missing, it fails closed**: `required: true` makes
+`docker compose --profile vikunja-reference config` exit 1 rather than start a
+service with no signing secret.
+
+The host also needs a proxied A record for `vikunja-reference.kolonie.ai` before
+Traefik can get a certificate — nothing in the deploy chain writes DNS. See
+[`cloudflare/dns-records.md`](cloudflare/dns-records.md).
+
+**Creating the maintainer account.** #245 asks that registration be open only
+long enough to create it. The route that needs no open window at all is the
+image's own CLI:
+
+```bash
+docker compose --profile vikunja-reference exec vikunja-reference \
+  /app/vikunja/vikunja user create -u <username> -e <email> -p <password>
+```
+
+If you use the web form instead, it is two deploys and the second is not
+optional: set `VIKUNJA_REFERENCE_ENABLE_REGISTRATION=true` in `.env`, deploy,
+register, then **remove the line** and deploy again. The default is `false`, so a
+host that does nothing is a host with registration closed.
+
+**Teardown**, which touches nothing else on the host:
+
+```bash
+docker compose --profile vikunja-reference down
+docker volume rm kolonie_vikunja_reference_data   # deletes the reference's entire state
+rm /opt/kolonie/secrets/vikunja-reference.env      # and the next deploy omits the profile
+```
+
+The volume is deliberately outside the backup scope; see
+[`docs/disaster-recovery.md`](docs/disaster-recovery.md).
 
 ## Repository Structure
 
