@@ -35,7 +35,13 @@ set -euo pipefail
 # for the same reason: it reads and writes badge rows through packages/db, so a
 # build started before the api has been started against a schema that has not
 # moved yet.
-readonly ORDER=(api verifier-runner moderation-runner support-triage-runner badge-runner doctor-runner website)
+#
+# `workplace` (kolonie-infra#243) goes last, behind even the website, and the
+# argument is the website's own one sentence further: it reads no schema and
+# depends on nothing, so if anything in this sequence is going to fail it should
+# fail before a public face of the Colony changes. It is the second such face and
+# the one with the least behind it.
+readonly ORDER=(api verifier-runner moderation-runner support-triage-runner badge-runner doctor-runner website workplace)
 
 usage() {
     echo "usage: $(basename "$0") all|<service>[,<service>...]" >&2

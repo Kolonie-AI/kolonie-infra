@@ -51,6 +51,7 @@ KOLONIE_SERVICES=(
     badge-runner
     doctor-runner
     website
+    workplace
 )
 
 # The same list, each paired with the variable `state/deployed.env` records its
@@ -63,4 +64,5 @@ KOLONIE_SERVICE_IMAGES=(
     "badge-runner:BADGE_IMAGE"
     "doctor-runner:DOCTOR_IMAGE"
     "website:WEBSITE_IMAGE"
+    "workplace:WORKPLACE_IMAGE"
 )

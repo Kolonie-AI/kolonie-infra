@@ -46,6 +46,13 @@ BADGE_REPO="ghcr.io/kolonie-ai/kolonie-badge-runner"
 # absence, which is the argument for it being a runner of its own at all.
 DOCTOR_REPO="ghcr.io/kolonie-ai/kolonie-doctor-runner"
 WEBSITE_REPO="ghcr.io/kolonie-ai/kolonie-website"
+# The eighth (kolonie-infra#241, #243). The human workplace: a static Vue build
+# behind its own nginx, with its own Traefik router and its own hostname. The
+# second image here that answers a browser rather than reading Postgres, and the
+# first addition since the website that can fail in public — an image that will
+# not start is a host answering 502 while every check in this repository is
+# green.
+WORKPLACE_REPO="ghcr.io/kolonie-ai/kolonie-workplace"
 
 # Which build to fetch, per image, defaulting to the mutable tag (#14).
 #
@@ -66,6 +73,7 @@ TRIAGE_VERSION="${TRIAGE_VERSION:-}"
 BADGE_VERSION="${BADGE_VERSION:-}"
 DOCTOR_VERSION="${DOCTOR_VERSION:-}"
 WEBSITE_VERSION="${WEBSITE_VERSION:-}"
+WORKPLACE_VERSION="${WORKPLACE_VERSION:-}"
 
 CUR_API=""
 CUR_RUNNER=""
@@ -74,8 +82,21 @@ CUR_TRIAGE=""
 CUR_BADGE=""
 CUR_DOCTOR=""
 CUR_WEB=""
+# The first workplace build is an exception with a bounded lifetime: the image
+# existed before this compose service, so no application build will call the
+# deploy workflow after this merge and name its version. A merge here runs
+# `deploy.sh all` with an empty version, and without one initial reference it
+# would refuse before starting anything — the same first-deploy gap the doctor
+# runner hit in #192.
+#
+# This is the exact digest #243 was told to pin, not a tag and never `latest`.
+# Once the first health check passes, record_deployment() writes it into
+# state/deployed.env and that record becomes the ordinary input. A later
+# WORKPLACE_VERSION still wins in resolve_image(), so this bootstrap does not
+# freeze future releases.
+CUR_WORKPLACE="${WORKPLACE_REPO}@sha256:4a8a98f485bfbeab84bdb3c5192780661331935131c23881698b853ef80bc794"
 if [ -f "${STATE_DIR}/deployed.env" ]; then
-    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${TRIAGE_IMAGE:-}|${BADGE_IMAGE:-}|${DOCTOR_IMAGE:-}|${WEBSITE_IMAGE:-}")
+    PREV_STATE=$(set -a; . "${STATE_DIR}/deployed.env"; set +a; echo "${API_IMAGE:-}|${RUNNER_IMAGE:-}|${MODERATION_IMAGE:-}|${TRIAGE_IMAGE:-}|${BADGE_IMAGE:-}|${DOCTOR_IMAGE:-}|${WEBSITE_IMAGE:-}|${WORKPLACE_IMAGE:-}")
     CUR_API="${PREV_STATE%%|*}"
     CUR_RUNNER="$(echo "$PREV_STATE" | cut -d"|" -f2)"
     CUR_MOD="$(echo "$PREV_STATE" | cut -d"|" -f3)"
@@ -86,10 +107,18 @@ if [ -f "${STATE_DIR}/deployed.env" ]; then
     CUR_TRIAGE="$(echo "$PREV_STATE" | cut -d"|" -f4)"
     CUR_BADGE="$(echo "$PREV_STATE" | cut -d"|" -f5)"
     CUR_DOCTOR="$(echo "$PREV_STATE" | cut -d"|" -f6)"
-    # Still the last field, and it must stay the last field: `##*|` is what makes
-    # a record written before a service existed readable at all. A seventh image
-    # goes *before* the website here, never after it.
-    CUR_WEB="${PREV_STATE##*|}"
+    # The website is read by position now, and the eighth image is what took the
+    # last field from it (kolonie-infra#243).
+    #
+    # `##*|` is what makes a record written before a service existed readable at
+    # all, so exactly one field may use it and it has to be the newest one. A
+    # record written before the workplace existed has seven fields, `cut -f7`
+    # still answers with the website's digest, and `##*|` answers empty for the
+    # workplace — which is the has-never-run case resolve_image() already
+    # handles, and 23w and 23x in the rehearsal assert both halves.
+    CUR_WEB="$(echo "$PREV_STATE" | cut -d"|" -f7)"
+    RECORDED_WORKPLACE="${PREV_STATE##*|}"
+    [ -n "$RECORDED_WORKPLACE" ] && CUR_WORKPLACE="$RECORDED_WORKPLACE"
 fi
 
 # Resolve one image to the reference this deploy will fetch.
@@ -193,6 +222,7 @@ TRIAGE_IMAGE_TAG=$(resolve_image "$TRIAGE_VERSION" "$CUR_TRIAGE" "$TRIAGE_REPO" 
 BADGE_IMAGE_TAG=$(resolve_image "$BADGE_VERSION" "$CUR_BADGE" "$BADGE_REPO" badge-runner)
 DOCTOR_IMAGE_TAG=$(resolve_image "$DOCTOR_VERSION" "$CUR_DOCTOR" "$DOCTOR_REPO" doctor-runner)
 WEBSITE_IMAGE_TAG=$(resolve_image "$WEBSITE_VERSION" "$CUR_WEB" "$WEBSITE_REPO" website)
+WORKPLACE_IMAGE_TAG=$(resolve_image "$WORKPLACE_VERSION" "$CUR_WORKPLACE" "$WORKPLACE_REPO" workplace)
 
 # Exported *now*, before anything runs `docker compose`, because compose reads
 # `${API_IMAGE:-…:latest}` and would otherwise pull `latest` no matter what was
@@ -207,6 +237,7 @@ export TRIAGE_IMAGE="$TRIAGE_IMAGE_TAG"
 export BADGE_IMAGE="$BADGE_IMAGE_TAG"
 export DOCTOR_IMAGE="$DOCTOR_IMAGE_TAG"
 export WEBSITE_IMAGE="$WEBSITE_IMAGE_TAG"
+export WORKPLACE_IMAGE="$WORKPLACE_IMAGE_TAG"
 
 # What the last *successful* deploy shipped, as immutable digests. Written only
 # after the health check passes, which is what makes it a known-good record
@@ -293,6 +324,23 @@ detect_profile() {
         PROFILES_COMPLETE=false
         log "WARN: $WEBSITE_IMAGE_TAG is not reachable. kolonie.ai will answer 502."
         log "WARN: the image builds in kolonie-website; the repository whose token"
+        log "WARN: is running this deploy may need read access to the package"
+        log "WARN: under Manage Actions access."
+    fi
+
+    # The workplace, probed on its own for the reason the website is (#1): one
+    # unreachable image must not stop the others, because `docker compose pull`
+    # fails the whole command for a single missing one. A workplace build that
+    # was never pushed therefore degrades to *its own* host answering 502 —
+    # which is the state #241 deliberately left and this deploy is what ends —
+    # rather than to the api and the website going down with it.
+    if docker pull -q "$WORKPLACE_IMAGE_TAG" >/dev/null 2>&1; then
+        PROFILE_ARGS+=(--profile workplace)
+        log "Workplace image reachable — including --profile workplace"
+    else
+        PROFILES_COMPLETE=false
+        log "WARN: $WORKPLACE_IMAGE_TAG is not reachable. workplace.kolonie.ai will answer 502."
+        log "WARN: the image builds in kolonie-workplace; the repository whose token"
         log "WARN: is running this deploy may need read access to the package"
         log "WARN: under Manage Actions access."
     fi
@@ -407,7 +455,8 @@ pin() {
     BADGE_IMAGE=$(digest_of "$BADGE_IMAGE_TAG" "$BADGE_REPO")
     DOCTOR_IMAGE=$(digest_of "$DOCTOR_IMAGE_TAG" "$DOCTOR_REPO")
     WEBSITE_IMAGE=$(digest_of "$WEBSITE_IMAGE_TAG" "$WEBSITE_REPO")
-    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE BADGE_IMAGE DOCTOR_IMAGE WEBSITE_IMAGE
+    WORKPLACE_IMAGE=$(digest_of "$WORKPLACE_IMAGE_TAG" "$WORKPLACE_REPO")
+    export API_IMAGE RUNNER_IMAGE MODERATION_IMAGE TRIAGE_IMAGE BADGE_IMAGE DOCTOR_IMAGE WEBSITE_IMAGE WORKPLACE_IMAGE
 
     log "  api:                   $API_IMAGE"
     log "  verifier-runner:       $RUNNER_IMAGE"
@@ -416,6 +465,7 @@ pin() {
     log "  badge-runner:          $BADGE_IMAGE"
     log "  doctor-runner:         $DOCTOR_IMAGE"
     log "  website:               $WEBSITE_IMAGE"
+    log "  workplace:             $WORKPLACE_IMAGE"
 }
 
 # The digest a local image carries for its own repository, or the tag if it has
@@ -469,19 +519,22 @@ record_deployment() {
     local recorded_badge="${BADGE_IMAGE}"
     local recorded_doctor="${DOCTOR_IMAGE}"
     local recorded_website="${WEBSITE_IMAGE}"
+    local recorded_workplace="${WORKPLACE_IMAGE}"
 
     if [ "$SERVICE" != all ] && [ -f "$DEPLOYED_STATE" ]; then
         # Read the previous record in a subshell, so sourcing it cannot clobber
         # the variables this deploy just resolved.
         local previous
-        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${TRIAGE_IMAGE}|${BADGE_IMAGE}|${DOCTOR_IMAGE}|${WEBSITE_IMAGE}")
+        previous=$(set -a; . "$DEPLOYED_STATE"; set +a; echo "${API_IMAGE}|${RUNNER_IMAGE}|${MODERATION_IMAGE}|${TRIAGE_IMAGE}|${BADGE_IMAGE}|${DOCTOR_IMAGE}|${WEBSITE_IMAGE}|${WORKPLACE_IMAGE}")
         [ "$SERVICE" != api ]                   && recorded_api="${previous%%|*}"
         [ "$SERVICE" != verifier-runner ]       && recorded_runner="$(cut -d'|' -f2 <<<"$previous")"
         [ "$SERVICE" != moderation-runner ]     && recorded_moderation="$(cut -d'|' -f3 <<<"$previous")"
         [ "$SERVICE" != support-triage-runner ] && recorded_triage="$(cut -d'|' -f4 <<<"$previous")"
         [ "$SERVICE" != badge-runner ]          && recorded_badge="$(cut -d'|' -f5 <<<"$previous")"
         [ "$SERVICE" != doctor-runner ]         && recorded_doctor="$(cut -d'|' -f6 <<<"$previous")"
-        [ "$SERVICE" != website ]               && recorded_website="${previous##*|}"
+        [ "$SERVICE" != website ]               && recorded_website="$(cut -d'|' -f7 <<<"$previous")"
+        # `##*|` reads the newest field, for the reason CUR_WORKPLACE above does.
+        [ "$SERVICE" != workplace ]             && recorded_workplace="${previous##*|}"
     fi
 
     local infra_commit; infra_commit=$(git rev-parse HEAD 2>/dev/null || echo ""); cat > "$DEPLOYED_STATE" <<EOF
@@ -499,6 +552,7 @@ TRIAGE_IMAGE=${recorded_triage}
 BADGE_IMAGE=${recorded_badge}
 DOCTOR_IMAGE=${recorded_doctor}
 WEBSITE_IMAGE=${recorded_website}
+WORKPLACE_IMAGE=${recorded_workplace}
 EOF
     log "Recorded the deployed build in ${DEPLOYED_STATE} (service: ${SERVICE})"
 
@@ -520,7 +574,8 @@ EOF
                     "MODERATION_IMAGE=${recorded_moderation}" "TRIAGE_IMAGE=${recorded_triage}" \
                     "BADGE_IMAGE=${recorded_badge}" \
                     "DOCTOR_IMAGE=${recorded_doctor}" \
-                    "WEBSITE_IMAGE=${recorded_website}"; do
+                    "WEBSITE_IMAGE=${recorded_website}" \
+                    "WORKPLACE_IMAGE=${recorded_workplace}"; do
         name="${recorded%%=*}"
         value="${recorded#*=}"
         [ -z "$value" ] && continue
@@ -956,7 +1011,8 @@ preflight_env() {
                 "moderation-runner:$MODERATION_IMAGE" "support-triage-runner:$TRIAGE_IMAGE" \
                 "badge-runner:$BADGE_IMAGE" \
                 "doctor-runner:$DOCTOR_IMAGE" \
-                "website:$WEBSITE_IMAGE"; do
+                "website:$WEBSITE_IMAGE" \
+                "workplace:$WORKPLACE_IMAGE"; do
         svc="${pair%%:*}"
         image="${pair#*:}"
         [ -z "$image" ] && continue
@@ -1406,6 +1462,27 @@ rollback() {
     log "  badge-runner:          ${BADGE_IMAGE:-unset}"
     log "  doctor-runner:         ${DOCTOR_IMAGE:-unset}"
     log "  website:               ${WEBSITE_IMAGE:-unset}"
+    log "  workplace:             ${WORKPLACE_IMAGE:-unset}"
+
+    local rollback_profiles=("${PROFILE_ARGS[@]}")
+    # A failed first workplace deploy has no known-good workplace image to
+    # restore. Leaving its profile active would run the same new digest again and
+    # call the retry a rollback — the failure #12 removed from the rest of this
+    # script. Restore every established profile and leave the workplace stopped;
+    # the next successful deploy will retry it through the cascade marker below.
+    if [ "$SERVICE" = workplace ] && ! grep -q '^WORKPLACE_IMAGE=.' "$DEPLOYED_STATE"; then
+        local filtered=() i=0
+        while [ "$i" -lt "${#rollback_profiles[@]}" ]; do
+            if [ "${rollback_profiles[$i]}" = --profile ] && [ "${rollback_profiles[$((i + 1))]:-}" = workplace ]; then
+                i=$((i + 2))
+                continue
+            fi
+            filtered+=("${rollback_profiles[$i]}")
+            i=$((i + 1))
+        done
+        rollback_profiles=("${filtered[@]}")
+        log "WARN: no previous workplace build is recorded; the rollback leaves its profile out rather than retrying the failed image."
+    fi
 
     # No --remove-orphans, ever. That flag deletes every container absent from
     # the file it is given, and on 2026-07-28 it took api, verifier-runner and
@@ -1417,7 +1494,7 @@ rollback() {
         git reset --hard "$INFRA_COMMIT"
     fi
 
-    docker compose "${PROFILE_ARGS[@]}" up -d 2>&1 || {
+    docker compose "${rollback_profiles[@]}" up -d 2>&1 || {
         log "ERROR: Rollback also failed! Manual intervention needed."
         exit 2
     }
@@ -1444,6 +1521,7 @@ rollback() {
         badge-runner)      redeploy_tag="$BADGE_IMAGE_TAG" ;;
         doctor-runner)     redeploy_tag="$DOCTOR_IMAGE_TAG" ;;
         website)           redeploy_tag="$WEBSITE_IMAGE_TAG" ;;
+        workplace)         redeploy_tag="$WORKPLACE_IMAGE_TAG" ;;
         *)                 redeploy_tag="" ;;
     esac
     # How many times this exact image has now failed to re-deploy (#79), and how
@@ -1582,7 +1660,7 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
             log "WARN: it has failed $CASCADE_ATTEMPTS time(s) on the same image, ${NEEDS_REDEPLOY_TAG:-unknown} — the next attempt would pull the same build and fail the same way."
             log "WARN: this run's own deploy of $SERVICE succeeded and is serving; the stuck cascade is a separate fact and does not fail it."
             if [ "$failed_images" -ge 2 ]; then
-                known_good=$(set -a; . "$DEPLOYED_STATE"; set +a; case "$NEEDS_REDEPLOY_SERVICE" in api) echo "${API_IMAGE:-unknown}" ;; verifier-runner) echo "${RUNNER_IMAGE:-unknown}" ;; moderation-runner) echo "${MODERATION_IMAGE:-unknown}" ;; support-triage-runner) echo "${TRIAGE_IMAGE:-unknown}" ;; badge-runner) echo "${BADGE_IMAGE:-unknown}" ;; doctor-runner) echo "${DOCTOR_IMAGE:-unknown}" ;; website) echo "${WEBSITE_IMAGE:-unknown}" ;; esac)
+                known_good=$(set -a; . "$DEPLOYED_STATE"; set +a; case "$NEEDS_REDEPLOY_SERVICE" in api) echo "${API_IMAGE:-unknown}" ;; verifier-runner) echo "${RUNNER_IMAGE:-unknown}" ;; moderation-runner) echo "${MODERATION_IMAGE:-unknown}" ;; support-triage-runner) echo "${TRIAGE_IMAGE:-unknown}" ;; badge-runner) echo "${BADGE_IMAGE:-unknown}" ;; doctor-runner) echo "${DOCTOR_IMAGE:-unknown}" ;; website) echo "${WEBSITE_IMAGE:-unknown}" ;; workplace) echo "${WORKPLACE_IMAGE:-unknown}" ;; esac)
                 log "WARN: $failed_images different images of $NEEDS_REDEPLOY_SERVICE have failed; the code is at fault, and another rebuild will not help."
                 log "WARN: deploy the known-good image recorded in deployed.env: $known_good"
                 log "WARN:   gh workflow run deploy.yml -R Kolonie-AI/kolonie-infra -f service=$NEEDS_REDEPLOY_SERVICE"
@@ -1609,6 +1687,7 @@ if [ -f "$STATE_DIR/needs-redeploy.env" ]; then
                 badge-runner)      export BADGE_IMAGE="$NEEDS_REDEPLOY_TAG"; BADGE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
                 doctor-runner)     export DOCTOR_IMAGE="$NEEDS_REDEPLOY_TAG"; DOCTOR_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
                 website)           export WEBSITE_IMAGE="$NEEDS_REDEPLOY_TAG"; WEBSITE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
+                workplace)         export WORKPLACE_IMAGE="$NEEDS_REDEPLOY_TAG"; WORKPLACE_IMAGE_TAG="$NEEDS_REDEPLOY_TAG" ;;
             esac
 
             detect_profile

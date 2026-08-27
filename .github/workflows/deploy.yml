@@ -26,7 +26,7 @@ on:
       service:
         description: >-
           What to deploy: `all`, one service, or a comma-separated list of them
-          (api, verifier-runner, moderation-runner, website). A list is deployed
+          (api, verifier-runner, moderation-runner, website, workplace). A list is deployed
           in one run, in dependency order, which is what stops a fan-out from
           becoming several deploys racing for one concurrency group — #31.
         type: string
@@ -66,7 +66,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: 'all, one service, or a comma-separated list (api, verifier-runner, moderation-runner, website)'
+        description: 'all, one service, or a comma-separated list (api, verifier-runner, moderation-runner, website, workplace)'
         required: false
         default: 'all'
       version:
@@ -251,6 +251,7 @@ jobs:
                   badge-runner)          export BADGE_VERSION="$VERSION" ;;
                   doctor-runner)         export DOCTOR_VERSION="$VERSION" ;;
                   website)               export WEBSITE_VERSION="$VERSION" ;;
+                  workplace)             export WORKPLACE_VERSION="$VERSION" ;;
                   # `all` is not a service and takes no version, which is what
                   # the paragraph above already argues: five images built by five
                   # workflows in two repositories share no tag, so there is no
