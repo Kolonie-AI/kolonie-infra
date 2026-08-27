@@ -1444,8 +1444,11 @@ services:
   #
   # **Its own profile**, so it is absent from the compose view of every deploy
   # that has not opted in. Teardown is therefore `docker compose --profile
-  # vikunja-reference down` plus `docker volume rm kolonie_vikunja_reference_data`,
-  # and nothing else on this host changes; README.md states it as a procedure.
+  # vikunja-reference rm --stop --force vikunja-reference` plus
+  # `docker volume rm kolonie_vikunja_reference_data`, and nothing else on this
+  # host changes; README.md states it as a procedure. `docker compose down` is
+  # deliberately not that procedure: even with this profile named it would also
+  # stop and remove the Colony's unprofiled services.
   #
   # ## Why the profile is gated on a host variable, like pgAdmin's
   #

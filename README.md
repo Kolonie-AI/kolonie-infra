@@ -739,7 +739,8 @@ image's own CLI:
 
 ```bash
 docker compose --profile vikunja-reference exec vikunja-reference \
-  /app/vikunja/vikunja user create -u <username> -e <email> -p <password>
+  /app/vikunja/vikunja user create -u <username> -e <email>
+# The command prompts for the password; do not put one in shell history.
 ```
 
 If you use the web form instead, it is two deploys and the second is not
@@ -750,9 +751,10 @@ host that does nothing is a host with registration closed.
 **Teardown**, which touches nothing else on the host:
 
 ```bash
-docker compose --profile vikunja-reference down
+docker compose --profile vikunja-reference rm --stop --force vikunja-reference
+# `down` is deliberately not used: it would also remove unprofiled Colony services.
 docker volume rm kolonie_vikunja_reference_data   # deletes the reference's entire state
-rm /opt/kolonie/secrets/vikunja-reference.env      # and the next deploy omits the profile
+rm /opt/kolonie/secrets/vikunja-reference.env     # and the next deploy omits the profile
 ```
 
 The volume is deliberately outside the backup scope; see
