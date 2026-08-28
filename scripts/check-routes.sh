@@ -187,11 +187,10 @@ echo "each host-only router answers for its own host and nothing else"
 # The measurement that motivated this is on the live host, recorded on the
 # issue: before the router existed the name answered 525, and afterwards a
 # request to a *different* host was still served by that host's own router.
-for router in console workplace vikunja-reference; do
+for router in console workplace; do
     r=$(rule_of "$router")
     host="${router}.kolonie.ai"
     [ "$router" = console ] && host="console.kolonie.ai"
-    [ "$router" = vikunja-reference ] && host="vikunja-reference.kolonie.ai"
 
     check "$router matches exactly one host and no path" \
         "$([ "$r" = "\"Host(\`$host\`)\"" ] && echo yes || echo no)" \
@@ -214,19 +213,6 @@ check "the workplace router does not answer from the api service" \
     "$([ "$workplace_service" = workplace ] && echo yes || echo no)" \
     "read service: ${workplace_service:-<none>}
 #241: this host is a separate Vue application, not a surface of apps/api"
-
-# The Vikunja reference must not collapse onto the workplace or the API. A
-# silent 200 serving the wrong product is the failure #245 exists to prevent.
-vikunja_service=$(grep -vE '^[[:space:]]*#' "$ROUTES" |
-    awk '
-        /^[[:space:]]*vikunja-reference:[[:space:]]*$/ { inside = 1; next }
-        inside && /^[[:space:]]*service:/ { print $2; exit }
-        inside && /^[[:space:]]*[a-z][a-z0-9-]*:[[:space:]]*$/ && !/middlewares|tls/ { inside = 0 }
-    ')
-check "the Vikunja-reference router answers from its own service, not workplace or api" \
-    "$([ "$vikunja_service" = vikunja-reference ] && echo yes || echo no)" \
-    "read service: ${vikunja_service:-<none>}
-#245: this host is a disposable upstream measuring instrument, not Colony state"
 
 echo
 if [ "$FAILURES" -ne 0 ]; then

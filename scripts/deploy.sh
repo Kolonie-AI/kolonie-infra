@@ -372,42 +372,6 @@ detect_profile() {
     else
         log "PGADMIN_PASSWORD is not set on this host — skipping --profile admin (db.kolonie.ai stays down)"
     fi
-
-    # The Vikunja reference (#245), and the same argument as pgAdmin's above with
-    # one difference in where the configuration lives.
-    #
-    # `vikunja/vikunja:2.5.0` is a third party's image and always pullable, so a
-    # registry probe would say yes on a host nobody has set up. What such a host
-    # lacks is the service secret, and without it Vikunja mints a random one per
-    # start — every session invalidated on every recreate, silently. So this is
-    # opt-in by configuration exactly like the admin profile.
-    #
-    # **The gate is a file rather than a name in `.env`, because the compose
-    # service reads it as an `env_file`.** Writing the secret into `.env` and
-    # interpolating it into `environment:` is the shape that first suggests
-    # itself and it loses the value on any host that has the file but not the
-    # `.env` line — `environment:` overrides `env_file:`, so compose renders an
-    # empty string over it. docker-compose.yml states that measurement. Gating on
-    # the same file compose insists on means this check and compose's own
-    # `required: true` cannot disagree: if this includes the profile, the file is
-    # there, and if the file is there but unreadable the deploy fails loudly at
-    # `config` instead of starting a container with no session secret.
-    #
-    # Two guards, and they fail in opposite directions on purpose: this one keeps
-    # an unconfigured host from ever seeing the service, and `required: true`
-    # keeps a configured host from starting it after the file itself disappears.
-    # The grep is deliberately stricter than `[ -s ]`: a non-empty file carrying
-    # a misspelled or unrelated name still leaves Vikunja without the secret and
-    # would otherwise opt the host in. It asks only whether one non-empty value is
-    # present; it never reads that value into a variable or writes it to output.
-    #
-    # **A name, never a value** — same public-log standard as the pgAdmin gate.
-    if grep -qE '^VIKUNJA_SERVICE_SECRET=.' "$DEPLOY_DIR/secrets/vikunja-reference.env" 2>/dev/null; then
-        PROFILE_ARGS+=(--profile vikunja-reference)
-        log "secrets/vikunja-reference.env carries VIKUNJA_SERVICE_SECRET — including --profile vikunja-reference"
-    else
-        log "secrets/vikunja-reference.env is absent or incomplete — skipping --profile vikunja-reference (vikunja-reference.kolonie.ai stays down)"
-    fi
 }
 
 # Snapshot the current state, for reading afterwards.

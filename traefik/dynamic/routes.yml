@@ -186,20 +186,6 @@ http:
       tls:
         certResolver: cloudflare
 
-    # Pinned upstream Vikunja, run only as a disposable UI and interaction
-    # reference for the workplace (#245). Its own host and service keep it
-    # separate from the Colony platform and workplace application.
-    vikunja-reference:
-      rule: "Host(`vikunja-reference.kolonie.ai`)"
-      entryPoints:
-        - websecure
-      middlewares:
-        - security-headers
-        - rate-limit
-      service: vikunja-reference
-      tls:
-        certResolver: cloudflare
-
     # The Atlas — the apex host, one path prefix, answered by the API
     # (kolonie-platform#546).
     #
@@ -558,13 +544,6 @@ http:
       loadBalancer:
         servers:
           - url: "http://kolonie-workplace:80"
-
-    # Pinned upstream Vikunja (#245). Port 3456 is the image's published HTTP
-    # port; the container is only reachable on the Docker network.
-    vikunja-reference:
-      loadBalancer:
-        servers:
-          - url: "http://kolonie-vikunja-reference:3456"
 
     pgadmin:
       loadBalancer:
