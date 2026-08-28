@@ -14,7 +14,7 @@ created through the API and is stated with the date it was measured.
 | `kolonie.ai` | `TXT` | `v=MCPv1; k=ed25519; p=<public key>` — namespace verification for the official MCP registry | It is what proves the `ai.kolonie` namespace belongs to this project. Delete it and the Colony's registry entry can no longer be updated, and the namespace becomes claimable by whoever proves the domain next | 2026-08-06 |
 | `workplace.kolonie.ai` | `A` | The human workplace host (`#241`), proxied, pointing at the same origin as the other public names | Nothing recreates it: the deploy chain never writes DNS, and the Traefik router alone does not make the name resolve. Deleted, the workplace stops resolving entirely — and because the certificate is issued by the DNS-01 challenge against this zone, the failure is a name that does not exist rather than a service that is down | 2026-08-26 |
 
-The A record for `vikunja-reference.kolonie.ai` is pending operator deletion (`#253`). The compose instrument was removed on 2026-08-28 (`#252`); this file no longer lists it as a live record.
+The A record for `vikunja-reference.kolonie.ai` was deleted on 2026-08-28 (`#253`). The compose instrument was removed the same day (`#252`); this file no longer lists it as a live record.
 
 ## The workplace host, in more detail
 
