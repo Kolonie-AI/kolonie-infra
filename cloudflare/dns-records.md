@@ -13,7 +13,8 @@ created through the API and is stated with the date it was measured.
 |---|---|---|---|---|
 | `kolonie.ai` | `TXT` | `v=MCPv1; k=ed25519; p=<public key>` — namespace verification for the official MCP registry | It is what proves the `ai.kolonie` namespace belongs to this project. Delete it and the Colony's registry entry can no longer be updated, and the namespace becomes claimable by whoever proves the domain next | 2026-08-06 |
 | `workplace.kolonie.ai` | `A` | The human workplace host (`#241`), proxied, pointing at the same origin as the other public names | Nothing recreates it: the deploy chain never writes DNS, and the Traefik router alone does not make the name resolve. Deleted, the workplace stops resolving entirely — and because the certificate is issued by the DNS-01 challenge against this zone, the failure is a name that does not exist rather than a service that is down | 2026-08-26 |
-| `vikunja-reference.kolonie.ai` | `A` | The upstream Vikunja reference host (`#245`), proxied, same origin as the other public names | Deleting it takes down only the reference instrument; no Colony service is affected. It is the one record here that is deliberately removable because the reference is opt-in per host | 2026-08-27 |
+
+The A record for `vikunja-reference.kolonie.ai` is pending operator deletion (`#253`). The compose instrument was removed on 2026-08-28 (`#252`); this file no longer lists it as a live record.
 
 ## The workplace host, in more detail
 
@@ -33,28 +34,6 @@ the name, `sniStrict: true` leaves the edge with no certificate to present and
 as a broken origin and is indistinguishable from a real TLS fault on the hosts
 that work. The router in `traefik/dynamic/routes.yml` is what resolves it, and
 until the application image exists the honest answer behind it is a 502.
-
-## The Vikunja reference host, in more detail
-
-The record was created on 2026-08-27, after the repository half of `#245`
-merged. That split is worth keeping: the compose profile, the router and the
-rejection case are reviewable and mergeable without touching DNS, and the row
-above was written as `pending` in the same pull request so the zone half could
-not be forgotten between the two.
-
-It was created the same way `workplace.kolonie.ai` was: by copying
-`console.kolonie.ai`'s type, origin, proxy setting and TTL programmatically, so
-the names cannot disagree about where the origin is. The intermediate state that
-section describes applies here unchanged — with the record live and the router
-not yet deployed, `sniStrict: true` leaves the edge nothing to present and the
-name answers **525**, which reads like a broken origin and is not one. Here the
-router was already deployed when the record was created, so that window did not
-open.
-
-**Deleting it is the intended teardown of the public half**, and it is the one
-record in this file that is safe to delete: the reference is an instrument, the
-profile is off on any host that has not opted in, and no Colony service is
-reachable through this name.
 
 ## The MCP registry record, in more detail
 

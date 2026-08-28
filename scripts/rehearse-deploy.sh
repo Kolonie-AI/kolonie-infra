@@ -124,7 +124,6 @@ case "$1 ${2:-}" in
             # profiles is one healthcheck() will roll the stack back for.
             case "$RAW_ARGS" in *"--profile workplace"*) echo "workplace" ;; esac
             case "$RAW_ARGS" in *"--profile admin"*) echo "pgadmin" ;; esac
-            case "$RAW_ARGS" in *"--profile vikunja-reference"*) echo "vikunja-reference" ;; esac
           else
             echo "services: {}"
           fi
@@ -950,105 +949,22 @@ contains "$(cat "$WORK/docker.log")" "pull pgadmin" "and pulled it"
 contains "$out" "OK: pgadmin (healthy)" "and asserted its health like any other service"
 absent "$out" "rehearsal-fixture-not-a-secret" "the value reached no output"
 
-echo "== 22v. Vikunja's reference profile is off unless the host is configured for it"
-# #245. Same gate as pgAdmin, and for the same reason: a third-party image that
-# is always pullable must not take a production deploy down when nobody asked for
-# the instrument. The gate is the secret *file*, because that is what the compose
-# service reads — see detect_profile() and the env_file block in
-# docker-compose.yml.
+echo "== 22v. a leftover Vikunja secret file cannot turn the retired profile back on (#252)"
+# The live teardown removes this file, but a restored backup or an interrupted
+# operator run must not be able to resurrect the rejected reference on the next
+# deploy. The repository no longer has a profile for the file to activate.
 rm -rf "$WORK/state"; : > "$WORK/docker.log"; rm -f "$WORK/.env"
-rm -f "$WORK/secrets/vikunja-reference.env"
-out=$(run_deploy env)
-contains "$out" "secrets/vikunja-reference.env is absent or incomplete — skipping --profile vikunja-reference" "said why it skipped it"
-absent "$(cat "$WORK/docker.log")" "--profile vikunja-reference" "no vikunja-reference profile in any compose call"
-contains "$out" "=== Deployment completed ===" "and the deploy ran as before"
-
-echo "== 22w. a host carrying the secret file gets Vikunja pulled, started and health-checked"
-rm -rf "$WORK/state"; : > "$WORK/docker.log"
-printf 'POSTGRES_PASSWORD=x\n' > "$WORK/.env"
 mkdir -p "$WORK/secrets"
 printf 'VIKUNJA_SERVICE_SECRET=rehearsal-fixture-not-a-secret\n' > "$WORK/secrets/vikunja-reference.env"
 out=$(run_deploy env)
-contains "$out" "secrets/vikunja-reference.env carries VIKUNJA_SERVICE_SECRET — including --profile vikunja-reference" "activated the profile"
-contains "$(grep 'up -d' "$WORK/docker.log")" "--profile vikunja-reference" "started it with everything else"
-contains "$(cat "$WORK/docker.log")" "pull vikunja-reference" "and pulled it"
-contains "$out" "OK: vikunja-reference (healthy)" "and asserted its health like any other service"
-absent "$out" "rehearsal-fixture-not-a-secret" "the value reached no output"
-
-echo "== 22x. an empty or incomplete secret file does not count as configured"
-# Two shapes of half-finished setup, and both would start Vikunja with no session
-# secret — the failure the gate exists for. An empty file is `touch` and nothing
-# written; a file with the wrong name in it is the likelier one, because it looks
-# configured to anybody reading `ls`. The gate asks for the name compose actually
-# reads, which is why neither opts the host in.
-rm -rf "$WORK/state"; : > "$WORK/docker.log"
-: > "$WORK/secrets/vikunja-reference.env"
-out=$(run_deploy env)
-contains "$out" "secrets/vikunja-reference.env is absent or incomplete — skipping --profile vikunja-reference" "treated an empty file as unconfigured"
-absent "$(cat "$WORK/docker.log")" "--profile vikunja-reference" "and left the profile off"
-
-rm -rf "$WORK/state"; : > "$WORK/docker.log"
-printf 'VIKUNJA_SERVICE_SECRET=\n' > "$WORK/secrets/vikunja-reference.env"
-out=$(run_deploy env)
-contains "$out" "secrets/vikunja-reference.env is absent or incomplete — skipping --profile vikunja-reference" "treated a valueless line as unconfigured"
-
-rm -rf "$WORK/state"; : > "$WORK/docker.log"
-printf 'VIKUNJA_REFERENCE_SECRET=rehearsal-fixture-not-a-secret\n' > "$WORK/secrets/vikunja-reference.env"
-out=$(run_deploy env)
-contains "$out" "secrets/vikunja-reference.env is absent or incomplete — skipping --profile vikunja-reference" "a non-empty file under the wrong name is not configuration"
-absent "$(cat "$WORK/docker.log")" "--profile vikunja-reference" "and it too left the profile off"
-
-echo "== 22y. an unhealthy Vikunja reference still rolls back — it is not exempt once it is in"
-# The trade the gate buys is narrow, exactly as pgAdmin's is: once an operator has
-# configured the instrument it is a service in the active profiles like any other,
-# and healthcheck() makes no exceptions. The gate stops an *unconfigured* host
-# from being broken by it; it does not make a configured one immune.
-seed_known_good; : > "$WORK/docker.log"; rm -f "$WORK/docker.log.upfailed"
-printf 'VIKUNJA_SERVICE_SECRET=rehearsal-fixture-not-a-secret\n' > "$WORK/secrets/vikunja-reference.env"
-out=$(run_deploy env UNHEALTHY_SERVICE=kolonie-vikunja-reference || true)
-contains "$out" "vikunja-reference(unhealthy)" "named vikunja-reference as the failing service"
-contains "$out" "Rollback completed" "and rolled back"
-
-echo "== 22z. the reference never reaches the Colony's database or its volumes"
-# The acceptance criterion is that this service cannot read or write Colony
-# Postgres, workplace fixtures or platform volumes. Two halves, both readable
-# from the file rather than from a running host:
-#
-#   - it is handed no Postgres credential and no DATABASE_URL, so `postgres`
-#     being resolvable on this network buys it nothing;
-#   - its volume is its own, and no other service mounts it.
-#
-# Asserted against docker-compose.yml directly. A future edit that hands this
-# service a database URL "to make the health check richer" is the failure this
-# catches, and it would otherwise be a silent one.
-# Comments are stripped first, and that is not tidiness. The block below is
-# heavily commented *about* Postgres and about the secret it must not carry —
-# `absent` is a substring test, so an unstripped block fails on its own prose
-# and the case would be measuring the documentation rather than the service.
+absent "$out" "--profile vikunja-reference" "the leftover secret does not activate the retired profile"
+absent "$(cat "$WORK/docker.log")" "--profile vikunja-reference" "no compose call includes the retired profile"
+# A future reintroduction of the compose block must fail this rehearsal even if
+# deploy.sh itself still ignores the leftover secret file.
 compose_effective=$(grep -v '^[[:space:]]*#' "$ROOT/docker-compose.yml")
-block=$(awk '
-    /^  vikunja-reference:$/ { inside = 1; next }
-    inside && /^  [a-z][a-z0-9-]*:$/ { inside = 0 }
-    inside { print }
-' <<<"$compose_effective")
-absent "$block" "DATABASE_URL" "no DATABASE_URL in the vikunja-reference service"
-absent "$block" "POSTGRES_" "no Postgres credential in the vikunja-reference service"
-absent "$block" "depends_on" "and it waits on no Colony service"
-contains "$block" "vikunja_reference_data:/tmp" "it mounts its own volume and nothing else"
-# Declared once in `volumes:` and mounted once, by this service. A third
-# occurrence would mean a Colony service had been given the reference's store.
-check "the volume is declared once and mounted once — no Colony service shares it" \
-  "$(grep -c 'vikunja_reference_data' <<<"$compose_effective")" "2"
-
-echo "== 22aa. the reference's secret is read from a file, never interpolated into environment:"
-# The measured failure this guards (2026-08-27): `environment:` wins over
-# `env_file:`, so interpolating VIKUNJA_SERVICE_SECRET from a name in `.env`
-# renders an empty string over the file on any host that has the file but not the
-# .env line — and Vikunja then mints a random secret per start, logging the
-# maintainer out on every recreate with nothing in any log to say why.
-absent "$block" "VIKUNJA_SERVICE_SECRET:" "the secret is not assigned in environment:"
-contains "$block" "required: true" "and the file compose reads it from is mandatory"
-rm -f "$WORK/.env" "$WORK/secrets/vikunja-reference.env"
+absent "$compose_effective" "vikunja-reference:" "the retired service is absent from compose"
+absent "$compose_effective" "vikunja_reference_data:" "the retired volume is absent from compose"
+rm -f "$WORK/secrets/vikunja-reference.env"
 
 echo "== 22c. an empty PGADMIN_PASSWORD= line does not count as configured"
 # A key with no value is how a half-finished .env edit looks, and it is the
