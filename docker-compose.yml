@@ -682,6 +682,14 @@ services:
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       LLM_GATEWAY_API_KEY_VERIFIER: ${LLM_GATEWAY_API_KEY_VERIFIER:-}
       LLM_GATEWAY_MODEL_VERIFIER: ${LLM_GATEWAY_MODEL_VERIFIER:-}
+      # **The second gateway (`kolonie-infra#257`).** Independently configured,
+      # same capability tier, absent rather than a literal default. Unset is a
+      # working configuration: that service has no second gateway and degrades
+      # the way an absent primary key already degrades. The platform already
+      # reads these names (`kolonie-platform#1695`); compose never passed them,
+      # which is why production could not fall back.
+      LLM_GATEWAY_FALLBACK_BASE_URL: ${LLM_GATEWAY_FALLBACK_BASE_URL:-}
+      LLM_GATEWAY_FALLBACK_API_KEY_VERIFIER: ${LLM_GATEWAY_FALLBACK_API_KEY_VERIFIER:-}
       # Which model looks at the image. Unset means the code's own default, the
       # same arrangement OPENROUTER_MODEL has one service down. It has to accept
       # an image *and* honour a JSON schema, which rules out most cheap vision
@@ -865,6 +873,16 @@ services:
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       LLM_GATEWAY_API_KEY_MODERATION: ${LLM_GATEWAY_API_KEY_MODERATION:-}
       LLM_GATEWAY_MODEL_MODERATION: ${LLM_GATEWAY_MODEL_MODERATION:-}
+      # **The second gateway (`kolonie-infra#257`).** Independently configured,
+      # same capability tier, absent rather than a literal default. Unset is a
+      # working configuration: that service has no second gateway and degrades
+      # the way an absent primary key already degrades. The platform already
+      # reads these names (`kolonie-platform#1695`); compose never passed them,
+      # which is why production could not fall back. Embeddings still go to the
+      # underlying transport (D-122 §1); `OPENROUTER_API_KEY` stays on this
+      # service until they have a named variable of their own.
+      LLM_GATEWAY_FALLBACK_BASE_URL: ${LLM_GATEWAY_FALLBACK_BASE_URL:-}
+      LLM_GATEWAY_FALLBACK_API_KEY_MODERATION: ${LLM_GATEWAY_FALLBACK_API_KEY_MODERATION:-}
       # Which model judges is a decision that will be revisited against a real
       # corpus, so it is configuration. Unset means the code's own default.
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
@@ -1026,6 +1044,14 @@ services:
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       LLM_GATEWAY_API_KEY_TRIAGE: ${LLM_GATEWAY_API_KEY_TRIAGE:-}
       LLM_GATEWAY_MODEL_TRIAGE: ${LLM_GATEWAY_MODEL_TRIAGE:-}
+      # **The second gateway (`kolonie-infra#257`).** Independently configured,
+      # same capability tier, absent rather than a literal default. Unset is a
+      # working configuration: that service has no second gateway and degrades
+      # the way an absent primary key already degrades. The platform already
+      # reads these names (`kolonie-platform#1695`); compose never passed them,
+      # which is why production could not fall back.
+      LLM_GATEWAY_FALLBACK_BASE_URL: ${LLM_GATEWAY_FALLBACK_BASE_URL:-}
+      LLM_GATEWAY_FALLBACK_API_KEY_TRIAGE: ${LLM_GATEWAY_FALLBACK_API_KEY_TRIAGE:-}
       # Which model triages. Unset means the code's own default.
       TRIAGE_MODEL: ${TRIAGE_MODEL:-}
       # The GitHub App this files issues as (kolonie-infra#55).
