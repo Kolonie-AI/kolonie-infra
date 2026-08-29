@@ -68,6 +68,7 @@ step "deploy.sh, against a stub docker" bash scripts/rehearse-deploy.sh
 step "backup.sh, against a stub docker" bash scripts/rehearse-backup.sh
 step "image-prune.sh, against a stub docker" bash scripts/rehearse-image-prune.sh
 step "the service list against compose" bash scripts/check-services.sh
+step "a primary gateway also receives the fallback pair" bash scripts/check-gateway-fallback.sh
 step "deployed-revision.sh, against a stub docker" bash scripts/rehearse-deployed-revision.sh
 step "drift-triage.sh" bash scripts/rehearse-drift.sh
 step "the health watcher's own wiring" bash scripts/rehearse-watch-wiring.sh
