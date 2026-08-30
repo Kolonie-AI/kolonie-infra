@@ -449,7 +449,7 @@ than one that is, so anything not provably inert still ships.
 
 1. GitHub Actions SSHes to the VPS
 2. Pulls the latest infra config
-3. `scripts/deploy.sh`: pull → pin → migrate → seed → `up -d`
+3. `scripts/deploy.sh`: pull → pin → migrate → backfill workplaces → seed → `up -d`
 4. Runs the health check
 5. Rolls back to the last build that passed one, on failure
 
@@ -516,7 +516,7 @@ The infra repo manages infrastructure (Traefik, PostgreSQL). Application service
 1. Push to `main` triggers GitHub Actions
 2. Actions SSHs to VPS as `ubuntu`
 3. Runs `git pull origin main` in `/opt/kolonie`
-4. Runs `scripts/deploy.sh`: pull → **pin** → migrate → seed → `up -d` → health check
+4. Runs `scripts/deploy.sh`: pull → **pin** → migrate → backfill workplaces → seed → `up -d` → health check
 5. Runs `scripts/healthcheck.sh` which checks container health via Docker inspect
 
 **Nothing is ever run from a mutable tag.** `deploy.sh` pulls `:latest`, resolves
