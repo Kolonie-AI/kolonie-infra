@@ -1588,6 +1588,18 @@ for v in TELEGRAM_OPERATOR_BOT_TOKEN TELEGRAM_OPERATOR_BOT_USERNAME TELEGRAM_WEB
     "$(grep -qE "^#?$v=" "$ROOT/.env.example" && echo yes || echo no)" "yes"
 done
 
+echo "== 28c. the workplace door variables are wired and optional (#259, #247)"
+# The Workplace bearer door reads WORKPLACE_JWT_ISSUER, WORKPLACE_JWT_AUDIENCE
+# and WORKPLACE_ORIGIN. Each must be passed with `:-` so an unset door logs
+# disabled rather than aborting the deploy, and each must be documented.
+for v in WORKPLACE_JWT_ISSUER WORKPLACE_JWT_AUDIENCE WORKPLACE_ORIGIN; do
+  line=$(grep -F "      $v: " "$ROOT/docker-compose.yml" || true)
+  check "$v is passed to api service" "$([ -n "$line" ] && echo yes || echo no)" "yes"
+  check "$v is optional (\${$v:-})" "$(grep -qF "\${$v:-}" <<<"$line" && echo yes || echo no)" "yes"
+  check "$v is documented in .env.example" \
+    "$(grep -qE "^#?$v=" "$ROOT/.env.example" && echo yes || echo no)" "yes"
+done
+
 echo "== 29. no deploy removes a container, and a failed one least of all (#188)"
 # A recreate renames the container it is replacing to `<12 hex>_<name>`, and a
 # deploy that fails part-way leaves that rename on the host. #188 asked where
