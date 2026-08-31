@@ -705,6 +705,39 @@ verify_migrations() {
     log "Migrations: $in_database applied, matching the $in_image this image carries"
 }
 
+# Provision the default Workplace for citizens promoted before provisioning was
+# part of promoteIfEarned. This runs after migrations because the backfill needs
+# their schema, and before any new container serves because an existing citizen
+# must not wake into the gap this deploy is closing.
+#
+# No host marker records completion. The database operation is idempotent and is
+# the authority on which citizens still need a board; a marker could survive a
+# restored database and silently prevent the repair from running again.
+#
+# Failure stops before deploy for the same reason migration and seeding failures
+# do: the previous containers are still serving, so there is nothing to roll
+# back, and reporting success would leave the data invariant unmet.
+backfill_workplaces() {
+    if [ "$API_AVAILABLE" != true ]; then
+        log "Default Workplaces: skipped — $API_IMAGE is not reachable, and the backfill ships in it"
+        return
+    fi
+
+    if [ "$SERVICE" != "all" ] && [ "$SERVICE" != "api" ]; then
+        log "Default Workplaces: skipped — this deploy touches $SERVICE only"
+        return
+    fi
+
+    log "Backfilling default Workplaces..."
+    cd "$DEPLOY_DIR"
+    if ! docker compose "${PROFILE_ARGS[@]}" run --rm -T api npm run backfill:workplaces -w @kolonie-ai/db 2>&1; then
+        log "ERROR: default Workplace backfill failed — the deploy stops here."
+        log "ERROR: no new container was started; the previous ones are still serving."
+        exit 1
+    fi
+    log "Default Workplaces: done"
+}
+
 # Put the Academy tasks in the database — same window as migrate(), same reason.
 #
 # `GET /v1/tasks` reads a table that migrations create and nothing fills. Without
@@ -1607,6 +1640,9 @@ preflight_env
 # from them yet, which is the only window in which the schema can be moved
 # forward without a running API seeing a database it does not expect.
 migrate
+# The backfill needs the migrated Workplace schema and is idempotent, so every
+# api-capable deploy repairs any citizen still missing its default board.
+backfill_workplaces
 # After migrate, because the rows it writes need the columns migrate created.
 # Before deploy, so the API never serves a task list it is about to change.
 seed

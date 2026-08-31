@@ -15,7 +15,7 @@ operational tooling that monitors and diagnoses the host.
 docker-compose.yml          production compose — five services, two profiles
 docker-compose.dev.yml      local development override (Postgres only)
 traefik/                    static and dynamic Traefik v3 configuration
-scripts/deploy.sh           the deploy — pull, pin, migrate, seed, deploy, healthcheck
+scripts/deploy.sh           the deploy — pull, pin, migrate, backfill workplaces, seed, deploy, healthcheck
 scripts/rehearse-deploy.sh  exercises deploy.sh against a stub docker
 scripts/healthcheck.sh      post-deploy health assertion
 scripts/rollback.sh         manual rollback to the last known-good build

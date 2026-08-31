@@ -31,8 +31,8 @@ cp -r "$ROOT/scripts" "$WORK/"
 
 # --- the stub -------------------------------------------------------------
 # Records every invocation, and answers the handful of questions deploy.sh asks.
-# The failure switches (FAIL_UP, FAIL_SEED, FAIL_DIGEST, UNHEALTHY) are how a
-# case chooses which branch of the script it is testing.
+# The failure switches (FAIL_UP, FAIL_SEED, FAIL_BACKFILL, FAIL_DIGEST,
+# UNHEALTHY) are how a case chooses which branch of the script it is testing.
 cat > "$BIN/docker" <<'STUB'
 #!/bin/bash
 echo "docker $*" >> "$DOCKER_LOG"
@@ -129,7 +129,14 @@ case "$1 ${2:-}" in
           fi
           ;;
         ps)      echo "[]" ;;
-        run)     [ "${FAIL_SEED:-}" = 1 ] && { echo "Missing script: seed" >&2; exit 1; } ; exit 0 ;;
+        run)
+          if [ "${FAIL_BACKFILL:-}" = 1 ] && [[ "$RAW_ARGS" == *"npm run backfill:workplaces"* ]]; then
+            echo "backfill failed" >&2
+            exit 1
+          fi
+          [ "${FAIL_SEED:-}" = 1 ] && { echo "Missing script: seed" >&2; exit 1; }
+          exit 0
+          ;;
         up)      # fail only the first `up`, so the rollback's own `up` can succeed
                  if [ "${FAIL_UP:-}" = 1 ] && [ ! -f "$DOCKER_LOG.upfailed" ]; then
                    touch "$DOCKER_LOG.upfailed"; exit 1
@@ -304,10 +311,27 @@ contains "$(cat "$WORK/state/deployed.env")" "API_IMAGE=ghcr.io/kolonie-ai/kolon
 # the containers must have been started with the digest exported
 contains "$(cat "$WORK/docker.log")" "compose --profile full --profile website --profile workplace up -d --remove-orphans" "up -d ran"
 
-echo "== 2. the migrate and seed containers run the pinned build, not :latest"
-grep -q 'compose .*run --rm -T api npm run migrate' "$WORK/docker.log" && echo "  ok   migrate ran" && pass=$((pass+1))
+echo "== 2. the migrate, Workplace backfill and seed containers run the pinned build, in order"
+log=$(cat "$WORK/docker.log")
+contains "$log" "run --rm -T api npm run migrate -w @kolonie-ai/db" "migrate ran"
+contains "$log" "run --rm -T api npm run backfill:workplaces -w @kolonie-ai/db" "default Workplace backfill ran"
 recorded_api=$(grep '^API_IMAGE=' "$WORK/state/deployed.env" | cut -d= -f2-)
 check "pinned ref is a digest, not a tag" "$(grep -c '@sha256:' <<<"$recorded_api")" "1"
+migrate_line=$(grep -n 'run --rm -T api npm run migrate ' "$WORK/docker.log" | cut -d: -f1)
+backfill_line=$(grep -n 'run --rm -T api npm run backfill:workplaces ' "$WORK/docker.log" | cut -d: -f1)
+seed_line=$(grep -n 'run --rm -T api npm run seed ' "$WORK/docker.log" | cut -d: -f1)
+check "backfill runs between migration and seed" "$([ "$migrate_line" -lt "$backfill_line" ] && [ "$backfill_line" -lt "$seed_line" ] && echo yes || echo no)" "yes"
+
+echo "== 2b. a failed Workplace backfill stops before seed or container changes"
+rm -rf "$WORK/state"; mkdir -p "$WORK/state"; : > "$WORK/docker.log"
+out=$(run_deploy env FAIL_BACKFILL=1)
+status=$?
+contains "$out" "default Workplace backfill failed — the deploy stops here" "named the failed backfill"
+contains "$(cat "$WORK/docker.log")" "run --rm -T api npm run backfill:workplaces -w @kolonie-ai/db" "attempted the backfill command"
+absent "$(cat "$WORK/docker.log")" "run --rm -T api npm run seed" "did not seed after the failed backfill"
+absent "$(cat "$WORK/docker.log")" "up -d" "did not recreate a container"
+check "failed backfill wrote no deployment record" "$([ -f "$WORK/state/deployed.env" ] && echo yes || echo no)" "no"
+check "the deploy failed" "$status" "1"
 
 echo "== 3. rollback with no recorded build changes nothing"
 rm -rf "$WORK/state"
