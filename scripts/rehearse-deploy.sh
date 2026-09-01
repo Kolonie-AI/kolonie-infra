@@ -300,6 +300,39 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1)); else echo
 contains() { if grep -qF -- "$2" <<<"$1"; then echo "  ok   $3"; pass=$((pass+1)); else echo "  FAIL $3"; fail=$((fail+1)); fi; }
 absent() { if grep -qF -- "$2" <<<"$1"; then echo "  FAIL $3"; fail=$((fail+1)); else echo "  ok   $3"; pass=$((pass+1)); fi; }
 
+# Shell diagnostics the assertion counter cannot see (#262).
+#
+# `echo "== 7b. an explicit `latest` is still refused"` executed `latest` as a
+# command: backticks inside double quotes are command substitution, so the
+# heading ran a program, printed `command not found` to stderr, and the suite
+# still reported `failed 0` and exited zero. Nothing here counts stderr, so a
+# rehearsal that executes its own prose looks exactly like one that does not.
+#
+# So stderr is diverted to a file and judged at the end. It is **filtered rather
+# than required to be empty**: deploy.sh and the stub write to stderr on purpose
+# — a rollback warning, the parse error case 26 reproduces — and a guard that
+# failed on any stderr at all would fail on the cases that are working. Only the
+# three diagnostics a shell emits about its own text count, and everything the
+# run wrote is still printed through fd 3 so no output is swallowed.
+unexpected_diagnostics="$WORK/unexpected-diagnostics.log"
+exec 3>&2 2>"$unexpected_diagnostics"
+
+shell_diagnostics() {
+  grep -E 'command not found|unbound variable|syntax error near unexpected token' "$1" || true
+}
+
+check_unexpected_diagnostics() {
+  cat "$unexpected_diagnostics" >&3
+  if [ -z "$(shell_diagnostics "$unexpected_diagnostics")" ]; then
+    echo "  ok   the rehearsal emitted no unintended shell diagnostics"
+    pass=$((pass+1))
+    return
+  fi
+
+  echo "  FAIL the rehearsal emitted unintended shell diagnostics"
+  fail=$((fail+1))
+}
+
 echo "== 1. a healthy deploy pins by digest and records it"
 : > "$WORK/docker.log"
 out=$(run_deploy env)
@@ -393,7 +426,7 @@ out=$(NO_VERSIONS=1 run_deploy env || true)
 contains "$out" "no version given and none recorded" "said what was actually missing"
 contains "$out" "api:" "and which image it was missing for"
 
-echo "== 7b. an explicit `latest` is still refused"
+echo '== 7b. an explicit `latest` is still refused'
 # The guard PR #41 was written for. A caller may not ask for the mutable tag:
 # it ships whatever finished building most recently, which need not be the commit
 # that asked for the deploy.
@@ -1632,6 +1665,8 @@ out=$(run_deploy env FAIL_UP=1)
 contains "$out" "Rollback completed" "the deploy failed and rolled back, as this case needs it to"
 absent "$(cat "$WORK/docker.log")" "docker rm " "and the rollback removed no container either"
 absent "$(grep 'up -d' "$WORK/docker.log" | tail -n1)" "--remove-orphans" "nor did its own up -d pass --remove-orphans, which would have taken the leftover as an orphan"
+check_unexpected_diagnostics
+
 
 echo
 echo "passed $pass, failed $fail"
