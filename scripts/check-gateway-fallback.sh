@@ -79,4 +79,16 @@ fi
 if [ "$status" -eq 0 ]; then
   echo "every service with a primary gateway also receives the fallback pair"
 fi
+
+for value in '@preset/tier-1' '@preset/tier-2' '@preset/tier-3'; do
+  LLM_GATEWAY_MODEL="$value" bash "$ROOT/scripts/env-drift.sh" >/dev/null || status=1
+done
+for value in 'provider/model-v1' 'tier-1' 'arbitrary' '@preset/tier-4'; do
+  output=$(LLM_GATEWAY_MODEL="$value" bash "$ROOT/scripts/env-drift.sh" 2>&1) && status=1
+  printf '%s\n' "$output" | grep -qF 'invalid gateway tier in LLM_GATEWAY_MODEL' || status=1
+done
+
+output=$(LLM_GATEWAY_MODEL_MODERATION='   ' bash "$ROOT/scripts/env-drift.sh" 2>&1) && status=1
+printf '%s\n' "$output" | grep -qF 'invalid gateway tier in LLM_GATEWAY_MODEL_MODERATION' || status=1
+
 exit "$status"
