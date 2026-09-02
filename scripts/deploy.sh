@@ -1013,6 +1013,41 @@ declared_env() {
 # **Names only, never a value**, for that same reason. `scripts/env-drift.sh`
 # states the standard in its own header: adding a value to the output here
 # publishes a production secret somewhere it cannot be unpublished.
+preflight_gateway_tiers() {
+    local env_file="$DEPLOY_DIR/.env" name value report=""
+    local names=(
+        LLM_GATEWAY_MODEL
+        LLM_GATEWAY_MODEL_MODERATION
+        LLM_GATEWAY_MODEL_TRIAGE
+        LLM_GATEWAY_MODEL_VERIFIER
+    )
+
+    for name in "${names[@]}"; do
+        if [ -n "${!name+x}" ]; then
+            value="${!name}"
+        elif [ -f "$env_file" ]; then
+            value=$(grep -E "^${name}=" "$env_file" | tail -n 1 | cut -d= -f2- || true)
+        else
+            value=""
+        fi
+        [ -z "$value" ] && continue
+        case "$value" in
+            '@preset/tier-1'|'@preset/tier-2'|'@preset/tier-3') ;;
+            *) report="$report
+  $name" ;;
+        esac
+    done
+
+    if [ -n "$report" ]; then
+        log "ERROR: invalid gateway tier in:$report"
+        log "Use @preset/tier-1, @preset/tier-2 or @preset/tier-3. No value was printed."
+        log "Nothing has been recreated — the build that was serving is still serving."
+        exit 1
+    fi
+
+    log "OK: every configured gateway model is a canonical capability tier"
+}
+
 preflight_env() {
     local compose_file="$DEPLOY_DIR/docker-compose.yml"
     local env_file="$DEPLOY_DIR/.env"
@@ -1635,6 +1670,7 @@ pin
 # After pin, so the labels are read off the exact builds this deploy will run,
 # and before migrate — the first step that starts a container from one of them.
 # A deploy refused here has moved nothing.
+preflight_gateway_tiers
 preflight_env
 # Between the two on purpose: the images are on the host but nothing is serving
 # from them yet, which is the only window in which the schema can be moved

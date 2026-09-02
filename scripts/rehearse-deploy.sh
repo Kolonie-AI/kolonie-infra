@@ -979,6 +979,30 @@ out=$(run_deploy env DECLARING_IMAGE=kolonie-api DECLARED_VARS=BAN_MARK_SALT \
 contains "$out" "OK: every variable the images declare is provided" "the variable was seen as provided"
 absent "$out" "rehearsal-fixture-not-a-secret" "and its value reached no output"
 
+echo "== 21h. invalid gateway tiers stop before anything is recreated"
+for pair in \
+  'LLM_GATEWAY_MODEL=provider/model-v1' \
+  'LLM_GATEWAY_MODEL_MODERATION=tier-1' \
+  'LLM_GATEWAY_MODEL_TRIAGE=arbitrary' \
+  'LLM_GATEWAY_MODEL_VERIFIER=@preset/tier-4' \
+  'LLM_GATEWAY_MODEL=   '; do
+  rm -rf "$WORK/state"; : > "$WORK/docker.log"; rm -f "$WORK/.env"
+  name=${pair%%=*}
+  value=${pair#*=}
+  out=$(run_deploy env "$name=$value" || true)
+  contains "$out" "invalid gateway tier in:" "$name was refused"
+  contains "$out" "$name" "the refusal named $name"
+  contains "$out" "No value was printed" "the refusal withheld $name's value"
+  absent "$(cat "$WORK/docker.log")" " compose up " "no container was recreated for $name"
+done
+
+echo "== 21i. every canonical tier and an empty override pass the preflight"
+for value in '@preset/tier-1' '@preset/tier-2' '@preset/tier-3' ''; do
+  rm -rf "$WORK/state"; : > "$WORK/docker.log"; rm -f "$WORK/.env"
+  out=$(run_deploy env "LLM_GATEWAY_MODEL=$value")
+  contains "$out" "every configured gateway model is a canonical capability tier" "accepted ${value:-an empty override}"
+done
+
 echo "== 22. pgAdmin's profile is off unless the host is configured for it"
 # #30. The `admin` profile is gated on the host's .env rather than on a
 # registry probe, and this is the case that has to keep working: a host that

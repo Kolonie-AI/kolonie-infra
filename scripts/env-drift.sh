@@ -48,6 +48,31 @@ COMPOSE="$ROOT/docker-compose.yml"
 EXAMPLE="$ROOT/.env.example"
 ENV_DIR="${1:-}"
 
+validate_gateway_tiers() {
+    local env_file="${1:-}" name value failed=0
+    local names=(
+        LLM_GATEWAY_MODEL
+        LLM_GATEWAY_MODEL_MODERATION
+        LLM_GATEWAY_MODEL_TRIAGE
+        LLM_GATEWAY_MODEL_VERIFIER
+    )
+
+    for name in "${names[@]}"; do
+        if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+            value=$(grep -E "^${name}=" "$env_file" | tail -n 1 | cut -d= -f2- || true)
+        else
+            value="${!name-}"
+        fi
+        [ -z "$value" ] && continue
+        case "$value" in
+            '@preset/tier-1'|'@preset/tier-2'|'@preset/tier-3') ;;
+            *) echo "invalid gateway tier in $name" >&2; failed=1 ;;
+        esac
+    done
+
+    return "$failed"
+}
+
 for required in "$COMPOSE" "$EXAMPLE"; do
     if [ ! -f "$required" ]; then
         echo "FAIL: $required not found — run this from a kolonie-infra checkout"
@@ -108,6 +133,11 @@ COMPOSE_VARS="$(read_by_compose)"
 REQUIRED_VARS="$(required_by_compose)"
 DOCUMENTED_VARS="$(documented)"
 FAILED=0
+
+validate_gateway_tiers || FAILED=1
+if [ -n "$ENV_DIR" ] && [ -f "$ENV_DIR/.env" ]; then
+    validate_gateway_tiers "$ENV_DIR/.env" || FAILED=1
+fi
 
 echo "=== environment drift ==="
 echo "compose reads ${COMPOSE_VARS:+$(printf '%s\n' "$COMPOSE_VARS" | wc -l)} variables, of which ${REQUIRED_VARS:+$(printf '%s\n' "$REQUIRED_VARS" | wc -l)} are required"
