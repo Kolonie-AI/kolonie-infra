@@ -7,8 +7,8 @@
 #
 # `kolonie.ai` is split between two services. `website` serves the static Astro
 # site and answers `Host(`kolonie.ai`)` with nothing else, so it is the
-# **catch-all**; `atlas`, `profile` and `playbooks` take a path prefix each and
-# hand it to the API. That arrangement is correct only while the prefixed routers outrank the
+# **catch-all**; `atlas`, `profile`, `playbooks` and `handoff` take a path prefix
+# each and hand it to the API. That arrangement is correct only while the prefixed routers outrank the
 # catch-all, and Traefik defaults a router's priority to **the length of its
 # rule**.
 #
@@ -158,12 +158,26 @@ check "the permanent-redirect prefix reaches the API too" \
 that redirect — so this proxy has to hand it the request rather than answer it"
 
 echo
+echo "a guest handoff page is not the static 404"
+
+handoff_rule=$(rule_of handoff)
+check "the handoff router exists" \
+    "$([ -n "$handoff_rule" ] && echo yes || echo no)" \
+    "kolonie-platform#1817 renders a page nothing routes to"
+
+check "the handoff prefix is matched with its trailing slash" \
+    "$(printf '%s' "$handoff_rule" | grep -qF 'PathPrefix(`/handoff/`)' && echo yes || echo no)" \
+    "read: $handoff_rule
+without the trailing slash this router would also claim a neighbouring path;
+without the matcher at all, a live unused handoff falls through to website"
+
+echo
 echo "the API answers for its own paths, including when the answer is 404"
 
 # An `errors` middleware on these routers would replace *no citizen by that name*
 # with a proxy error page, which is a different claim: the first says the handle
 # is free, the second says the site is broken.
-for router in atlas profile playbooks; do
+for router in atlas profile playbooks handoff; do
     block=$(grep -vE '^[[:space:]]*#' "$ROUTES" |
         awk -v want="$router" '
             $0 ~ "^[[:space:]]*" want ":[[:space:]]*$" { inside = 1; next }
