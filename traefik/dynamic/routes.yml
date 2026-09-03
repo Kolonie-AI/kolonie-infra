@@ -340,10 +340,40 @@ http:
     # `/playbooks/` falls through to `website` and the built page again.
     #
     # 500, the same explicit number and for the reason spelled out above `atlas`.
-    # The three 500s never compete: `/atlas`, `/@`+`/citizens` and `/playbooks`
-    # do not overlap. No rate-limit, matching the other public routers.
+    # The four 500s never compete: `/atlas`, `/@`+`/citizens`, `/playbooks` and
+    # `/handoff` do not overlap. No rate-limit, matching the other public routers.
     playbooks:
       rule: "Host(`kolonie.ai`) && PathPrefix(`/playbooks`)"
+      priority: 500
+      entryPoints:
+        - websecure
+      middlewares:
+        - security-headers
+      service: api
+      tls:
+        certResolver: cloudflare
+
+    # Portable guest vault handoff pages — the apex host, one path prefix,
+    # answered by the API (kolonie-platform#1814, #1817).
+    #
+    # The fourth router to split this hostname, and it is the `playbooks` block
+    # above applied to a fourth surface. Creation returns an opaque URL on this
+    # prefix; without the splitter, Traefik's catch-all sends it to the static
+    # site and a live, unused handoff answers 404. Measured 2026-09-03 against
+    # deploy `2e304d4b`: HEAD and GET both 404 `text/html` while inspect still
+    # reported `active`.
+    #
+    # **The trailing slash is part of the matcher.** The page is `/handoff/<token>`;
+    # `PathPrefix(`/handoff`)` would also claim a neighbouring path that is not
+    # this surface. Rolling back is the `playbooks` block's procedure: delete
+    # this block, nothing else, and `/handoff/` falls through to `website`.
+    #
+    # 500, the same explicit number and for the reason spelled out above `atlas`.
+    # The four 500s never compete. No rate-limit, matching the other public
+    # routers: these are anonymous pages, and the abuse case is the one-time
+    # reveal behind CSRF, not request volume.
+    handoff:
+      rule: "Host(`kolonie.ai`) && PathPrefix(`/handoff/`)"
       priority: 500
       entryPoints:
         - websecure
